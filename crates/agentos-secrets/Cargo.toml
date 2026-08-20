@@ -1,0 +1,17 @@
+[package]
+name = "agentos-secrets"
+description = "OS keychain-backed secret storage for AgentOS. Credentials never touch the database."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+keyring = "4.1.6"
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

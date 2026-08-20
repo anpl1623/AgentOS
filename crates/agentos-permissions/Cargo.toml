@@ -1,0 +1,23 @@
+[package]
+name = "agentos-permissions"
+description = "Policy engine and path sandboxing for AgentOS. Enforced by the runtime, not by prompts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+agentos-core.workspace = true
+dirs.workspace = true
+globset.workspace = true
+serde.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,27 @@
+[package]
+name = "agentos-providers"
+description = "Provider-agnostic model interface for AgentOS, with Anthropic, OpenAI-compatible and mock implementations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+agentos-core.workspace = true
+agentos-secrets.workspace = true
+async-trait.workspace = true
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "charset", "http2"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

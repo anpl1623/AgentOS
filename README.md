@@ -179,6 +179,27 @@ This allows AgentOS to eventually support:
 
 without creating separate agent implementations.
 
+Today the runtime and a CLI client exist. The desktop interface is next, and it will consume the
+same runtime rather than reimplementing any of it.
+
+For the detail — how the trust boundary, the policy engine, taint tracking and the audit chain
+actually work — see [`docs/architecture.md`](docs/architecture.md) and the decision records in
+[`docs/adr`](docs/adr).
+
+### Crates
+
+| Crate | Responsibility |
+| --- | --- |
+| `agentos-core` | Domain types, events, and the trust boundary |
+| `agentos-permissions` | Policy engine and path sandboxing |
+| `agentos-secrets` | OS keychain access |
+| `agentos-persistence` | SQLite schema, migrations, repositories |
+| `agentos-audit` | Event bus and the hash-chained append-only log |
+| `agentos-tools` | Tool trait, registry, and the authorisation pipeline |
+| `agentos-providers` | Anthropic, OpenAI-compatible, and mock model providers |
+| `agentos-runtime` | Task state machine, agent loop, composition root |
+| `agentos-cli` | The `agentos` binary |
+
 ---
 
 # Agent Execution
@@ -274,6 +295,10 @@ Initial capabilities include:
 - Delete
 
 All capabilities are subject to the AgentOS permission system.
+
+**Built today:** filesystem and terminal. Run `agentos tools` to see the current catalogue, including
+which tools return attacker-controllable data and therefore raise the approval bar for the rest of a
+run. Browser and computer control are next.
 
 ---
 
@@ -384,6 +409,32 @@ AgentOS treats external content as **untrusted input**.
 
 A webpage, email, document, or application cannot redefine the agent's authority simply by instructing it to do something.
 
+That is enforced structurally rather than by asking the model nicely:
+
+- **The trust boundary is a type.** Operator instructions are the only trusted content. Model output
+  and every tool result — without exception — are not, and there is no API that converts one into the
+  other. Untrusted text is shown to the model inside a nonce-tagged envelope it cannot forge its way
+  out of.
+- **Authorisation never reads model output.** Permission decisions come from the operator's policy,
+  the tool's declared requirements, and the run's state. A model that has been completely taken over
+  can request anything and still be refused.
+- **Taint tracking.** Once a run reads anything from outside, the approval bar rises for everything
+  that follows. This is what makes "read a poisoned page, then exfiltrate" loud instead of silent.
+- **No shell.** `terminal.exec` takes an argument vector, so `;`, `&&`, `$(...)` and globs are
+  literal characters rather than an injection surface. Child processes get an environment allowlist,
+  never the parent's.
+- **Paths are resolved before they are checked.** `../` and symlinks are resolved to where they
+  really point, including for files that do not exist yet, and only then tested for containment.
+- **Agents cannot escalate.** `runtime.modify_policy`, `modify_agent`, `disable_audit` and
+  `disable_approvals` are permanently denied and cannot be granted by any policy.
+- **The audit log is append-only and tamper-evident.** SQLite triggers refuse `UPDATE` and `DELETE`;
+  a SHA-256 chain makes edits detectable.
+
+There is a test for the case that matters: a model scripted to obey injected instructions has every
+resulting call refused, the run still completes, and every refusal is recorded.
+
+The limits are written down honestly in [`SECURITY.md`](SECURITY.md).
+
 ---
 
 # Local First
@@ -423,6 +474,7 @@ Planned providers include:
 | Runtime    | Rust              |
 | Database   | SQLite            |
 | Build Tool | Vite              |
+| CLI        | Rust              |
 | LLMs       | Provider-agnostic |
 | Platforms  | macOS / Windows   |
 
@@ -432,20 +484,24 @@ Planned providers include:
 
 🚧 **Early development**
 
-AgentOS is currently under active development.
+AgentOS is currently under active development. The architecture and APIs are expected to change.
 
-The architecture and APIs are expected to change while the core runtime is being established.
+**What works today**, tested end to end with no network and no API key required:
 
-The current priority is building a reliable foundation for:
+- The agent runtime: an explicit task state machine, the agent loop, cancellation, and recovery
+- The permission engine: deny-by-default YAML policies, specificity ordering, risk ceilings,
+  path sandboxing that survives `../` and symlinks
+- The trust boundary and taint tracking
+- Human approval as a runtime primitive — persisted, resumable, and auditable
+- The append-only, hash-chained audit log
+- SQLite persistence for agents, tasks, runs, traces, approvals and memory
+- Filesystem and terminal tools
+- Model providers: Anthropic, any OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio, vLLM),
+  and a scripted mock
+- The `agentos` CLI
 
-1. Agent runtime
-2. Tool execution
-3. Computer control
-4. Browser automation
-5. Permissions
-6. Human approval
-7. Persistent state
-8. Audit logging
+**Not built yet:** the desktop application, computer control, browser automation, the scheduler,
+the orchestrator, and integrations. See the roadmap below.
 
 The project is **not yet intended for unrestricted autonomous operation of production businesses.**
 
@@ -455,16 +511,21 @@ Do not give experimental agents access to sensitive production systems or financ
 
 # Roadmap
 
+Phases 1 and 4 were built together. Safety is not a feature that can be added to a runtime that
+assumed it would not be needed, so the permission engine, approval gate and audit log went in
+alongside the execution loop rather than after it.
+
 ## Phase 1 — Agent Runtime
 
+- [x] Rust agent runtime
+- [x] LLM provider abstraction (Anthropic, OpenAI-compatible, local, mock)
+- [x] Agent lifecycle
+- [x] Task execution — explicit state machine, retries, cancellation
+- [x] Tool registry
+- [x] Structured events
+- [x] SQLite persistence
+- [x] CLI client
 - [ ] Tauri desktop application
-- [ ] Rust agent runtime
-- [ ] LLM provider abstraction
-- [ ] Agent lifecycle
-- [ ] Task execution
-- [ ] Tool registry
-- [ ] Structured events
-- [ ] SQLite persistence
 
 ## Phase 2 — Computer Control
 
@@ -485,20 +546,20 @@ Do not give experimental agents access to sensitive production systems or financ
 - [ ] Browser state
 - [ ] Browser permissions
 
-## Phase 4 — Safety
+## Phase 4 — Safety *(done, ahead of phases 2 and 3)*
 
-- [ ] Permission engine
-- [ ] Approval system
-- [ ] Filesystem sandbox
-- [ ] Terminal restrictions
-- [ ] Secure credential storage
-- [ ] Audit logs
-- [ ] Cancellation
-- [ ] Prompt-injection defenses
+- [x] Permission engine — deny by default, specificity ordering, risk ceilings
+- [x] Approval system — persisted, resumable, a real runtime state
+- [x] Filesystem sandbox — canonical resolution, symlink- and traversal-proof
+- [x] Terminal restrictions — no shell, program allowlist, environment allowlist, timeouts
+- [x] Secure credential storage — OS keychain, redacted from errors and logs
+- [x] Audit logs — append-only by database trigger, hash-chained, verifiable
+- [x] Cancellation — from any non-terminal state, through every tool
+- [x] Prompt-injection defenses — trust boundary in the type system, taint tracking
 
 ## Phase 5 — Memory & Orchestration
 
-- [ ] Persistent memory
+- [x] Persistent memory — structured, with provenance, behind a swappable interface
 - [ ] Task graphs
 - [ ] Task dependencies
 - [ ] Scheduler
@@ -533,23 +594,125 @@ Do not give experimental agents access to sensitive production systems or financ
 
 ## Requirements
 
-- Node.js
-- pnpm
-- Rust
-- Tauri prerequisites
-- macOS or Windows
+- [Rust](https://rustup.rs) 1.85 or newer
+
+That is the whole list. The database is embedded, and the test suite needs no network, no API key
+and no external service. Node and the Tauri prerequisites become necessary when the desktop
+application lands.
 
 ## Getting Started
 
 ```bash
-git clone https://github.com/anpl1623/agentos.git
-cd agentos
-
-pnpm install
-pnpm dev
+git clone https://github.com/anpl1623/AgentOS.git
+cd AgentOS
+cargo build --release
 ```
 
-> The exact setup commands may change during early development.
+```bash
+./target/release/agentos doctor
+```
+
+Store a provider key. It goes into your operating system's keychain — never the database, never a
+config file, never a log line:
+
+```bash
+./target/release/agentos provider set-key anthropic
+```
+
+Create an agent. Its starter policy denies everything except reading inside its own workspace:
+
+```bash
+./target/release/agentos agent create --name sales --tool filesystem.read --tool filesystem.list
+```
+
+Look at what it is allowed to do *before* you give it work:
+
+```bash
+./target/release/agentos policy show sales
+```
+
+Give it something to do:
+
+```bash
+./target/release/agentos task run "Summarise the files in my workspace." --agent sales
+```
+
+Then inspect what actually happened, and confirm the record has not been altered:
+
+```bash
+./target/release/agentos audit tail --security
+```
+
+```bash
+./target/release/agentos audit verify
+```
+
+No provider key yet? Pass `--provider mock` when creating the agent to exercise the whole pipeline
+without a network call.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `agentos doctor` | Check the installation and report what is missing |
+| `agentos agent create \| list \| show \| set` | Manage agents |
+| `agentos policy show \| set \| validate` | Inspect and edit permission policies |
+| `agentos task run \| list \| show \| cancel` | Run and inspect tasks |
+| `agentos audit tail \| verify` | Read the log and check its integrity |
+| `agentos provider list \| set-key \| remove-key` | Manage credentials |
+| `agentos tools` | See what the runtime can offer an agent |
+
+## Policies
+
+Policies are YAML, deny by default, and enforced by the runtime rather than described to the model:
+
+```yaml
+default: deny
+max_risk: high
+
+taint_escalation:
+  enabled: true
+  escalate_at_or_above: medium
+
+permissions:
+  filesystem:
+    read:  ["~/Documents/Sales"]
+    write:
+      effect: ask
+      paths: ["~/Documents/Sales"]
+
+  terminal:
+    exec:
+      effect: ask
+      programs: [git, npm]
+
+  browser:
+    navigate:
+      effect: allow
+      origins: ["https://*.example.com"]
+
+  payments:
+    execute: deny
+```
+
+Conflicts resolve by specificity, and ties go to the stricter effect — a contradictory policy fails
+closed.
+
+## Tests
+
+```bash
+cargo test --workspace
+```
+
+Before opening a pull request:
+
+```bash
+cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+```
+
+The security-relevant tests live alongside the code they protect and cover sandbox escapes via `../`
+and symlinks, shell metacharacters proving inert, an agent being unable to grant itself permissions,
+a fully hijacked model having every request refused, and audit tampering being detected.
 
 ---
 

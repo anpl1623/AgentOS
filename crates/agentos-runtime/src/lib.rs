@@ -1,0 +1,460 @@
+//! The AgentOS runtime.
+//!
+//! This is the composition root and the only place the pieces meet: the
+//! database, the audit log, the tool registry, the policy engine, the provider
+//! and the agent loop.
+//!
+//! It is also the API. The CLI in `agentos-cli` and, later, the desktop
+//! application are both clients of this type — there is no second
+//! implementation of any of this behind either of them.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
+pub mod agent_loop;
+pub mod config;
+pub mod error;
+pub mod gate;
+pub mod prompt;
+pub mod state;
+
+use std::sync::Arc;
+
+use agentos_audit::AuditLog;
+use agentos_core::agent::{Agent, ModelConfig};
+use agentos_core::ids::{AgentId, TaskId, TaskRunId};
+use agentos_core::task::{Task, TaskRun, TaskState, TaskStatus, TaskTrigger};
+use agentos_permissions::{DenyAllEngine, PermissionEngine, PolicyDocument, PolicyEngine};
+use agentos_persistence::Database;
+use agentos_secrets::{KeyringStore, SecretStore};
+use agentos_tools::{ApprovalGate, TaintTracker, ToolContext, ToolPipeline, ToolRegistry};
+use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
+
+pub use agent_loop::{AgentLoop, RunOutcome};
+pub use config::{
+    FixedProviderFactory, ProviderFactory, RuntimeConfig, SecretBackedProviderFactory,
+    build_provider,
+};
+pub use error::RuntimeError;
+pub use gate::RunApprovalGate;
+pub use state::RunStateMachine;
+
+/// Everything a running AgentOS installation needs.
+#[derive(Debug, Clone)]
+pub struct Runtime {
+    config: RuntimeConfig,
+    database: Database,
+    audit: Arc<AuditLog>,
+    registry: Arc<ToolRegistry>,
+    secrets: Arc<dyn SecretStore>,
+    providers: Arc<dyn ProviderFactory>,
+    /// Cancellation tokens for runs currently in flight, so the operator can
+    /// stop an agent that is already working.
+    running: Arc<Mutex<std::collections::HashMap<TaskRunId, CancellationToken>>>,
+}
+
+impl Runtime {
+    /// Open a runtime against a configuration, creating and migrating storage.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError`] if directories cannot be created or the database cannot
+    /// be opened.
+    pub async fn open(config: RuntimeConfig) -> Result<Self, RuntimeError> {
+        Self::open_with_secrets(config, Arc::new(KeyringStore::new())).await
+    }
+
+    /// Open a runtime with an explicit secret store.
+    ///
+    /// Tests use this to stay off the real keychain.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    pub async fn open_with_secrets(
+        config: RuntimeConfig,
+        secrets: Arc<dyn SecretStore>,
+    ) -> Result<Self, RuntimeError> {
+        config.ensure_directories()?;
+        let database = Database::open(&config.database_path).await?;
+        let audit = Arc::new(AuditLog::open(Arc::new(database.audit_sink())).await?);
+
+        Ok(Self {
+            config,
+            database,
+            audit,
+            registry: agentos_tools::shared_standard_registry(),
+            providers: Arc::new(SecretBackedProviderFactory::new(secrets.clone())),
+            secrets,
+            running: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        })
+    }
+
+    /// Open an entirely in-memory runtime. Tests only.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError`] if the database cannot be created.
+    pub async fn in_memory(
+        workspace: std::path::PathBuf,
+        secrets: Arc<dyn SecretStore>,
+    ) -> Result<Self, RuntimeError> {
+        let database = Database::in_memory().await?;
+        let audit = Arc::new(AuditLog::open(Arc::new(database.audit_sink())).await?);
+        let mut config = RuntimeConfig::rooted_at(workspace.clone());
+        config.workspace = workspace;
+
+        Ok(Self {
+            config,
+            database,
+            audit,
+            registry: agentos_tools::shared_standard_registry(),
+            providers: Arc::new(SecretBackedProviderFactory::new(secrets.clone())),
+            secrets,
+            running: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        })
+    }
+
+    /// The configuration in use.
+    #[must_use]
+    pub const fn config(&self) -> &RuntimeConfig {
+        &self.config
+    }
+
+    /// The database, for read-only queries by clients.
+    #[must_use]
+    pub const fn database(&self) -> &Database {
+        &self.database
+    }
+
+    /// The audit log.
+    #[must_use]
+    pub fn audit(&self) -> &Arc<AuditLog> {
+        &self.audit
+    }
+
+    /// The tool registry.
+    #[must_use]
+    pub fn registry(&self) -> &Arc<ToolRegistry> {
+        &self.registry
+    }
+
+    /// The secret store.
+    #[must_use]
+    pub fn secrets(&self) -> &Arc<dyn SecretStore> {
+        &self.secrets
+    }
+
+    /// Replace the tool registry. Used by tests and, later, by plugin loading.
+    pub fn set_registry(&mut self, registry: Arc<ToolRegistry>) {
+        self.registry = registry;
+    }
+
+    /// Replace the provider factory.
+    ///
+    /// The seam tests use to substitute a scripted provider, and the one a
+    /// provider plugin would register through.
+    pub fn set_provider_factory(&mut self, providers: Arc<dyn ProviderFactory>) {
+        self.providers = providers;
+    }
+
+    // -- Agents -------------------------------------------------------------
+
+    /// Create an agent with a starter policy scoped to its own workspace.
+    ///
+    /// The starter policy is deliberately close to useless: read-only inside one
+    /// directory. Widening it is an explicit act by the operator.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Database`] if the name is taken or the write fails.
+    pub async fn create_agent(
+        &self,
+        name: &str,
+        instructions: &str,
+        model: ModelConfig,
+        tools: Vec<String>,
+    ) -> Result<Agent, RuntimeError> {
+        let agent = Agent::new(name, instructions, model).with_tools(tools);
+        self.database.agents().insert(&agent).await?;
+
+        let workspace = self.config.workspace_for(name);
+        std::fs::create_dir_all(&workspace).map_err(|source| {
+            RuntimeError::io(format!("creating {}", workspace.display()), source)
+        })?;
+
+        let policy = agentos_permissions::starter_policy_yaml(&workspace);
+        self.database.agents().set_policy(agent.id, &policy).await?;
+        Ok(agent)
+    }
+
+    /// Look up an agent by name.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::UnknownAgent`] if there is no such agent.
+    pub async fn agent_by_name(&self, name: &str) -> Result<Agent, RuntimeError> {
+        self.database
+            .agents()
+            .find_by_name(name)
+            .await?
+            .ok_or_else(|| RuntimeError::UnknownAgent(name.to_owned()))
+    }
+
+    /// Build the policy engine for an agent.
+    ///
+    /// An agent with no stored policy gets [`DenyAllEngine`]. Absence of a
+    /// policy must never mean absence of restriction.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Policy`] if the stored document does not compile.
+    pub async fn engine_for(
+        &self,
+        agent_id: AgentId,
+    ) -> Result<Arc<dyn PermissionEngine>, RuntimeError> {
+        match self.database.agents().policy(agent_id).await? {
+            None => Ok(Arc::new(DenyAllEngine)),
+            Some(stored) => {
+                let policy = PolicyDocument::from_yaml(&stored.document)?.compile()?;
+                Ok(Arc::new(PolicyEngine::new(policy)))
+            }
+        }
+    }
+
+    // -- Tasks --------------------------------------------------------------
+
+    /// Create a task for an agent.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Database`] on failure.
+    pub async fn create_task(
+        &self,
+        agent_id: AgentId,
+        objective: &str,
+    ) -> Result<Task, RuntimeError> {
+        let task = Task::new(agent_id, objective);
+        self.database.tasks().insert(&task).await?;
+        Ok(task)
+    }
+
+    /// Execute a task and return what it produced.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError`] for runtime failures. A task that merely fails returns
+    /// `Ok` with a failed [`RunOutcome`].
+    pub async fn run_task(
+        &self,
+        task: &Task,
+        approvals: Arc<dyn ApprovalGate>,
+        cancel: CancellationToken,
+    ) -> Result<RunOutcome, RuntimeError> {
+        let agent = self.database.agents().get(task.agent_id).await?;
+        if !agent.is_enabled() {
+            return Err(RuntimeError::DisabledAgent(agent.name));
+        }
+
+        let provider = self.providers.build(&agent.name, &agent.model)?;
+        let engine = self.engine_for(agent.id).await?;
+
+        let attempt = self.database.runs().next_attempt(task.id).await?;
+        let run = TaskRun::new(task.id, attempt);
+        self.database.runs().insert(&run).await?;
+
+        self.running.lock().await.insert(run.id, cancel.clone());
+
+        let machine = Arc::new(RunStateMachine::new(
+            agent.id,
+            task.id,
+            run.id,
+            TaskState::Idle,
+            self.database.clone(),
+            self.audit.clone(),
+        ));
+
+        let gate: Arc<dyn ApprovalGate> = Arc::new(RunApprovalGate::new(
+            approvals,
+            self.database.clone(),
+            machine.clone(),
+        ));
+
+        let pipeline = ToolPipeline::new(self.registry.clone(), engine, gate, self.audit.clone());
+
+        let workspace = self.config.workspace_for(&agent.name);
+        std::fs::create_dir_all(&workspace).map_err(|source| {
+            RuntimeError::io(format!("creating {}", workspace.display()), source)
+        })?;
+
+        let context = ToolContext::new(agent.id, task.id, run.id, workspace);
+        let objective = task.objective.clone();
+
+        let agent_loop = AgentLoop::new(
+            agent,
+            run,
+            self.database.clone(),
+            provider,
+            pipeline,
+            machine,
+            context,
+            Arc::new(TaintTracker::new()),
+            cancel,
+        );
+
+        let outcome = agent_loop.run(&objective).await;
+        if let Ok(report) = &outcome {
+            self.running.lock().await.remove(&report.run_id);
+        }
+        outcome
+    }
+
+    /// Create and immediately execute a task.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::run_task`].
+    pub async fn run_objective(
+        &self,
+        agent_id: AgentId,
+        objective: &str,
+        approvals: Arc<dyn ApprovalGate>,
+        cancel: CancellationToken,
+    ) -> Result<RunOutcome, RuntimeError> {
+        let task = self.create_task(agent_id, objective).await?;
+        self.run_task(&task, approvals, cancel).await
+    }
+
+    /// Stop a run that is currently executing.
+    ///
+    /// Returns whether a live run was found. The operator must always be able
+    /// to stop an agent, so this cancels the token the loop and every tool
+    /// inside it are watching.
+    pub async fn cancel_run(&self, run_id: TaskRunId) -> bool {
+        match self.running.lock().await.remove(&run_id) {
+            Some(token) => {
+                token.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Run identifiers currently executing.
+    pub async fn running_runs(&self) -> Vec<TaskRunId> {
+        self.running.lock().await.keys().copied().collect()
+    }
+
+    /// Mark runs abandoned by a previous process as failed.
+    ///
+    /// Called at startup: a run that was executing when the process died is not
+    /// executing now, and leaving it looking alive would misreport the system's
+    /// state indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Database`] on failure.
+    pub async fn reap_abandoned_runs(&self) -> Result<usize, RuntimeError> {
+        let abandoned = self.database.runs().list_unfinished().await?;
+        let count = abandoned.len();
+
+        for mut run in abandoned {
+            let machine = RunStateMachine::new(
+                AgentId::new(),
+                run.task_id,
+                run.id,
+                run.state,
+                self.database.clone(),
+                self.audit.clone(),
+            );
+            machine.try_apply(TaskTrigger::UnrecoverableError).await;
+
+            run.state = TaskState::Failed;
+            run.failure = Some(agentos_core::task::TaskFailure::Runtime {
+                message: "the process exited while this run was in progress".to_owned(),
+            });
+            run.completed_at = Some(agentos_core::now());
+            self.database.runs().update(&run).await?;
+            self.database
+                .tasks()
+                .set_status(run.task_id, TaskStatus::Failed)
+                .await?;
+            let _ = self
+                .database
+                .approvals()
+                .cancel_pending_for_run(run.id)
+                .await;
+        }
+
+        Ok(count)
+    }
+
+    /// Read a run's full execution trace.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Database`] on failure.
+    pub async fn trace(&self, run_id: TaskRunId) -> Result<RunTrace, RuntimeError> {
+        let run = self.database.runs().get(run_id).await?;
+        let task = self.database.tasks().get(run.task_id).await?;
+        let agent = self.database.agents().get(task.agent_id).await?;
+        Ok(RunTrace {
+            agent_name: agent.name,
+            objective: task.objective,
+            steps: self.database.steps().list_for_run(run_id).await?,
+            executions: self.database.executions().list_for_run(run_id).await?,
+            approvals: self.database.approvals().list_for_run(run_id).await?,
+            run,
+        })
+    }
+
+    /// Verify the audit chain.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Database`] on failure.
+    pub async fn verify_audit(&self) -> Result<agentos_audit::ChainVerification, RuntimeError> {
+        let records = self.database.audit_sink().all().await?;
+        Ok(agentos_audit::verify_chain(&records))
+    }
+
+    /// The most recent task for an agent, if any.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Database`] on failure.
+    pub async fn latest_task(&self, agent_id: AgentId) -> Result<Option<Task>, RuntimeError> {
+        Ok(self
+            .database
+            .tasks()
+            .list_for_agent(agent_id, 1)
+            .await?
+            .into_iter()
+            .next())
+    }
+
+    /// Resolve a task by its identifier.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Database`] if it does not exist.
+    pub async fn task(&self, task_id: TaskId) -> Result<Task, RuntimeError> {
+        Ok(self.database.tasks().get(task_id).await?)
+    }
+}
+
+/// Everything recorded about one run.
+#[derive(Debug, Clone)]
+pub struct RunTrace {
+    /// The run itself.
+    pub run: TaskRun,
+    /// The agent that performed it.
+    pub agent_name: String,
+    /// What it was asked to do.
+    pub objective: String,
+    /// The ordered trace.
+    pub steps: Vec<agentos_core::task::TaskStep>,
+    /// Tool invocations, with their permission decisions.
+    pub executions: Vec<agentos_persistence::ToolExecutionRecord>,
+    /// Approvals raised during the run.
+    pub approvals: Vec<agentos_core::approval::ApprovalRequest>,
+}

@@ -1,0 +1,16 @@
+/target
+**/*.rs.bk
+*.pdb
+
+node_modules/
+dist/
+.DS_Store
+
+# Local runtime state — databases, logs, screenshots
+/.agentos/
+*.db
+*.db-shm
+*.db-wal
+
+.env
+.env.local
