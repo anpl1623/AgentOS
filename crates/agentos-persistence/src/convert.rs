@@ -15,8 +15,11 @@ use serde::de::DeserializeOwned;
 use crate::error::DbError;
 
 /// Format a timestamp for storage. RFC3339 in UTC sorts lexicographically.
+///
+/// Delegates to the canonical formatter so that a stored timestamp is byte-identical
+/// to the one the audit chain hashed.
 pub(crate) fn write_time(value: &Timestamp) -> String {
-    value.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+    agentos_core::format_timestamp(value)
 }
 
 /// Format an optional timestamp.

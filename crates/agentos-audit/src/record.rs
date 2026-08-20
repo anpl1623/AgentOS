@@ -85,7 +85,9 @@ impl AuditRecord {
         };
 
         field(&self.sequence.to_be_bytes());
-        field(self.at.to_rfc3339().as_bytes());
+        // Same function the database uses, so the hashed form and the stored
+        // form cannot drift apart.
+        field(agentos_core::format_timestamp(&self.at).as_bytes());
         field(self.kind.as_bytes());
         field(self.id.to_string().as_bytes());
         field(optional_id(self.agent_id.as_ref()).as_bytes());

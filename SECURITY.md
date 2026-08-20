@@ -37,11 +37,11 @@ AgentOS assumes:
 | Agents cannot exceed their policy | `agentos-permissions`, consulted by the runtime, never by the model |
 | Paths cannot escape their scope | Canonical resolution before the containment check, so `../` and symlinks resolve first |
 | Shell injection | No shell — `terminal.exec` takes an argv vector, so metacharacters are literal |
-| Environment leakage | Child processes get an allowlist, never the parent environment |
+| Environment leakage | Child processes get a per-platform allowlist of paths and machine properties, never the parent environment |
 | Agents cannot escalate | `runtime.modify_policy`, `modify_agent`, `disable_audit`, `disable_approvals` are permanently denied |
 | Consequential actions | Policy `ask` effects route through a human approval gate before any side effect |
 | Untrusted input | Taint tracking raises the approval bar for the rest of the run |
-| Audit integrity | Append-only SQLite triggers, plus a SHA-256 hash chain |
+| Audit integrity | Append-only SQLite triggers, plus a SHA-256 hash chain over a canonical timestamp format |
 | Credentials | OS keychain where available; never in the database, never logged, redacted from provider errors |
 | Batch files | `terminal.exec` refuses `.bat`/`.cmd`, the one path where Windows hands an argv to a shell |
 

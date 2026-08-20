@@ -39,7 +39,7 @@ mod probe {
     #[cfg(unix)]
     pub const SUCCEEDS: (&str, &[&str]) = ("echo", &["hello"]);
     #[cfg(windows)]
-    pub const SUCCEEDS: (&str, &[&str]) = ("where", &["where"]);
+    pub const SUCCEEDS: (&str, &[&str]) = ("hostname", &[]);
 
     /// A program that exits non-zero.
     #[cfg(unix)]
@@ -55,7 +55,9 @@ mod probe {
 
     /// Every program the suite may run, for the policy allowlist.
     pub fn all() -> Vec<&'static str> {
-        vec![SUCCEEDS.0, FAILS.0, HANGS.0, "env", "echo"]
+        vec![
+            SUCCEEDS.0, FAILS.0, HANGS.0, "env", "echo", "where", "hostname",
+        ]
     }
 
     /// Arguments as JSON, for a `terminal.exec` call.

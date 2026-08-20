@@ -25,6 +25,19 @@ use crate::error::PathError;
 /// The result is absolute and free of symlinks, and is what the containment
 /// check in [`is_within`] must be run against.
 ///
+/// # Platform differences
+///
+/// Windows resolves `..` lexically, without requiring the preceding component
+/// to exist, so `C:\root\nowhere\..\..` collapses to a real directory and
+/// resolves successfully. Unix does not, and rejects it here.
+///
+/// This does not change what an agent can reach. Both platforms end up
+/// comparing the *resolved* location against the allowed roots, so a traversal
+/// that escapes is refused either way — only the error differs
+/// ([`PathError::OutsideSandbox`] rather than
+/// [`PathError::UnresolvableTraversal`]). Containment is the control; this
+/// function only decides where a path really points.
+///
 /// # Errors
 ///
 /// Returns [`PathError::NotAbsolute`] for relative input,
@@ -238,7 +251,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn dot_dot_past_the_existing_prefix_is_rejected() {
+        // Unix-only: Windows collapses `..` lexically, so the same input
+        // resolves to a real directory there. It is still refused, by
+        // containment rather than by resolution — see
+        // `traversal_out_of_a_sandbox_is_always_refused`.
         let (_guard, root) = canonical_temp();
         let err = resolve_secure(&root.join("nope").join("..").join("..")).unwrap_err();
         assert!(matches!(err, PathError::UnresolvableTraversal(_)));
@@ -271,10 +289,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn traversal_in_a_non_existent_tail_is_rejected() {
+        // Unix-only, for the reason given above: resolving `..` against a
+        // directory that does not exist would be a guess, and guessing is how
+        // sandboxes get escaped. Windows collapses it lexically instead.
         let (_guard, root) = canonical_temp();
-        // Nothing under `nope` exists, so there is no real directory for `..`
-        // to be resolved against.
         for candidate in [
             root.join("nope").join("..").join(".."),
             root.join("nope").join("..").join("etc").join("passwd"),
@@ -286,6 +306,35 @@ mod tests {
                 candidate.display()
             );
         }
+    }
+
+    #[test]
+    fn traversal_out_of_a_sandbox_is_always_refused() {
+        // The property that matters, asserted the same way on every platform.
+        // Unix refuses these during resolution and Windows during containment;
+        // what must never differ is that they are refused.
+        let (_guard, root) = canonical_temp();
+        let sandbox = root.join("sandbox");
+        std::fs::create_dir(&sandbox).unwrap();
+
+        for candidate in [
+            sandbox
+                .join("nope")
+                .join("..")
+                .join("..")
+                .join("escaped.txt"),
+            sandbox.join("..").join("escaped.txt"),
+            sandbox.join("nope").join("..").join("..").join(".."),
+        ] {
+            assert!(
+                resolve_within(std::slice::from_ref(&sandbox), &candidate).is_err(),
+                "`{}` escaped the sandbox",
+                candidate.display()
+            );
+        }
+
+        // And a path that stays inside is still allowed.
+        assert!(resolve_within(std::slice::from_ref(&sandbox), &sandbox.join("ok.txt")).is_ok());
     }
 
     #[test]
@@ -328,7 +377,11 @@ mod tests {
         // Resolution is not an existence check: an agent creating a new file
         // must get a resolved path back. Containment is what rejects it.
         let target = missing_absolute_path();
-        assert_eq!(resolve_secure(&target).unwrap(), target);
+        let resolved = resolve_secure(&target).expect("a missing path still resolves");
+        // Not an equality check: Windows canonicalisation returns a verbatim
+        // `\\?\C:\...` path. Roots go through the same function, so the two
+        // sides of a containment check always agree.
+        assert!(resolved.ends_with("at/all") || resolved.ends_with(r"at\all"));
 
         let (_guard, root) = canonical_temp();
         let err = resolve_within(&[root], &target).unwrap_err();

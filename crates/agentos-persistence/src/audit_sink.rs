@@ -193,6 +193,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_nanosecond_precision_clock_does_not_break_the_chain() {
+        // The bug this guards against shipped: the chain hashed a timestamp at
+        // whatever precision the clock provided, while the database stored
+        // microseconds. On Linux, whose clock reports nanoseconds, every record
+        // read back as tampered — the audit log's entire purpose, broken, on a
+        // platform the developer did not happen to be using.
+        //
+        // Constructing the timestamp explicitly makes the test fail everywhere
+        // rather than only where the clock is precise enough to expose it.
+        use chrono::TimeZone;
+
+        let db = Database::in_memory().await.unwrap();
+        let sink = db.audit_sink();
+
+        let mut prev = GENESIS_HASH.to_owned();
+        for (index, nanos) in [772_812_948u32, 1, 999_999_999, 0].into_iter().enumerate() {
+            let mut event = started("nanosecond clock");
+            event.at = chrono::Utc
+                .timestamp_opt(1_700_000_000 + index as i64, nanos)
+                .single()
+                .expect("valid timestamp");
+
+            let record =
+                AuditRecord::seal(&event, u64::try_from(index).unwrap_or(0) + 1, &prev).unwrap();
+            prev.clone_from(&record.hash);
+            sink.append(&record).await.unwrap();
+        }
+
+        let reloaded = sink.all().await.unwrap();
+        assert_eq!(reloaded.len(), 4);
+        let verification = verify_chain(&reloaded);
+        assert!(
+            verification.is_intact(),
+            "a precise clock must not make an untouched log look tampered: {:?}",
+            verification.breaks
+        );
+    }
+
+    #[tokio::test]
     async fn the_log_refuses_updates() {
         // The point of the trigger: even a direct SQL statement cannot rewrite
         // history. If this test ever fails, the audit log is decorative.

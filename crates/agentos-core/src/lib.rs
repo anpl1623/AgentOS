@@ -42,10 +42,71 @@ pub use trust::{
 /// Wall-clock timestamp type used across the whole system.
 pub type Timestamp = chrono::DateTime<chrono::Utc>;
 
-/// Current wall-clock time.
+/// The precision every timestamp is normalised to.
 ///
-/// Centralised so that tests and replay tooling have a single seam to control.
+/// Microseconds, because that is what survives a round trip everywhere AgentOS
+/// runs. Linux clocks report nanoseconds; macOS reports microseconds. A value
+/// that is hashed at one precision and stored at another is not the same value
+/// when it comes back, and the audit chain notices — it hashes the timestamp, so
+/// losing three digits on the way to disk makes every record read as tampered.
+///
+/// Normalising here rather than at the storage layer means there is exactly one
+/// representation of a timestamp in the system, so no future storage backend can
+/// reintroduce the mismatch.
+pub const TIMESTAMP_PRECISION: chrono::SecondsFormat = chrono::SecondsFormat::Micros;
+
+/// The canonical text form of a timestamp.
+///
+/// Used by both the audit hash chain and the database. They must agree, so they
+/// share this function rather than each choosing a format.
+#[must_use]
+pub fn format_timestamp(value: &Timestamp) -> String {
+    value.to_rfc3339_opts(TIMESTAMP_PRECISION, true)
+}
+
+/// Current wall-clock time, truncated to [`TIMESTAMP_PRECISION`].
+///
+/// Centralised so that tests and replay tooling have a single seam to control,
+/// and truncated so an in-memory value equals the one that comes back from disk.
 #[must_use]
 pub fn now() -> Timestamp {
-    chrono::Utc::now()
+    use chrono::Timelike;
+    let now = chrono::Utc::now();
+    let nanos = now.nanosecond();
+    // A leap second is represented as nanosecond >= 1_000_000_000; leave those
+    // alone rather than mangling them.
+    if nanos >= 1_000_000_000 {
+        return now;
+    }
+    now.with_nanosecond(nanos - (nanos % 1_000)).unwrap_or(now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn now_is_stable_through_the_canonical_format() {
+        // The property the audit chain depends on: what is hashed in memory and
+        // what is written to disk are the same string.
+        for _ in 0..1_000 {
+            let value = now();
+            let text = format_timestamp(&value);
+            let parsed = chrono::DateTime::parse_from_rfc3339(&text)
+                .expect("the canonical format must be valid RFC3339")
+                .with_timezone(&chrono::Utc);
+            assert_eq!(parsed, value, "round trip lost precision: {text}");
+        }
+    }
+
+    #[test]
+    fn formatting_truncates_rather_than_rounds() {
+        use chrono::TimeZone;
+        // A nanosecond-resolution clock, as Linux provides.
+        let value = chrono::Utc
+            .timestamp_opt(1_700_000_000, 772_812_948)
+            .single()
+            .expect("valid timestamp");
+        assert_eq!(format_timestamp(&value), "2023-11-14T22:13:20.772812Z");
+    }
 }

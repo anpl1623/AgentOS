@@ -40,9 +40,38 @@ use crate::tool::{Tool, ToolContext, ToolOutput, ToolPlan, metadata_for, parse_a
 /// Environment variables passed through to child processes.
 ///
 /// An allowlist, not the parent environment. Inheriting everything would leak
-/// whatever credentials happen to be exported into the AgentOS process, and
-/// those are exactly the things an injected command would go looking for.
+/// whatever credentials happen to be exported into the AgentOS process —
+/// including the provider API key, when it came from the environment rather than
+/// a keychain — and those are exactly what an injected command would go looking
+/// for.
+///
+/// The list is per-platform because the minimum a program needs to start is.
+/// On Windows, a process without `SystemRoot` cannot load most system DLLs and
+/// one without `PATHEXT` cannot resolve an executable by bare name, so a
+/// Unix-shaped allowlist does not merely restrict Windows programs — it stops
+/// them running at all.
+///
+/// Everything here is a path or a machine property. Deliberately absent:
+/// `USERNAME`, `COMPUTERNAME` and anything credential-shaped.
+#[cfg(unix)]
 pub const ENV_ALLOWLIST: &[&str] = &["PATH", "HOME", "LANG", "LC_ALL", "TZ", "TMPDIR"];
+
+/// Environment variables passed through to child processes. See the Unix
+/// definition for the reasoning.
+#[cfg(windows)]
+pub const ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "PATHEXT",
+    "SystemRoot",
+    "SystemDrive",
+    "windir",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+];
 
 /// Longest a command may run without an explicit override.
 pub const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -380,6 +409,33 @@ mod tests {
                 tool.validate(&serde_json::json!({"program": program}))
                     .is_ok(),
                 "`{program}` should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn the_allowlist_can_actually_start_a_program() {
+        // A Windows process needs `SystemRoot` to load system DLLs and
+        // `PATHEXT` to resolve a bare program name. Without them the allowlist
+        // does not restrict child processes, it prevents them existing.
+        assert!(ENV_ALLOWLIST.contains(&"PATH"));
+        #[cfg(windows)]
+        {
+            assert!(ENV_ALLOWLIST.contains(&"SystemRoot"));
+            assert!(ENV_ALLOWLIST.contains(&"PATHEXT"));
+        }
+        #[cfg(unix)]
+        assert!(ENV_ALLOWLIST.contains(&"HOME"));
+
+        // And nothing credential-shaped, on any platform.
+        for name in ENV_ALLOWLIST {
+            let lowered = name.to_ascii_lowercase();
+            assert!(
+                !lowered.contains("key")
+                    && !lowered.contains("token")
+                    && !lowered.contains("secret")
+                    && !lowered.contains("password"),
+                "`{name}` looks like a credential and must not be forwarded"
             );
         }
     }
