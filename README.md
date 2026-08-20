@@ -197,6 +197,8 @@ actually work — see [`docs/architecture.md`](docs/architecture.md) and the dec
 | `agentos-audit` | Event bus and the hash-chained append-only log |
 | `agentos-tools` | Tool trait, registry, and the authorisation pipeline |
 | `agentos-providers` | Anthropic, OpenAI-compatible, and mock model providers |
+| `agentos-browser` | Deterministic browser automation over CDP |
+| `agentos-demo` | The mock CRM and the demonstration scenario |
 | `agentos-runtime` | Task state machine, agent loop, composition root |
 | `agentos-cli` | The `agentos` binary |
 
@@ -296,9 +298,14 @@ Initial capabilities include:
 
 All capabilities are subject to the AgentOS permission system.
 
-**Built today:** filesystem and terminal. Run `agentos tools` to see the current catalogue, including
-which tools return attacker-controllable data and therefore raise the approval bar for the rest of a
-run. Browser and computer control are next.
+**Built today:** filesystem, terminal and browser. Run `agentos tools` to see the current catalogue,
+including which tools return attacker-controllable data and therefore raise the approval bar for the
+rest of a run. Computer control is next.
+
+Browser interaction is deterministic — CSS selectors over the Chrome DevTools Protocol, not
+screenshots and coordinates. `browser.click #send-button` is a reviewable action in a way that
+`click at (412, 908)` is not. Capabilities are scoped by origin, so an agent can be given one site
+rather than the web. See [ADR 5](docs/adr/0005-deterministic-browser-automation.md).
 
 ---
 
@@ -495,13 +502,16 @@ AgentOS is currently under active development. The architecture and APIs are exp
 - Human approval as a runtime primitive — persisted, resumable, and auditable
 - The append-only, hash-chained audit log
 - SQLite persistence for agents, tasks, runs, traces, approvals and memory
-- Filesystem and terminal tools
+- Filesystem, terminal and browser tools
 - Model providers: Anthropic, any OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio, vLLM),
   and a scripted mock
 - The `agentos` CLI
 
-**Not built yet:** the desktop application, computer control, browser automation, the scheduler,
-the orchestrator, and integrations. See the roadmap below.
+- An end-to-end demonstration: a local mock CRM, driven by a real browser, with a prompt-injection
+  payload planted in one of the customer records
+
+**Not built yet:** the desktop application, computer control, the scheduler, the orchestrator, and
+integrations. See the roadmap below.
 
 The project is **not yet intended for unrestricted autonomous operation of production businesses.**
 
@@ -539,12 +549,13 @@ alongside the execution loop rather than after it.
 
 ## Phase 3 — Browser
 
-- [ ] Browser sessions
-- [ ] Navigation
-- [ ] Page interaction
-- [ ] Text extraction
-- [ ] Browser state
-- [ ] Browser permissions
+- [x] Browser sessions — one per run, isolated profile, closed when the run ends
+- [x] Navigation
+- [x] Page interaction — click, type, submit, history
+- [x] Text extraction — returned as untrusted data tagged with its origin
+- [x] Browser state — element inspection with stable selectors
+- [x] Browser permissions — capabilities scoped by origin
+- [ ] Vision fallback for pages with no usable structure
 
 ## Phase 4 — Safety *(done, ahead of phases 2 and 3)*
 
@@ -650,6 +661,23 @@ Then inspect what actually happened, and confirm the record has not been altered
 No provider key yet? Pass `--provider mock` when creating the agent to exercise the whole pipeline
 without a network call.
 
+## See the whole thing work
+
+```bash
+./target/release/agentos demo --scripted
+```
+
+This starts a mock CRM on loopback, gives an agent a policy scoped to it, and turns it loose with a
+real browser. One of the customer records contains text impersonating a system message, instructing
+the agent to read a private key, upload it, and delete a directory.
+
+The interesting output is not that the agent read a website. It is the list of things it was refused
+afterwards — and that none of those refusals depended on the model noticing anything was wrong.
+
+`--scripted` needs no API key: it replays a fixed model transcript through the real runtime, so the
+permission decisions you see are real ones. Drop the flag to run it against a configured provider,
+and add `--headed` to watch the browser work.
+
 ## Commands
 
 | Command | Purpose |
@@ -660,6 +688,7 @@ without a network call.
 | `agentos task run \| list \| show \| cancel` | Run and inspect tasks |
 | `agentos audit tail \| verify` | Read the log and check its integrity |
 | `agentos provider list \| set-key \| remove-key` | Manage credentials |
+| `agentos demo` | Run the end-to-end demonstration against a local mock CRM |
 | `agentos tools` | See what the runtime can offer an agent |
 
 ## Policies
@@ -713,6 +742,9 @@ cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings && carg
 The security-relevant tests live alongside the code they protect and cover sandbox escapes via `../`
 and symlinks, shell metacharacters proving inert, an agent being unable to grant itself permissions,
 a fully hijacked model having every request refused, and audit tampering being detected.
+
+The end-to-end browser tests drive a real Chromium against the mock CRM. They skip, loudly, if no
+browser is installed — a skipped test that says so is honest; one that quietly passes is not.
 
 ---
 

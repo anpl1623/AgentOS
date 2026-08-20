@@ -153,7 +153,7 @@ impl Tool for ExecuteCommand {
         Ok(arguments.clone())
     }
 
-    fn plan(
+    async fn plan(
         &self,
         arguments: &serde_json::Value,
         context: &ToolContext,

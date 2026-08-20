@@ -204,7 +204,7 @@ impl ToolPipeline {
         builder.arguments = arguments.clone();
 
         // 3. Plan. Pure — nothing has happened yet.
-        let plan = match tool.plan(&arguments, context) {
+        let plan = match tool.plan(&arguments, context).await {
             Ok(plan) => plan,
             Err(error) => return builder.failure(error),
         };

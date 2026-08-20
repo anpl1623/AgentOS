@@ -96,7 +96,7 @@ impl Tool for ReadFile {
         Ok(arguments.clone())
     }
 
-    fn plan(
+    async fn plan(
         &self,
         arguments: &serde_json::Value,
         context: &ToolContext,
@@ -185,7 +185,7 @@ impl Tool for WriteFile {
         Ok(arguments.clone())
     }
 
-    fn plan(
+    async fn plan(
         &self,
         arguments: &serde_json::Value,
         context: &ToolContext,
@@ -194,7 +194,7 @@ impl Tool for WriteFile {
         let path = resolve(context, &args.path)?;
 
         // Replacing existing content is destructive; creating a new file is not.
-        let overwrites = !args.append && path.exists();
+        let overwrites = !args.append && tokio::fs::try_exists(&path).await.unwrap_or(false);
         let risk = if overwrites {
             RiskLevel::High
         } else {
@@ -306,7 +306,7 @@ impl Tool for ListDirectory {
         Ok(arguments.clone())
     }
 
-    fn plan(
+    async fn plan(
         &self,
         arguments: &serde_json::Value,
         context: &ToolContext,
@@ -408,7 +408,7 @@ impl Tool for DeletePath {
         Ok(arguments.clone())
     }
 
-    fn plan(
+    async fn plan(
         &self,
         arguments: &serde_json::Value,
         context: &ToolContext,
@@ -519,7 +519,7 @@ impl Tool for CopyFile {
         Ok(arguments.clone())
     }
 
-    fn plan(
+    async fn plan(
         &self,
         arguments: &serde_json::Value,
         context: &ToolContext,
@@ -528,7 +528,7 @@ impl Tool for CopyFile {
         let from = resolve(context, &args.from)?;
         let to = resolve(context, &args.to)?;
 
-        let risk = if to.exists() {
+        let risk = if tokio::fs::try_exists(&to).await.unwrap_or(false) {
             RiskLevel::High
         } else {
             RiskLevel::Medium
@@ -610,7 +610,7 @@ impl Tool for MoveFile {
         Ok(arguments.clone())
     }
 
-    fn plan(
+    async fn plan(
         &self,
         arguments: &serde_json::Value,
         context: &ToolContext,

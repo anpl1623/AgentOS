@@ -73,6 +73,16 @@ impl RuntimeConfig {
     pub fn workspace_for(&self, agent_name: &str) -> PathBuf {
         self.workspace.join(sanitise_directory_name(agent_name))
     }
+
+    /// Where per-run browser profiles live.
+    ///
+    /// Separate from agent workspaces: an agent must not be able to read its own
+    /// browser's cookie jar through `filesystem.read` just because its policy
+    /// grants it the workspace.
+    #[must_use]
+    pub fn browser_profiles(&self) -> PathBuf {
+        self.data_dir.join("browser-profiles")
+    }
 }
 
 /// Reduce an agent name to something safe to use as a directory name.

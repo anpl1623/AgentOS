@@ -176,11 +176,17 @@ pub trait Tool: Send + Sync + fmt::Debug {
 
     /// Describe what invoking with these validated arguments would do.
     ///
+    /// Async because planning legitimately needs to look at the world — does
+    /// this path already exist, what page is the browser on — to say what the
+    /// call would actually do. It must remain free of *side effects*: this runs
+    /// before authorisation, and the whole model depends on nothing having
+    /// happened by the time the policy engine is consulted.
+    ///
     /// # Errors
     ///
     /// [`ToolError`] if the arguments cannot be resolved into a concrete plan —
     /// for example a path that cannot be canonicalised.
-    fn plan(
+    async fn plan(
         &self,
         arguments: &serde_json::Value,
         context: &ToolContext,
@@ -201,6 +207,15 @@ pub trait Tool: Send + Sync + fmt::Debug {
         context: &ToolContext,
         cancel: CancellationToken,
     ) -> Result<ToolOutput, ToolError>;
+
+    /// Release anything this tool was holding for a run that has finished.
+    ///
+    /// Tools are shared across every run, so per-run resources — a browser
+    /// process, a connection, a temporary directory — cannot live in the tool
+    /// itself. They live in a pool keyed by run, and this is how the runtime
+    /// says a key is dead. The default does nothing, which is right for the
+    /// tools that hold no state.
+    async fn end_run(&self, _run_id: agentos_core::ids::TaskRunId) {}
 }
 
 /// Deserialise validated arguments into a tool's typed struct.
@@ -281,6 +296,13 @@ impl ToolRegistry {
             .map(|tool| tool.metadata().clone())
             .collect()
     }
+
+    /// Tell every tool that a run has finished, so it can release resources.
+    pub async fn end_run(&self, run_id: agentos_core::ids::TaskRunId) {
+        for tool in self.tools.values() {
+            tool.end_run(run_id).await;
+        }
+    }
 }
 
 /// Build a [`ToolMetadata`] from a typed argument struct.
@@ -348,7 +370,7 @@ mod tests {
             Ok(arguments.clone())
         }
 
-        fn plan(
+        async fn plan(
             &self,
             _arguments: &serde_json::Value,
             _context: &ToolContext,

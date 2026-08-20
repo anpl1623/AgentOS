@@ -1,6 +1,6 @@
 [package]
-name = "agentos-runtime"
-description = "The AgentOS agent runtime: task state machine, agent loop, approvals and composition root."
+name = "agentos-browser"
+description = "Deterministic browser automation for AgentOS, over the Chrome DevTools Protocol."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,25 +9,22 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-agentos-audit.workspace = true
-agentos-browser.workspace = true
 agentos-core.workspace = true
 agentos-permissions.workspace = true
-agentos-persistence.workspace = true
-agentos-providers.workspace = true
-agentos-secrets.workspace = true
 agentos-tools.workspace = true
 async-trait.workspace = true
+chromiumoxide = "0.9.1"
 dirs.workspace = true
+futures.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]

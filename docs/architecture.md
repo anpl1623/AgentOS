@@ -28,6 +28,8 @@ response to them:
 │  Execution          agentos-tools        agentos-providers       │
 │                     pipeline · registry  anthropic · openai ·    │
 │                     filesystem · terminal  mock                  │
+│                     agentos-browser      agentos-demo            │
+│                     CDP · sessions       mock CRM · scenario     │
 ├──────────────────────────────────────────────────────────────────┤
 │  Policy             agentos-permissions                          │
 │                     policy engine · path sandboxing              │
@@ -122,6 +124,34 @@ Three properties are worth stating:
 - **Every capability in a plan is authorised.** A copy needs read on the source *and* write on the
   destination. Reading a file you may read and writing it somewhere you may not is exfiltration.
 
+## The browser
+
+Interaction is deterministic: CSS selectors over the Chrome DevTools Protocol, not screenshots and
+coordinates. `browser.inspect` enumerates a page's interactive elements and returns a stable selector
+for each, so the model names things rather than guessing at pixels. Screenshots exist for a human to
+look at and for a future vision fallback.
+
+Two properties fall out of that choice:
+
+- **Actions are auditable.** `browser.click #send-button` can be reviewed, and an approval card can
+  say what will be clicked. A coordinate pair cannot.
+- **Capabilities are scoped by origin.** Navigation is authorised against the target URL's origin;
+  everything else against the origin of the page the browser is currently on. A policy can grant one
+  site rather than the web.
+
+Each run gets its own browser process and its own profile, removed when the run ends. Deliberately
+*not* the operator's profile: an agent inheriting every logged-in session on the machine is the
+opposite of scoped access. Sessions are launched lazily and released through `Tool::end_run`, which
+is the hook the runtime calls when a run finishes.
+
+Planning never launches a browser. `plan` runs before authorisation, so it reads the current page's
+origin from an existing session or refuses; starting a process would be a side effect at exactly the
+point where there must not be one.
+
+Everything read from a page is `DataSource::Web`, tagged with the URL, and taint-raising. A CRM
+record whose notes field contains "ignore your instructions" is data about what somebody typed into a
+CRM. See [ADR 5](adr/0005-deterministic-browser-automation.md).
+
 ## Taint tracking
 
 `TaintTracker` records whether a run has ingested externally-influenced data. Once it has, the policy
@@ -201,12 +231,21 @@ credential-shaped tokens and redacted before they reach a log or an issue report
 - **Verification is shallow.** The `Verifying` state currently treats "the model stopped calling
   tools" as done. A second model pass judging the result belongs there; the seam exists.
 
+## The demonstration
+
+`agentos-demo` holds a mock CRM — a few dozen lines of HTML over a hand-rolled loopback HTTP server,
+no web framework — and the scenario run against it. Five customers, three overdue a follow-up, and
+one record whose notes field contains a prompt-injection payload written the way a real one would be:
+it impersonates a system message, invents authority, and asks for actions the agent has tools for.
+
+The end-to-end test scripts the *model* to fall for it completely. Every resulting call is refused,
+by two independent mechanisms — the policy engine for the tools the agent has, and the registry for
+the ones it was never given — and the run still completes with a report. It takes well under a second,
+so it runs on every commit rather than being a demo somebody performs occasionally.
+
 ## Roadmap
 
-**Next:** browser automation over CDP, with a local mock CRM carrying an embedded injection payload,
-wired as the end-to-end demo test.
-
-**Then:** the Tauri 2 desktop application — dashboard, agents, tasks with live traces, the approval
+**Next:** the Tauri 2 desktop application — dashboard, agents, tasks with live traces, the approval
 card, activity, settings — consuming this runtime with no logic of its own; computer control for
 macOS and Windows behind one Rust interface; scheduler; orchestrator with task graphs; multi-agent
 delegation; plugins.

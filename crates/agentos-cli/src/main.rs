@@ -63,6 +63,9 @@ enum Command {
     #[command(subcommand)]
     Provider(commands::provider::ProviderCommand),
 
+    /// Run the end-to-end demonstration against a local mock CRM.
+    Demo(commands::demo::DemoArgs),
+
     /// List the tools the runtime can offer an agent.
     Tools,
 }
@@ -84,6 +87,7 @@ async fn main() -> Result<()> {
         Command::Task(command) => commands::task::run(command, &config).await,
         Command::Audit(command) => commands::audit::run(command, &config).await,
         Command::Provider(command) => commands::provider::run(command, &config).await,
+        Command::Demo(args) => commands::demo::run(args, &config).await,
         Command::Tools => commands::tools::run(&config).await,
     }
 }

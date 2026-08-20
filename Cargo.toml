@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/agentos-core", "crates/agentos-permissions", "crates/agentos-secrets", "crates/agentos-audit", "crates/agentos-persistence", "crates/agentos-tools", "crates/agentos-providers", "crates/agentos-runtime", "crates/agentos-cli"]
+members = ["crates/agentos-core", "crates/agentos-permissions", "crates/agentos-secrets", "crates/agentos-audit", "crates/agentos-persistence", "crates/agentos-tools", "crates/agentos-providers", "crates/agentos-runtime", "crates/agentos-cli", "crates/agentos-browser", "crates/agentos-demo"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +15,8 @@ agentos-core = { path = "crates/agentos-core", version = "0.1.0" }
 agentos-secrets = { path = "crates/agentos-secrets", version = "0.1.0" }
 agentos-persistence = { path = "crates/agentos-persistence", version = "0.1.0" }
 agentos-audit = { path = "crates/agentos-audit", version = "0.1.0" }
+agentos-browser = { path = "crates/agentos-browser", version = "0.1.0" }
+agentos-demo = { path = "crates/agentos-demo", version = "0.1.0" }
 agentos-permissions = { path = "crates/agentos-permissions", version = "0.1.0" }
 agentos-tools = { path = "crates/agentos-tools", version = "0.1.0" }
 agentos-providers = { path = "crates/agentos-providers", version = "0.1.0" }

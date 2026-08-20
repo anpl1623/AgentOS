@@ -472,6 +472,11 @@ impl AgentLoop {
     }
 
     async fn finish(mut self, started: std::time::Instant) -> Result<RunOutcome, RuntimeError> {
+        // Release anything the tools were holding for this run — a browser
+        // process, most notably. Done first so that a later failure writing the
+        // outcome cannot leak a subprocess.
+        self.pipeline.registry().end_run(self.run.id).await;
+
         let state = self.machine.current().await;
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 

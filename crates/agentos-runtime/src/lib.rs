@@ -79,12 +79,12 @@ impl Runtime {
         let audit = Arc::new(AuditLog::open(Arc::new(database.audit_sink())).await?);
 
         Ok(Self {
-            config,
             database,
             audit,
-            registry: agentos_tools::shared_standard_registry(),
+            registry: build_registry(&config),
             providers: Arc::new(SecretBackedProviderFactory::new(secrets.clone())),
             secrets,
+            config,
             running: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
@@ -104,12 +104,12 @@ impl Runtime {
         config.workspace = workspace;
 
         Ok(Self {
-            config,
             database,
             audit,
-            registry: agentos_tools::shared_standard_registry(),
+            registry: build_registry(&config),
             providers: Arc::new(SecretBackedProviderFactory::new(secrets.clone())),
             secrets,
+            config,
             running: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
@@ -440,6 +440,20 @@ impl Runtime {
     pub async fn task(&self, task_id: TaskId) -> Result<Task, RuntimeError> {
         Ok(self.database.tasks().get(task_id).await?)
     }
+}
+
+/// Build the registry every client gets: the built-in tools plus the browser.
+///
+/// The composition root owns this so that the CLI and the desktop application
+/// cannot end up offering different tools for the same installation.
+fn build_registry(config: &RuntimeConfig) -> Arc<ToolRegistry> {
+    let mut registry = agentos_tools::standard_registry();
+    let options = agentos_browser::BrowserOptions::new(config.browser_profiles());
+    let (_pool, tools) = agentos_browser::build(options);
+    for tool in tools {
+        registry.register(tool);
+    }
+    Arc::new(registry)
 }
 
 /// Everything recorded about one run.

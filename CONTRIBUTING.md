@@ -75,6 +75,10 @@ Tests are not optional, and the interesting ones are about misuse:
 Mock external services. A test that needs somebody's real Gmail account is not a test anyone else can
 run.
 
+The browser tests drive a real Chromium and skip, loudly, when none is installed. If you are
+debugging the browser layer, `cargo run -p agentos-browser --example spike -- <url>` time-boxes each
+step and prints as it goes, so a hang is attributed to a step rather than to "the browser".
+
 ## Security-sensitive changes
 
 If your change touches any of the following, please say so explicitly in the pull request description
