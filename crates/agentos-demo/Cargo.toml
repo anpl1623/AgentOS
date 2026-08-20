@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+agentos-permissions.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "io-util", "sync", "macros"] }
 tracing.workspace = true
 
@@ -16,7 +17,6 @@ tracing.workspace = true
 agentos-audit.workspace = true
 agentos-browser.workspace = true
 agentos-core.workspace = true
-agentos-permissions.workspace = true
 agentos-persistence.workspace = true
 agentos-providers.workspace = true
 agentos-runtime.workspace = true

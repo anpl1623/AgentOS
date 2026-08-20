@@ -24,7 +24,7 @@ use agentos_core::ids::{AgentId, TaskId, TaskRunId};
 use agentos_core::task::{Task, TaskRun, TaskState, TaskStatus, TaskTrigger};
 use agentos_permissions::{DenyAllEngine, PermissionEngine, PolicyDocument, PolicyEngine};
 use agentos_persistence::Database;
-use agentos_secrets::{KeyringStore, SecretStore};
+use agentos_secrets::{ChainSecretStore, SecretStore};
 use agentos_tools::{ApprovalGate, TaintTracker, ToolContext, ToolPipeline, ToolRegistry};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -60,7 +60,10 @@ impl Runtime {
     /// [`RuntimeError`] if directories cannot be created or the database cannot
     /// be opened.
     pub async fn open(config: RuntimeConfig) -> Result<Self, RuntimeError> {
-        Self::open_with_secrets(config, Arc::new(KeyringStore::new())).await
+        // The keychain when there is one, the environment when there is not.
+        // A machine with no Secret Service — a server, a container, CI — must
+        // still be able to run an agent.
+        Self::open_with_secrets(config, Arc::new(ChainSecretStore::standard())).await
     }
 
     /// Open a runtime with an explicit secret store.

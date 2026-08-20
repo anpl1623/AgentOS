@@ -48,9 +48,12 @@ fn a_fresh_installation_runs_a_task_end_to_end() {
 
     // Doctor on an empty installation should succeed and say what is missing,
     // rather than failing because nothing is set up yet.
+    // Passes on a machine with a keychain and on one without: an absent
+    // keychain is a fact about the host, not a broken installation.
     let doctor = run_ok(home, &["doctor"]);
     assert!(doctor.contains("Everything checks out"), "{doctor}");
     assert!(doctor.contains("none configured"), "{doctor}");
+    assert!(doctor.contains("audit chain"), "{doctor}");
     assert!(home.join("agentos.db").exists());
 
     // The tool catalogue marks which tools return attacker-controllable data.
@@ -100,6 +103,53 @@ fn a_fresh_installation_runs_a_task_end_to_end() {
 
     let verify = run_ok(home, &["audit", "verify"]);
     assert!(verify.contains("intact"), "{verify}");
+}
+
+#[test]
+fn a_credential_can_come_from_the_environment() {
+    // The path that makes AgentOS usable on a machine with no keychain — a
+    // headless server, a container, CI. Without it the product simply does not
+    // run there.
+    let guard = TempDir::new().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_agentos"))
+        .args(["provider", "list"])
+        .env("AGENTOS_HOME", guard.path())
+        .env("NO_COLOR", "1")
+        .env("ANTHROPIC_API_KEY", "sk-ant-api03-EXAMPLEKEY0123456789")
+        .env_remove("OPENAI_API_KEY")
+        .output()
+        .expect("the agentos binary should be runnable");
+
+    assert!(output.status.success());
+    let listing = stdout(&output);
+    assert!(listing.contains("via environment"), "{listing}");
+    // The key itself is never printed, only a hint.
+    assert!(
+        !listing.contains("EXAMPLEKEY"),
+        "the key was printed: {listing}"
+    );
+}
+
+#[test]
+fn doctor_reports_where_a_credential_came_from() {
+    let guard = TempDir::new().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_agentos"))
+        .args(["doctor"])
+        .env("AGENTOS_HOME", guard.path())
+        .env("NO_COLOR", "1")
+        .env("ANTHROPIC_API_KEY", "sk-ant-api03-EXAMPLEKEY0123456789")
+        .env_remove("OPENAI_API_KEY")
+        .output()
+        .expect("the agentos binary should be runnable");
+
+    assert!(output.status.success());
+    let report = stdout(&output);
+    assert!(report.contains("anthropic"), "{report}");
+    assert!(report.contains("via environment"), "{report}");
+    assert!(
+        !report.contains("EXAMPLEKEY"),
+        "the key was printed: {report}"
+    );
 }
 
 #[test]
@@ -199,8 +249,10 @@ fn a_valid_policy_can_be_installed_and_is_summarised() {
     std::fs::write(
         &path,
         format!(
-            "default: deny\npermissions:\n  filesystem:\n    read: [\"{}\"]\n  terminal:\n    exec: [git]\n",
-            home.display()
+            // Single-quoted: a Windows path in a double-quoted YAML scalar is a
+            // parse error, because `\` introduces an escape there.
+            "default: deny\npermissions:\n  filesystem:\n    read: [{}]\n  terminal:\n    exec: [git]\n",
+            agentos_permissions::quote_scalar(&home.display().to_string())
         ),
     )
     .unwrap();

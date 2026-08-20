@@ -2,7 +2,9 @@
 
 use agentos_providers::provider_ids;
 use agentos_runtime::RuntimeConfig;
-use agentos_secrets::{KeyringStore, SecretStore, provider_key};
+use agentos_secrets::{
+    ChainSecretStore, EnvSecretStore, KeychainStatus, KeyringStore, provider_key,
+};
 use anyhow::Result;
 
 use crate::render::{Style, rule};
@@ -60,27 +62,35 @@ pub async fn run(config: &RuntimeConfig) -> Result<()> {
         }
     }
 
-    // Credentials. The keychain is checked by attempting a read, because a
-    // keychain that exists but refuses access is the interesting failure.
-    let keyring = KeyringStore::new();
-    let mut configured = Vec::new();
-    let mut keychain_error = None;
-    for provider in [provider_ids::ANTHROPIC, provider_ids::OPENAI] {
-        match keyring.get(&provider_key(provider)) {
-            Ok(secret) => configured.push(format!("{provider} ({})", secret.hint())),
-            Err(agentos_secrets::SecretError::NotFound { .. }) => {}
-            Err(error) => keychain_error = Some(error.to_string()),
+    // Credential storage.
+    //
+    // No keychain is a fact about the machine — a headless server, a container,
+    // CI — and not a failure. It only becomes a problem if there is also no
+    // credential in the environment, and even then the fix is a sentence away.
+    let keychain = KeyringStore::status();
+    match &keychain {
+        KeychainStatus::Available => {
+            println!("  {} keychain       available", style.green("ok"));
+        }
+        KeychainStatus::Unavailable { reason } => {
+            println!(
+                "  {} keychain       unavailable — {}",
+                style.yellow("--"),
+                first_line(reason)
+            );
         }
     }
 
-    if let Some(error) = keychain_error {
-        problems += 1;
-        println!("  {} keychain       {error}", style.red("!!"));
-    } else if configured.is_empty() {
-        println!(
-            "  {} providers      none configured — run `agentos provider set-key anthropic`",
-            style.yellow("--")
-        );
+    let secrets = ChainSecretStore::standard();
+    let mut configured = Vec::new();
+    for provider in [provider_ids::ANTHROPIC, provider_ids::OPENAI] {
+        if let Some((store, secret)) = secrets.locate(&provider_key(provider)) {
+            configured.push(format!("{provider} ({}, via {store})", secret.hint()));
+        }
+    }
+
+    if configured.is_empty() {
+        println!("  {} providers      none configured", style.yellow("--"));
     } else {
         println!(
             "  {} providers      {}",
@@ -91,21 +101,24 @@ pub async fn run(config: &RuntimeConfig) -> Result<()> {
 
     // Tools.
     let registry = agentos_tools::standard_registry();
+    let browser = agentos_browser::locate(None);
     println!(
-        "  {} tools          {} registered",
+        "  {} tools          {} built in, plus {} browser tool(s)",
         style.green("ok"),
-        registry.len()
+        registry.len(),
+        agentos_browser::TOOL_NAMES.len()
     );
+    match &browser {
+        Some(path) => println!("  {} browser        {}", style.green("ok"), path.display()),
+        None => println!(
+            "  {} browser        none found — browser tools will fail until one is installed",
+            style.yellow("--")
+        ),
+    }
 
     println!();
     if problems == 0 {
         println!("{}", style.green("Everything checks out."));
-        if configured.is_empty() {
-            println!(
-                "{}",
-                style.dim("Add a provider key, then: agentos agent create --name sales")
-            );
-        }
     } else {
         println!(
             "{}",
@@ -113,5 +126,44 @@ pub async fn run(config: &RuntimeConfig) -> Result<()> {
         );
     }
 
+    // Whatever is missing, say exactly what to do about it.
+    if configured.is_empty() {
+        println!();
+        if keychain.is_available() {
+            println!("{}", style.dim("Next: agentos provider set-key anthropic"));
+        } else {
+            println!(
+                "{}",
+                style.dim("This machine has no keychain, so set a credential in the environment:")
+            );
+            println!(
+                "{}",
+                style.dim(&format!(
+                    "  export {}=…",
+                    EnvSecretStore::variables_for(&provider_key(provider_ids::ANTHROPIC))
+                        .last()
+                        .cloned()
+                        .unwrap_or_default()
+                ))
+            );
+            println!(
+                "{}",
+                style.dim(
+                    "Agents cannot read it back: `terminal.exec` gives child processes an \
+                     allowlist that excludes it."
+                )
+            );
+        }
+        println!(
+            "{}",
+            style.dim("Or try it with no credential at all: agentos demo --scripted")
+        );
+    }
+
     Ok(())
+}
+
+/// Keychain errors are often multi-line; the first line is the useful part.
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or(text)
 }

@@ -313,6 +313,17 @@ pub fn load_policy_file(path: &Path) -> Result<Policy, PolicyError> {
     PolicyDocument::from_yaml(&source)?.compile()
 }
 
+/// Quote a value as a YAML scalar that survives a Windows path.
+///
+/// A double-quoted YAML scalar treats `\` as an escape introducer, so
+/// `"C:\Users\alice"` is not a path — it is a parse error at `\U`. Single-quoted
+/// scalars have exactly one escape, `''` for a literal quote, which is what
+/// makes them the right form for filesystem paths on every platform.
+#[must_use]
+pub fn quote_scalar(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 /// The starter policy shipped with a freshly created agent.
 ///
 /// Read-only inside one workspace directory, browsing allowed on localhost,
@@ -320,7 +331,7 @@ pub fn load_policy_file(path: &Path) -> Result<Policy, PolicyError> {
 /// widens it — the default must never be the permissive one.
 #[must_use]
 pub fn starter_policy_yaml(workspace: &Path) -> String {
-    let workspace = workspace.display();
+    let workspace = quote_scalar(&workspace.display().to_string());
     format!(
         "# AgentOS starter policy — deny by default.\n\
          # Widen deliberately; every line here is a capability you are granting.\n\
@@ -333,11 +344,11 @@ pub fn starter_policy_yaml(workspace: &Path) -> String {
          \n\
          permissions:\n\
          \x20 filesystem:\n\
-         \x20   read: [\"{workspace}\"]\n\
-         \x20   list: [\"{workspace}\"]\n\
+         \x20   read: [{workspace}]\n\
+         \x20   list: [{workspace}]\n\
          \x20   write:\n\
          \x20     effect: ask\n\
-         \x20     paths: [\"{workspace}\"]\n\
+         \x20     paths: [{workspace}]\n\
          \x20 browser:\n\
          \x20   navigate:\n\
          \x20     effect: allow\n\
@@ -395,7 +406,7 @@ permissions:
   payments:
     execute: deny
 "#,
-            root = root.display()
+            root = quote_scalar(&root.display().to_string())
         );
 
         let policy = PolicyDocument::from_yaml(&yaml).unwrap().compile().unwrap();
@@ -424,7 +435,7 @@ permissions:
         let (_guard, root) = canonical_temp();
         let yaml = format!(
             "permissions:\n  filesystem:\n    read:\n      - {}\n",
-            root.display()
+            quote_scalar(&root.display().to_string())
         );
         let engine =
             PolicyEngine::new(PolicyDocument::from_yaml(&yaml).unwrap().compile().unwrap());
@@ -501,7 +512,7 @@ permissions:
         let (_guard, root) = canonical_temp();
         let yaml = format!(
             "permissions:\n  filesystem:\n    write:\n      effect: ask\n      paths: [{}]\n      max_risk: medium\n",
-            root.display()
+            quote_scalar(&root.display().to_string())
         );
         let policy = PolicyDocument::from_yaml(&yaml).unwrap().compile().unwrap();
         let rule = &policy.rules[0];
@@ -561,8 +572,8 @@ permissions:
         let (_guard, root) = canonical_temp();
         let future = root.join("will-exist-later");
         let yaml = format!(
-            "permissions:\n  filesystem:\n    write: [\"{}\"]\n",
-            future.display()
+            "permissions:\n  filesystem:\n    write: [{}]\n",
+            quote_scalar(&future.display().to_string())
         );
         let policy = PolicyDocument::from_yaml(&yaml).unwrap().compile().unwrap();
         assert_eq!(policy.rules.len(), 1);
@@ -585,6 +596,46 @@ permissions:
             RiskLevel::High,
         );
         assert_eq!(engine.evaluate(&exec).effect, Effect::Deny);
+    }
+
+    #[test]
+    fn windows_paths_survive_policy_generation() {
+        // A double-quoted YAML scalar reads `\` as an escape introducer, so a
+        // Windows path becomes a parse error at `\U`. This ran on every Windows
+        // install before it was caught, and the test runs everywhere so it
+        // cannot regress on a platform nobody develops on.
+        let workspace = Path::new(r"C:\Users\runner\AppData\Local\Temp\.tmp1\workspace\demo");
+        let document = starter_policy_yaml(workspace);
+        let policy = PolicyDocument::from_yaml(&document)
+            .expect("a Windows path must not break the generated policy")
+            .compile();
+
+        // Compilation resolves paths against the real filesystem, so on a
+        // non-Windows host this correctly fails to resolve. Parsing is the part
+        // that was broken, and parsing is what this asserts.
+        assert!(document.contains(r"C:\Users\runner"));
+        let _ = policy;
+    }
+
+    #[test]
+    fn quoting_escapes_embedded_quotes() {
+        assert_eq!(quote_scalar("/plain/path"), "'/plain/path'");
+        assert_eq!(quote_scalar(r"C:\Users\a"), r"'C:\Users\a'");
+        // A directory with a quote in its name must not terminate the scalar.
+        assert_eq!(quote_scalar("/it's/here"), "'/it''s/here'");
+    }
+
+    #[test]
+    fn a_path_containing_a_quote_still_round_trips() {
+        let document = format!(
+            "permissions:\n  filesystem:\n    read: [{}]\n",
+            quote_scalar("/tmp/it's a path")
+        );
+        let parsed = PolicyDocument::from_yaml(&document).unwrap();
+        let ActionSpec::Resources(paths) = &parsed.permissions["filesystem"]["read"] else {
+            panic!("expected the shorthand form");
+        };
+        assert_eq!(paths, &vec!["/tmp/it's a path".to_owned()]);
     }
 
     #[test]

@@ -27,6 +27,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+agentos-permissions.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 

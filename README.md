@@ -429,7 +429,9 @@ That is enforced structurally rather than by asking the model nicely:
   that follows. This is what makes "read a poisoned page, then exfiltrate" loud instead of silent.
 - **No shell.** `terminal.exec` takes an argument vector, so `;`, `&&`, `$(...)` and globs are
   literal characters rather than an injection surface. Child processes get an environment allowlist,
-  never the parent's.
+  never the parent's — so an agent cannot read your API key back out through a subprocess. `.bat`
+  and `.cmd` files are refused outright: they are the one case where Windows hands an argument
+  vector to a shell.
 - **Paths are resolved before they are checked.** `../` and symlinks are resolved to where they
   really point, including for files that do not exist yet, and only then tested for containment.
 - **Agents cannot escalate.** `runtime.modify_policy`, `modify_agent`, `disable_audit` and
@@ -628,6 +630,13 @@ config file, never a log line:
 
 ```bash
 ./target/release/agentos provider set-key anthropic
+```
+
+On a machine with no keychain — a headless server, a container, CI — export it instead. `agentos
+doctor` tells you which applies and shows where a credential is actually coming from:
+
+```bash
+export ANTHROPIC_API_KEY=…
 ```
 
 Create an agent. Its starter policy denies everything except reading inside its own workspace:

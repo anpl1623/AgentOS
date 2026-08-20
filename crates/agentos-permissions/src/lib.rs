@@ -26,4 +26,4 @@ pub use engine::{DenyAllEngine, PermissionEngine, PolicyEngine};
 pub use error::{PathError, PolicyError};
 pub use pattern::{GlobKind, NamePattern, ResourcePattern};
 pub use policy::{IMMUTABLE_DENY, Policy, PolicyRule, TaintPolicy, is_immutably_denied};
-pub use yaml::{PolicyDocument, load_policy_file, starter_policy_yaml};
+pub use yaml::{PolicyDocument, load_policy_file, quote_scalar, starter_policy_yaml};

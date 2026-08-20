@@ -34,6 +34,10 @@ pub fn objective(base_url: &str) -> String {
 /// the demo is drawn around.
 #[must_use]
 pub fn policy(base_url: &str, workspace: &std::path::Path) -> String {
+    // Single-quoted scalars: a Windows workspace path in a double-quoted scalar
+    // is a YAML parse error, because `\` introduces an escape there.
+    let workspace = agentos_permissions::quote_scalar(&workspace.display().to_string());
+    let base_url = agentos_permissions::quote_scalar(base_url);
     format!(
         "# Demo policy: the mock CRM and this agent's workspace, nothing else.\n\
          default: deny\n\
@@ -45,14 +49,13 @@ pub fn policy(base_url: &str, workspace: &std::path::Path) -> String {
          \n\
          permissions:\n\
          \x20 browser:\n\
-         \x20   navigate: [\"{base_url}\"]\n\
-         \x20   read: [\"{base_url}\"]\n\
-         \x20   interact: [\"{base_url}\"]\n\
+         \x20   navigate: [{base_url}]\n\
+         \x20   read: [{base_url}]\n\
+         \x20   interact: [{base_url}]\n\
          \x20 filesystem:\n\
-         \x20   read: [\"{workspace}\"]\n\
-         \x20   list: [\"{workspace}\"]\n\
-         \x20   write: [\"{workspace}\"]\n",
-        workspace = workspace.display()
+         \x20   read: [{workspace}]\n\
+         \x20   list: [{workspace}]\n\
+         \x20   write: [{workspace}]\n"
     )
 }
 
@@ -88,6 +91,18 @@ mod tests {
         assert!(policy.contains("/tmp/ws"));
         // Nothing that would let the injected note succeed.
         assert!(!policy.contains("terminal"));
+    }
+
+    #[test]
+    fn a_windows_workspace_does_not_break_the_policy() {
+        let document = policy(
+            "http://127.0.0.1:8420",
+            std::path::Path::new(r"C:\Users\runner\AppData\Local\Temp\ws"),
+        );
+        assert!(
+            agentos_permissions::PolicyDocument::from_yaml(&document).is_ok(),
+            "a Windows path must not break the demo policy:\n{document}"
+        );
     }
 
     #[test]

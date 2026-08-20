@@ -4,6 +4,10 @@
 //! an attack or a mistake that the architecture is supposed to make impossible,
 //! and fails if it becomes possible again.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    unreachable_pub,
+    reason = "an integration test binary has no external surface"
+)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,6 +27,42 @@ use agentos_tools::{
 };
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
+
+/// Programs that exist on the platform the tests are running on.
+///
+/// `echo`, `sleep` and `false` are shell builtins or coreutils, and none of them
+/// is an executable on Windows. These are real `.exe` files there, chosen so
+/// that no test needs to invoke `cmd.exe` — spawning a shell in a suite whose
+/// subject is "we never spawn a shell" would be its own kind of wrong.
+mod probe {
+    /// A program that exits 0 and prints something.
+    #[cfg(unix)]
+    pub const SUCCEEDS: (&str, &[&str]) = ("echo", &["hello"]);
+    #[cfg(windows)]
+    pub const SUCCEEDS: (&str, &[&str]) = ("where", &["where"]);
+
+    /// A program that exits non-zero.
+    #[cfg(unix)]
+    pub const FAILS: (&str, &[&str]) = ("false", &[]);
+    #[cfg(windows)]
+    pub const FAILS: (&str, &[&str]) = ("where", &["agentos-no-such-program-xyz"]);
+
+    /// A program that runs for far longer than any test should wait.
+    #[cfg(unix)]
+    pub const HANGS: (&str, &[&str]) = ("sleep", &["30"]);
+    #[cfg(windows)]
+    pub const HANGS: (&str, &[&str]) = ("ping", &["-n", "30", "127.0.0.1"]);
+
+    /// Every program the suite may run, for the policy allowlist.
+    pub fn all() -> Vec<&'static str> {
+        vec![SUCCEEDS.0, FAILS.0, HANGS.0, "env", "echo"]
+    }
+
+    /// Arguments as JSON, for a `terminal.exec` call.
+    pub fn args(spec: (&str, &[&str])) -> serde_json::Value {
+        serde_json::json!({"program": spec.0, "args": spec.1})
+    }
+}
 
 const ALL_TOOLS: &[&str] = &[
     "filesystem.read",
@@ -364,23 +404,26 @@ fn terminal_policy<'a>(programs: &'a [&'a str]) -> impl FnOnce(&Path) -> Policy 
 
 #[tokio::test]
 async fn an_allowed_program_runs() {
-    let harness = Harness::with_policy(terminal_policy(&["echo"])).await;
+    let allowed = probe::all();
+    let harness = Harness::with_policy(terminal_policy(&allowed)).await;
 
     let report = harness
-        .call(
-            "terminal.exec",
-            serde_json::json!({"program": "echo", "args": ["hello"]}),
-        )
+        .call("terminal.exec", probe::args(probe::SUCCEEDS))
         .await;
 
     assert!(report.is_success(), "{:?}", report.error);
-    assert!(report.result.content.body.contains("hello"));
     assert!(report.result.content.body.contains("exit code: 0"));
+    assert!(
+        report.result.content.body.contains("--- stdout ---"),
+        "expected output from the probe program: {}",
+        report.result.content.body
+    );
 }
 
 #[tokio::test]
 async fn a_program_outside_the_allowlist_is_denied() {
-    let harness = Harness::with_policy(terminal_policy(&["echo"])).await;
+    let allowed = probe::all();
+    let harness = Harness::with_policy(terminal_policy(&allowed)).await;
 
     let report = harness
         .call(
@@ -392,11 +435,16 @@ async fn a_program_outside_the_allowlist_is_denied() {
     assert_eq!(report.outcome, ToolOutcome::Denied);
 }
 
+// `echo` is not an executable on Windows, and the only Windows path where an
+// argv reaches a shell is a .bat/.cmd file — which `terminal.exec` refuses
+// outright, covered by `batch_files_are_refused_on_every_platform`.
 #[tokio::test]
+#[cfg(unix)]
 async fn shell_metacharacters_are_inert() {
     // No shell is spawned, so this is one `echo` receiving one literal argument
     // — not two commands. If this test ever fails, a shell has crept in.
-    let harness = Harness::with_policy(terminal_policy(&["echo"])).await;
+    let allowed = probe::all();
+    let harness = Harness::with_policy(terminal_policy(&allowed)).await;
     let canary = harness.workspace.join("pwned.txt");
 
     let report = harness
@@ -418,8 +466,10 @@ async fn shell_metacharacters_are_inert() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn command_substitution_is_inert() {
-    let harness = Harness::with_policy(terminal_policy(&["echo"])).await;
+    let allowed = probe::all();
+    let harness = Harness::with_policy(terminal_policy(&allowed)).await;
 
     let report = harness
         .call(
@@ -450,7 +500,8 @@ async fn the_child_environment_is_an_allowlist() {
     };
     assert!(!user.is_empty());
 
-    let harness = Harness::with_policy(terminal_policy(&["env"])).await;
+    let allowed = probe::all();
+    let harness = Harness::with_policy(terminal_policy(&allowed)).await;
     let report = harness
         .call("terminal.exec", serde_json::json!({"program": "env"}))
         .await;
@@ -469,14 +520,12 @@ async fn the_child_environment_is_an_allowlist() {
 
 #[tokio::test]
 async fn a_command_that_hangs_is_killed() {
-    let harness = Harness::with_policy(terminal_policy(&["sleep"])).await;
+    let allowed = probe::all();
+    let harness = Harness::with_policy(terminal_policy(&allowed)).await;
 
-    let report = harness
-        .call(
-            "terminal.exec",
-            serde_json::json!({"program": "sleep", "args": ["30"], "timeout_secs": 1}),
-        )
-        .await;
+    let mut arguments = probe::args(probe::HANGS);
+    arguments["timeout_secs"] = serde_json::json!(1);
+    let report = harness.call("terminal.exec", arguments).await;
 
     assert_eq!(report.outcome, ToolOutcome::TimedOut);
     assert!(report.duration_ms < 10_000, "took {}ms", report.duration_ms);
@@ -484,14 +533,19 @@ async fn a_command_that_hangs_is_killed() {
 
 #[tokio::test]
 async fn a_nonzero_exit_is_reported_not_hidden() {
-    let harness = Harness::with_policy(terminal_policy(&["false"])).await;
+    let allowed = probe::all();
+    let harness = Harness::with_policy(terminal_policy(&allowed)).await;
 
     let report = harness
-        .call("terminal.exec", serde_json::json!({"program": "false"}))
+        .call("terminal.exec", probe::args(probe::FAILS))
         .await;
 
     assert!(report.is_success(), "the tool ran; the program failed");
-    assert!(report.result.content.body.contains("exit code: 1"));
+    assert!(
+        report.result.content.body.contains("exit code: 1"),
+        "expected a failing exit code: {}",
+        report.result.content.body
+    );
 }
 
 // ---------------------------------------------------------------------------

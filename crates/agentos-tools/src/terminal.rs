@@ -53,6 +53,24 @@ pub const MAX_COMMAND_TIMEOUT_SECS: u64 = 600;
 /// Cap on captured stdout/stderr, per stream.
 pub const MAX_CAPTURED_BYTES: usize = 256 * 1024;
 
+/// Program extensions that are refused outright.
+///
+/// On Windows, `CreateProcess` runs a `.bat` or `.cmd` file by handing it to
+/// `cmd.exe` — so for exactly these files, and only these, the argument vector
+/// *is* reinterpreted by a shell after AgentOS has finished with it. The
+/// escaping rules there are notoriously subtle and have produced CVEs in
+/// language runtimes, Rust's included.
+///
+/// The whole reason `terminal.exec` takes an argv is that no shell should see
+/// it, so batch files are refused rather than special-cased. An operator who
+/// genuinely needs one can invoke `cmd.exe /c script.bat` explicitly, which at
+/// least makes the shell visible in the policy and in the audit log instead of
+/// implicit in a file extension.
+///
+/// Refused on every platform, not just Windows, so a policy behaves the same
+/// wherever it is authored.
+pub const REFUSED_EXTENSIONS: &[&str] = &["bat", "cmd"];
+
 /// Arguments for `terminal.exec`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -148,6 +166,17 @@ impl Tool for ExecuteCommand {
             return Err(ToolError::invalid(
                 &self.0.name,
                 "arguments must not contain NUL bytes",
+            ));
+        }
+        if let Some(extension) = batch_extension(&args.program) {
+            return Err(ToolError::invalid(
+                &self.0.name,
+                format!(
+                    "refusing to run `{}`: a .{extension} file is executed by passing it to \
+                     cmd.exe, so its arguments go through a shell. Invoke `cmd.exe /c \
+                     {}` explicitly if that is really what you want.",
+                    args.program, args.program
+                ),
             ));
         }
         Ok(arguments.clone())
@@ -289,6 +318,15 @@ impl Tool for ExecuteCommand {
     }
 }
 
+/// The refused extension of a program path, if it has one.
+fn batch_extension(program: &str) -> Option<&'static str> {
+    let lowered = program.to_ascii_lowercase();
+    REFUSED_EXTENSIONS
+        .iter()
+        .find(|extension| lowered.ends_with(&format!(".{extension}")))
+        .copied()
+}
+
 fn truncate(text: &str) -> String {
     if text.len() <= MAX_CAPTURED_BYTES {
         return text.to_owned();
@@ -304,4 +342,62 @@ fn truncate(text: &str) -> String {
 #[must_use]
 pub fn all() -> Vec<std::sync::Arc<dyn Tool>> {
     vec![std::sync::Arc::new(ExecuteCommand::new())]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_files_are_refused_on_every_platform() {
+        let tool = ExecuteCommand::new();
+        for program in [
+            "deploy.bat",
+            "DEPLOY.BAT",
+            r"C:\scripts\build.cmd",
+            "/opt/tools/run.Cmd",
+        ] {
+            let error = tool
+                .validate(&serde_json::json!({"program": program}))
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("through a shell"),
+                "`{program}` should be refused, got: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_programs_are_accepted() {
+        let tool = ExecuteCommand::new();
+        for program in [
+            "git",
+            "/usr/bin/env",
+            r"C:\Windows\System32\where.exe",
+            "batch",
+        ] {
+            assert!(
+                tool.validate(&serde_json::json!({"program": program}))
+                    .is_ok(),
+                "`{program}` should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_and_nul_bearing_arguments_are_refused() {
+        let tool = ExecuteCommand::new();
+        assert!(
+            tool.validate(&serde_json::json!({"program": "  "}))
+                .is_err()
+        );
+        assert!(
+            tool.validate(&serde_json::json!({"program": "git\u{0}x"}))
+                .is_err()
+        );
+        assert!(
+            tool.validate(&serde_json::json!({"program": "git", "args": ["a\u{0}b"]}))
+                .is_err()
+        );
+    }
 }

@@ -310,15 +310,28 @@ mod tests {
         }
     }
 
+    /// An absolute path that does not exist, spelled for the host platform.
+    ///
+    /// `/foo` is not absolute on Windows — it has no drive prefix — so a
+    /// hard-coded Unix path would test argument validation rather than
+    /// resolution there.
+    fn missing_absolute_path() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\definitely\not\here\at\all")
+        } else {
+            PathBuf::from("/definitely/not/here/at/all")
+        }
+    }
+
     #[test]
     fn a_wholly_missing_path_still_resolves_but_fails_containment() {
         // Resolution is not an existence check: an agent creating a new file
         // must get a resolved path back. Containment is what rejects it.
-        let target = Path::new("/definitely/not/here/at/all");
-        assert_eq!(resolve_secure(target).unwrap(), target);
+        let target = missing_absolute_path();
+        assert_eq!(resolve_secure(&target).unwrap(), target);
 
         let (_guard, root) = canonical_temp();
-        let err = resolve_within(&[root], target).unwrap_err();
+        let err = resolve_within(&[root], &target).unwrap_err();
         assert!(matches!(err, PathError::OutsideSandbox { .. }));
     }
 

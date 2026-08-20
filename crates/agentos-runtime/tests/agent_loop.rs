@@ -59,7 +59,12 @@ impl Harness {
         std::fs::create_dir_all(&workspace).unwrap();
         let workspace = std::fs::canonicalize(&workspace).unwrap();
 
-        let rendered = policy.replace("{workspace}", &workspace.display().to_string());
+        // Quoted as a YAML scalar so the tests exercise the same code path a
+        // Windows install does.
+        let rendered = policy.replace(
+            "{workspace}",
+            &agentos_permissions::quote_scalar(&workspace.display().to_string()),
+        );
         runtime
             .database()
             .agents()
@@ -107,10 +112,10 @@ taint_escalation:
   escalate_at_or_above: medium
 permissions:
   filesystem:
-    read: [\"{workspace}\"]
-    list: [\"{workspace}\"]
-    write: [\"{workspace}\"]
-    delete: [\"{workspace}\"]
+    read: [{workspace}]
+    list: [{workspace}]
+    write: [{workspace}]
+    delete: [{workspace}]
   terminal:
     exec: [echo]
 ";
@@ -122,8 +127,8 @@ taint_escalation:
   escalate_at_or_above: medium
 permissions:
   filesystem:
-    read: [\"{workspace}\"]
-    write: [\"{workspace}\"]
+    read: [{workspace}]
+    write: [{workspace}]
 ";
 
 #[tokio::test]

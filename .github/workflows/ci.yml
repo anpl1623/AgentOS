@@ -15,7 +15,7 @@ jobs:
     name: Format and lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -35,19 +35,25 @@ jobs:
         # where most contributors will run the suite.
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --workspace --all-targets
       - name: Test
-        run: cargo test --workspace
+        # `--no-fail-fast` so one failing binary does not hide every crate after
+        # it; a cross-platform break should show its whole shape in one run.
+        run: cargo test --workspace --no-fail-fast
+        env:
+          # CI runners give Chrome no usable sandbox. This weakens the browser's
+          # own isolation and is deliberately opt-in — see BrowserOptions.
+          AGENTOS_BROWSER_NO_SANDBOX: "1"
 
   docs:
     name: Documentation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Public items are documented; a missing doc comment on a security-relevant

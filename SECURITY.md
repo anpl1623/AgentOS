@@ -42,7 +42,8 @@ AgentOS assumes:
 | Consequential actions | Policy `ask` effects route through a human approval gate before any side effect |
 | Untrusted input | Taint tracking raises the approval bar for the rest of the run |
 | Audit integrity | Append-only SQLite triggers, plus a SHA-256 hash chain |
-| Credentials | OS keychain only; never in the database, never logged, redacted from provider errors |
+| Credentials | OS keychain where available; never in the database, never logged, redacted from provider errors |
+| Batch files | `terminal.exec` refuses `.bat`/`.cmd`, the one path where Windows hands an argv to a shell |
 
 The load-bearing point: **permission decisions are computed from the policy, the tool's declared
 requirements and the run's taint state. Model output is not an input.** A model that has been
@@ -62,6 +63,13 @@ Being explicit about the gaps is more useful than implying there are none:
   The hash chain detects partial edits; it does not prevent a wholesale rewrite.
 - **Side channels within an allowed scope.** An agent permitted to write to a directory you sync to
   the cloud can exfiltrate through it. Scope grants to what the task needs.
+- **Credentials in the environment.** A machine with no OS keychain — a headless server, a container,
+  CI, some WSL setups — has nowhere secure to keep a key, so AgentOS falls back to reading
+  `ANTHROPIC_API_KEY` and friends from the environment. Anything that can read the process
+  environment can read those. The agent itself cannot: `terminal.exec` gives child processes a fixed
+  allowlist (`PATH`, `HOME`, `LANG`, `LC_ALL`, `TZ`, `TMPDIR`) rather than the parent environment, so
+  it cannot read a key back out through a subprocess. Prefer the keychain where you have one; the
+  fallback exists because "unusable on a server" is not an acceptable security posture either.
 
 ## Reporting scope
 

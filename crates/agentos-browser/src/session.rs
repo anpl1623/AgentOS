@@ -32,6 +32,14 @@ pub const VIEWPORT: (u32, u32) = (1280, 900);
 /// How long each stage of shutdown may take before escalating.
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Set to `1` to launch Chrome without its own sandbox.
+///
+/// Needed in containers and on CI runners, where the kernel facilities Chrome's
+/// sandbox relies on are unavailable. It weakens the browser's isolation of the
+/// pages it renders, so it is opt-in and never inferred: a build that guessed
+/// "this looks like CI" would eventually guess wrong on someone's laptop.
+pub const NO_SANDBOX_ENV: &str = "AGENTOS_BROWSER_NO_SANDBOX";
+
 /// How a browser should be launched.
 #[derive(Debug, Clone)]
 pub struct BrowserOptions {
@@ -41,6 +49,8 @@ pub struct BrowserOptions {
     pub headed: bool,
     /// Directory for per-run browser profiles.
     pub profile_root: PathBuf,
+    /// Launch without Chrome's own sandbox. See [`NO_SANDBOX_ENV`].
+    pub no_sandbox: bool,
 }
 
 impl BrowserOptions {
@@ -50,8 +60,16 @@ impl BrowserOptions {
         Self {
             executable: None,
             headed: false,
+            no_sandbox: std::env::var(NO_SANDBOX_ENV).is_ok_and(|value| value == "1"),
             profile_root: profile_root.into(),
         }
+    }
+
+    /// Launch without Chrome's own sandbox.
+    #[must_use]
+    pub const fn no_sandbox(mut self, no_sandbox: bool) -> Self {
+        self.no_sandbox = no_sandbox;
+        self
     }
 
     /// Use a specific executable.
@@ -118,6 +136,14 @@ impl BrowserSession {
 
         // `HeadlessMode` is not re-exported, so the mode is selected through the
         // builder's own helpers rather than by naming the enum.
+        if options.no_sandbox {
+            tracing::warn!(
+                "launching the browser without its sandbox ({NO_SANDBOX_ENV}=1); pages it \
+                 renders are less isolated from each other"
+            );
+            builder = builder.no_sandbox();
+        }
+
         builder = if options.headed {
             builder.with_head()
         } else {

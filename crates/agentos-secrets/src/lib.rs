@@ -38,6 +38,15 @@ pub enum SecretError {
         message: String,
     },
 
+    /// The store cannot be written to.
+    #[error("the {store} secret store is read-only; cannot store `{key}` there")]
+    ReadOnly {
+        /// Which store refused.
+        store: &'static str,
+        /// The key involved.
+        key: String,
+    },
+
     /// The store's internal lock was poisoned by a panic elsewhere.
     #[error("secret store lock was poisoned")]
     Poisoned,
@@ -101,6 +110,17 @@ impl fmt::Display for Secret {
 
 /// Somewhere secrets can be kept.
 pub trait SecretStore: Send + Sync + fmt::Debug {
+    /// Short name for this store, for `agentos doctor` and error messages.
+    fn name(&self) -> &'static str;
+
+    /// Whether this store accepts writes.
+    ///
+    /// Read-only stores exist — the environment is one — and a chain needs to
+    /// know where a `set` can actually go.
+    fn is_writable(&self) -> bool {
+        true
+    }
+
     /// Read a secret.
     ///
     /// # Errors
@@ -140,11 +160,58 @@ pub trait SecretStore: Send + Sync + fmt::Debug {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct KeyringStore;
 
+/// Whether a platform keychain is usable on this machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeychainStatus {
+    /// A keychain is present and answering.
+    Available,
+    /// No keychain backend is available.
+    ///
+    /// Normal on a headless Linux box, in a container, or in CI: there is no
+    /// D-Bus session and therefore no Secret Service. It is not an error, it is
+    /// a fact about the machine, and AgentOS has to remain usable there.
+    Unavailable {
+        /// What the platform said.
+        reason: String,
+    },
+}
+
+impl KeychainStatus {
+    /// Whether secrets can be stored.
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
+
 impl KeyringStore {
     /// Use the platform keychain under the AgentOS service name.
     #[must_use]
     pub const fn new() -> Self {
         Self
+    }
+
+    /// Check whether this machine has a usable keychain.
+    ///
+    /// Probes by looking up a name that will not exist: "no such entry" proves
+    /// the backend is answering, while a failure to even construct the entry
+    /// means there is no backend at all.
+    #[must_use]
+    pub fn status() -> KeychainStatus {
+        match Self::entry("__agentos_probe__") {
+            Err(SecretError::Backend { message, .. }) => {
+                KeychainStatus::Unavailable { reason: message }
+            }
+            Err(error) => KeychainStatus::Unavailable {
+                reason: error.to_string(),
+            },
+            Ok(entry) => match entry.get_password() {
+                Ok(_) | Err(keyring::Error::NoEntry) => KeychainStatus::Available,
+                Err(error) => KeychainStatus::Unavailable {
+                    reason: error.to_string(),
+                },
+            },
+        }
     }
 
     fn entry(key: &str) -> Result<keyring::Entry, SecretError> {
@@ -156,6 +223,10 @@ impl KeyringStore {
 }
 
 impl SecretStore for KeyringStore {
+    fn name(&self) -> &'static str {
+        "system keychain"
+    }
+
     fn get(&self, key: &str) -> Result<Secret, SecretError> {
         match Self::entry(key)?.get_password() {
             Ok(value) => Ok(Secret::new(value)),
@@ -213,6 +284,10 @@ impl InMemorySecretStore {
 }
 
 impl SecretStore for InMemorySecretStore {
+    fn name(&self) -> &'static str {
+        "in-memory"
+    }
+
     fn get(&self, key: &str) -> Result<Secret, SecretError> {
         self.lock()?
             .get(key)
@@ -233,6 +308,198 @@ impl SecretStore for InMemorySecretStore {
     }
 }
 
+/// Provider credentials supplied through the environment.
+///
+/// Read-only, and the fallback for machines with no keychain: headless servers,
+/// containers, CI, WSL. Without it AgentOS is simply unusable there, which is
+/// not an acceptable answer for a runtime meant to run unattended work.
+///
+/// It is a weaker place to keep a credential than a keychain — anything that can
+/// read the process environment can read it. Two things limit the damage:
+/// `terminal.exec` passes child processes an allowlist that does not include
+/// these variables, so an agent cannot read them back out through a subprocess;
+/// and nothing in AgentOS writes them anywhere.
+///
+/// For `provider.anthropic.api_key` it looks at `AGENTOS_ANTHROPIC_API_KEY`
+/// first, then the conventional `ANTHROPIC_API_KEY`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EnvSecretStore;
+
+impl EnvSecretStore {
+    /// Read credentials from the environment.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// Environment variable names checked for a key, in order.
+    #[must_use]
+    pub fn variables_for(key: &str) -> Vec<String> {
+        let normalised: String = key
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_uppercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+
+        let mut names = vec![format!("AGENTOS_{normalised}")];
+
+        // Also honour the conventional name a user probably already exports.
+        if let Some(provider) = key
+            .strip_prefix("provider.")
+            .and_then(|rest| rest.strip_suffix(".api_key"))
+        {
+            let provider: String = provider
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        c.to_ascii_uppercase()
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            names.push(format!("{provider}_API_KEY"));
+        }
+        names
+    }
+}
+
+impl SecretStore for EnvSecretStore {
+    fn name(&self) -> &'static str {
+        "environment"
+    }
+
+    fn is_writable(&self) -> bool {
+        false
+    }
+
+    fn get(&self, key: &str) -> Result<Secret, SecretError> {
+        for variable in Self::variables_for(key) {
+            if let Ok(value) = std::env::var(&variable)
+                && !value.trim().is_empty()
+            {
+                return Ok(Secret::new(value.trim().to_owned()));
+            }
+        }
+        Err(SecretError::NotFound {
+            key: key.to_owned(),
+        })
+    }
+
+    fn set(&self, key: &str, _value: &str) -> Result<(), SecretError> {
+        Err(SecretError::ReadOnly {
+            store: self.name(),
+            key: key.to_owned(),
+        })
+    }
+
+    fn delete(&self, key: &str) -> Result<(), SecretError> {
+        Err(SecretError::ReadOnly {
+            store: self.name(),
+            key: key.to_owned(),
+        })
+    }
+}
+
+/// Several stores consulted in order.
+///
+/// Reads try each store until one answers. Writes go to the first writable
+/// store, so configuring a key still lands in the keychain when there is one,
+/// and fails with a useful message when there is not.
+#[derive(Debug)]
+pub struct ChainSecretStore {
+    stores: Vec<std::sync::Arc<dyn SecretStore>>,
+}
+
+impl ChainSecretStore {
+    /// Build a chain.
+    #[must_use]
+    pub fn new(stores: Vec<std::sync::Arc<dyn SecretStore>>) -> Self {
+        Self { stores }
+    }
+
+    /// The standard chain: the platform keychain, then the environment.
+    #[must_use]
+    pub fn standard() -> Self {
+        Self::new(vec![
+            std::sync::Arc::new(KeyringStore::new()),
+            std::sync::Arc::new(EnvSecretStore::new()),
+        ])
+    }
+
+    /// Find a secret and report which store had it.
+    ///
+    /// `agentos doctor` uses this to tell an operator where a credential is
+    /// actually coming from, which matters when two places disagree.
+    #[must_use]
+    pub fn locate(&self, key: &str) -> Option<(&'static str, Secret)> {
+        for store in &self.stores {
+            if let Ok(secret) = store.get(key) {
+                return Some((store.name(), secret));
+            }
+        }
+        None
+    }
+
+    /// The stores in this chain, in order.
+    #[must_use]
+    pub fn stores(&self) -> &[std::sync::Arc<dyn SecretStore>] {
+        &self.stores
+    }
+}
+
+impl SecretStore for ChainSecretStore {
+    fn name(&self) -> &'static str {
+        "chain"
+    }
+
+    fn is_writable(&self) -> bool {
+        self.stores.iter().any(|store| store.is_writable())
+    }
+
+    fn get(&self, key: &str) -> Result<Secret, SecretError> {
+        let mut last_error = None;
+        for store in &self.stores {
+            match store.get(key) {
+                Ok(secret) => return Ok(secret),
+                Err(SecretError::NotFound { .. }) => {}
+                // A backend that is broken rather than empty is worth surfacing
+                // if nothing later in the chain answers.
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error.unwrap_or(SecretError::NotFound {
+            key: key.to_owned(),
+        }))
+    }
+
+    fn set(&self, key: &str, value: &str) -> Result<(), SecretError> {
+        for store in &self.stores {
+            if store.is_writable() {
+                return store.set(key, value);
+            }
+        }
+        Err(SecretError::ReadOnly {
+            store: "chain",
+            key: key.to_owned(),
+        })
+    }
+
+    fn delete(&self, key: &str) -> Result<(), SecretError> {
+        for store in &self.stores {
+            if store.is_writable() {
+                return store.delete(key);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The keychain key an LLM provider's credential is stored under.
 #[must_use]
 pub fn provider_key(provider: &str) -> String {
@@ -241,6 +508,8 @@ pub fn provider_key(provider: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -289,5 +558,90 @@ mod tests {
     #[test]
     fn provider_keys_are_namespaced() {
         assert_eq!(provider_key("anthropic"), "provider.anthropic.api_key");
+    }
+
+    #[test]
+    fn environment_variable_names_cover_both_conventions() {
+        let names = EnvSecretStore::variables_for(&provider_key("anthropic"));
+        assert_eq!(
+            names,
+            vec![
+                "AGENTOS_PROVIDER_ANTHROPIC_API_KEY".to_owned(),
+                "ANTHROPIC_API_KEY".to_owned(),
+            ]
+        );
+
+        // A non-provider key gets only the namespaced form.
+        assert_eq!(
+            EnvSecretStore::variables_for("browser.token"),
+            vec!["AGENTOS_BROWSER_TOKEN".to_owned()]
+        );
+    }
+
+    #[test]
+    fn the_environment_store_is_read_only() {
+        let store = EnvSecretStore::new();
+        assert!(!store.is_writable());
+        assert!(matches!(
+            store.set("provider.x.api_key", "v"),
+            Err(SecretError::ReadOnly { .. })
+        ));
+        assert!(matches!(
+            store.delete("provider.x.api_key"),
+            Err(SecretError::ReadOnly { .. })
+        ));
+    }
+
+    #[test]
+    fn a_chain_reads_through_and_writes_to_the_first_writable_store() {
+        let writable = Arc::new(InMemorySecretStore::new());
+        let readonly = Arc::new(EnvSecretStore::new());
+        let chain = ChainSecretStore::new(vec![readonly, writable.clone()]);
+
+        assert!(chain.is_writable());
+        chain.set("k", "v").unwrap();
+        // The write skipped the read-only store and landed in the writable one.
+        assert_eq!(writable.get("k").unwrap().expose(), "v");
+        assert_eq!(chain.get("k").unwrap().expose(), "v");
+        assert_eq!(chain.locate("k").map(|(name, _)| name), Some("in-memory"));
+
+        chain.delete("k").unwrap();
+        assert!(matches!(chain.get("k"), Err(SecretError::NotFound { .. })));
+        assert!(chain.locate("k").is_none());
+    }
+
+    #[test]
+    fn earlier_stores_in_a_chain_win() {
+        let first = Arc::new(InMemorySecretStore::new());
+        let second = Arc::new(InMemorySecretStore::new());
+        first.set("k", "from-first").unwrap();
+        second.set("k", "from-second").unwrap();
+
+        let chain = ChainSecretStore::new(vec![first, second]);
+        assert_eq!(chain.get("k").unwrap().expose(), "from-first");
+    }
+
+    #[test]
+    fn a_chain_with_no_writable_store_says_so() {
+        let chain = ChainSecretStore::new(vec![Arc::new(EnvSecretStore::new())]);
+        assert!(!chain.is_writable());
+        assert!(matches!(
+            chain.set("k", "v"),
+            Err(SecretError::ReadOnly { .. })
+        ));
+    }
+
+    #[test]
+    fn probing_the_keychain_never_panics() {
+        // On a developer machine this is `Available`; in CI it is usually not.
+        // Either is a valid answer — what must not happen is a crash or a hang.
+        let status = KeyringStore::status();
+        match &status {
+            KeychainStatus::Available => assert!(status.is_available()),
+            KeychainStatus::Unavailable { reason } => {
+                assert!(!reason.is_empty(), "an unavailable keychain must say why");
+                assert!(!status.is_available());
+            }
+        }
     }
 }
