@@ -463,19 +463,28 @@ impl SecretStore for ChainSecretStore {
     }
 
     fn get(&self, key: &str) -> Result<Secret, SecretError> {
-        let mut last_error = None;
         for store in &self.stores {
             match store.get(key) {
                 Ok(secret) => return Ok(secret),
                 Err(SecretError::NotFound { .. }) => {}
-                // A backend that is broken rather than empty is worth surfacing
-                // if nothing later in the chain answers.
-                Err(error) => last_error = Some(error),
+                // A store that cannot answer is not the same as a missing
+                // credential, but reporting it here would be the wrong error in
+                // the common case: on a machine with no keychain, every lookup
+                // would surface "no default store has been set" instead of the
+                // actionable "no key is configured". Keychain health is
+                // reported once, by `agentos doctor`, where it belongs.
+                Err(error) => {
+                    tracing::warn!(
+                        store = store.name(),
+                        %error,
+                        "secret store could not be consulted"
+                    );
+                }
             }
         }
-        Err(last_error.unwrap_or(SecretError::NotFound {
+        Err(SecretError::NotFound {
             key: key.to_owned(),
-        }))
+        })
     }
 
     fn set(&self, key: &str, value: &str) -> Result<(), SecretError> {
@@ -619,6 +628,52 @@ mod tests {
 
         let chain = ChainSecretStore::new(vec![first, second]);
         assert_eq!(chain.get("k").unwrap().expose(), "from-first");
+    }
+
+    #[test]
+    fn an_unavailable_store_does_not_mask_a_missing_credential() {
+        // On a machine with no keychain, every lookup would otherwise report
+        // "no default store has been set" rather than "no key is configured",
+        // which is the wrong error in the overwhelmingly common case.
+        #[derive(Debug)]
+        struct BrokenStore;
+
+        impl SecretStore for BrokenStore {
+            fn name(&self) -> &'static str {
+                "broken"
+            }
+
+            fn get(&self, key: &str) -> Result<Secret, SecretError> {
+                Err(SecretError::Backend {
+                    key: key.to_owned(),
+                    message: "no default store has been set".to_owned(),
+                })
+            }
+
+            fn set(&self, _key: &str, _value: &str) -> Result<(), SecretError> {
+                Ok(())
+            }
+
+            fn delete(&self, _key: &str) -> Result<(), SecretError> {
+                Ok(())
+            }
+        }
+
+        let chain =
+            ChainSecretStore::new(vec![Arc::new(BrokenStore), Arc::new(EnvSecretStore::new())]);
+        assert!(
+            matches!(
+                chain.get("provider.nothing.api_key"),
+                Err(SecretError::NotFound { .. })
+            ),
+            "a broken store must not masquerade as a missing-credential error"
+        );
+
+        // And a working store later in the chain still answers.
+        let working = Arc::new(InMemorySecretStore::new());
+        working.set("k", "v").unwrap();
+        let chain = ChainSecretStore::new(vec![Arc::new(BrokenStore), working]);
+        assert_eq!(chain.get("k").unwrap().expose(), "v");
     }
 
     #[test]

@@ -18,7 +18,6 @@
     clippy::print_stdout
 )]
 
-use std::path::Path;
 use std::sync::Arc;
 
 use agentos_browser::{BrowserOptions, BrowserPool};
@@ -455,9 +454,12 @@ fn the_demo_policy_denies_everything_the_injection_asks_for() {
     use agentos_core::risk::RiskLevel;
     use agentos_permissions::{PermissionEngine, PolicyDocument, PolicyEngine};
 
-    let workspace = Path::new("/tmp/agentos-demo-workspace");
+    // A real directory: compiling a policy resolves its filesystem roots, and
+    // `/tmp/...` is not even an absolute path on Windows.
+    let guard = TempDir::new().unwrap();
+    let workspace = std::fs::canonicalize(guard.path()).unwrap();
     let policy =
-        PolicyDocument::from_yaml(&agentos_demo::policy("http://127.0.0.1:8420", workspace))
+        PolicyDocument::from_yaml(&agentos_demo::policy("http://127.0.0.1:8420", &workspace))
             .unwrap()
             .compile()
             .unwrap();
