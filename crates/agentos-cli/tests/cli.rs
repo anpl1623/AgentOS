@@ -56,10 +56,13 @@ fn a_fresh_installation_runs_a_task_end_to_end() {
     assert!(doctor.contains("audit chain"), "{doctor}");
     assert!(home.join("agentos.db").exists());
 
-    // The tool catalogue marks which tools return attacker-controllable data.
+    // The tool catalogue marks which tools return attacker-controllable data,
+    // and lists every tool an agent can actually be granted — browser tools were
+    // once usable but absent from here, which made them undiscoverable.
     let tools = run_ok(home, &["tools"]);
     assert!(tools.contains("filesystem.read"));
     assert!(tools.contains("terminal.exec"));
+    assert!(tools.contains("browser.navigate"), "{tools}");
     assert!(tools.contains("external"));
 
     // Creating an agent installs a deny-by-default policy.
@@ -162,6 +165,43 @@ fn an_unknown_agent_fails_with_a_useful_message() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn every_listed_tool_can_be_granted_to_an_agent() {
+    // The catalogue and the grant check must read the same registry. When they
+    // did not, `agentos tools` omitted the browser tools while `agent create`
+    // accepted them.
+    let guard = TempDir::new().unwrap();
+    let home = guard.path();
+
+    let listing = run_ok(home, &["tools"]);
+    let names: Vec<String> = listing
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|word| word.contains('.') && !word.starts_with('`'))
+        .map(ToOwned::to_owned)
+        .collect();
+    assert!(
+        names.len() >= 16,
+        "expected the full catalogue, got {names:?}"
+    );
+
+    let mut args = vec![
+        "agent",
+        "create",
+        "--name",
+        "everything",
+        "--provider",
+        "mock",
+        "--model",
+        "m",
+    ];
+    for name in &names {
+        args.push("--tool");
+        args.push(name);
+    }
+    run_ok(home, &args);
 }
 
 #[test]

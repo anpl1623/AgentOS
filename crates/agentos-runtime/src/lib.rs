@@ -30,6 +30,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 pub use agent_loop::{AgentLoop, RunOutcome};
+pub use agentos_tools::ToolRegistry as Registry;
 pub use config::{
     FixedProviderFactory, ProviderFactory, RuntimeConfig, SecretBackedProviderFactory,
     build_provider,
@@ -448,8 +449,14 @@ impl Runtime {
 /// Build the registry every client gets: the built-in tools plus the browser.
 ///
 /// The composition root owns this so that the CLI and the desktop application
-/// cannot end up offering different tools for the same installation.
-fn build_registry(config: &RuntimeConfig) -> Arc<ToolRegistry> {
+/// cannot end up offering different tools for the same installation — and so
+/// that a command listing the catalogue lists the same catalogue an agent is
+/// actually given.
+///
+/// Public and free of side effects: listing the tools should not create a
+/// database.
+#[must_use]
+pub fn build_registry(config: &RuntimeConfig) -> Arc<ToolRegistry> {
     let mut registry = agentos_tools::standard_registry();
     let options = agentos_browser::BrowserOptions::new(config.browser_profiles());
     let (_pool, tools) = agentos_browser::build(options);

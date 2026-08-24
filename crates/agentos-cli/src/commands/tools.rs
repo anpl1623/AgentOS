@@ -6,9 +6,13 @@ use anyhow::Result;
 use crate::render::{Style, pad};
 
 /// Print the tool catalogue.
-pub async fn run(_config: &RuntimeConfig) -> Result<()> {
+///
+/// Reads the same registry the runtime hands to an agent, so a tool that can be
+/// granted is a tool that appears here. Listing them separately is how
+/// `browser.navigate` ended up usable but undiscoverable.
+pub async fn run(config: &RuntimeConfig) -> Result<()> {
     let style = Style::detect();
-    let registry = agentos_tools::standard_registry();
+    let registry = agentos_runtime::build_registry(config);
 
     println!(
         "{}{}{}{}",

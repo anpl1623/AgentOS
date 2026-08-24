@@ -99,14 +99,14 @@ pub async fn run(config: &RuntimeConfig) -> Result<()> {
         );
     }
 
-    // Tools.
-    let registry = agentos_tools::standard_registry();
+    // Tools. Counted from the registry an agent is actually given, not from a
+    // separate list that can drift away from it.
+    let registry = agentos_runtime::build_registry(config);
     let browser = agentos_browser::locate(None);
     println!(
-        "  {} tools          {} built in, plus {} browser tool(s)",
+        "  {} tools          {} available — run `agentos tools`",
         style.green("ok"),
         registry.len(),
-        agentos_browser::TOOL_NAMES.len()
     );
     match &browser {
         Some(path) => println!("  {} browser        {}", style.green("ok"), path.display()),
