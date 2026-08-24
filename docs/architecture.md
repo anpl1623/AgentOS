@@ -20,7 +20,7 @@ response to them:
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  Clients            agentos-cli          (desktop app, later)    │
+│  Clients            agentos-cli          apps/desktop            │
 ├──────────────────────────────────────────────────────────────────┤
 │  Runtime            agentos-runtime                              │
 │                     state machine · agent loop · approval gate   │

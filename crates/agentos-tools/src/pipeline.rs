@@ -487,21 +487,14 @@ fn build_approval_request(
         .cloned()
         .unwrap_or_else(|| capability_from_tool_name(tool));
 
-    let mut explanation = plan.summary.clone();
-    if taint.is_tainted() {
-        // The single most decision-relevant fact for a human: this agent has
-        // been reading things it did not write.
-        let sources = taint
-            .sources()
-            .iter()
-            .map(agentos_core::trust::DataSource::label)
-            .collect::<Vec<_>>()
-            .join(", ");
-        explanation.push_str(&format!(
-            "\n\nThis agent has read untrusted data during this run ({sources}). \
-             Anything it proposes may have been influenced by that content."
-        ));
-    }
+    // The single most decision-relevant fact for a human is where this agent has
+    // been reading. It travels as a list of sources; how it is worded is the
+    // client's business, not the runtime's.
+    let taint_sources = taint
+        .sources()
+        .iter()
+        .map(agentos_core::trust::DataSource::label)
+        .collect::<Vec<_>>();
 
     ApprovalRequest {
         id: ApprovalId::new(),
@@ -514,9 +507,10 @@ fn build_approval_request(
         capability,
         risk: plan.risk,
         reason: decision.reason.clone(),
-        explanation,
+        explanation: plan.summary.clone(),
         affected_resources: plan.affected_resources.clone(),
         tainted: taint.is_tainted(),
+        taint_sources,
         status: ApprovalStatus::Pending,
         requested_at: agentos_core::now(),
         decided_at: None,

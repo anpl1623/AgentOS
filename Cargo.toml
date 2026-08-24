@@ -1,6 +1,19 @@
 [workspace]
 resolver = "3"
-members = ["crates/agentos-core", "crates/agentos-permissions", "crates/agentos-secrets", "crates/agentos-audit", "crates/agentos-persistence", "crates/agentos-tools", "crates/agentos-providers", "crates/agentos-runtime", "crates/agentos-cli", "crates/agentos-browser", "crates/agentos-demo"]
+members = [
+    "crates/agentos-core",
+    "crates/agentos-permissions",
+    "crates/agentos-secrets",
+    "crates/agentos-audit",
+    "crates/agentos-persistence",
+    "crates/agentos-tools",
+    "crates/agentos-providers",
+    "crates/agentos-browser",
+    "crates/agentos-runtime",
+    "crates/agentos-demo",
+    "crates/agentos-cli",
+    "apps/desktop/src-tauri",
+]
 
 [workspace.package]
 version = "0.1.0"

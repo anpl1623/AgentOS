@@ -155,6 +155,13 @@ pub fn approval_card(request: &ApprovalRequest, style: &Style) -> String {
             &style.yellow("⚠ This agent has read untrusted data during this run."),
             style,
         ));
+        // Naming the sources is what makes the warning actionable: "it read a
+        // webpage" is a different decision from "it read a file you wrote".
+        for source in &request.taint_sources {
+            for line in wrap(source, WIDTH - 8) {
+                out.push_str(&boxed_line(&style.dim(&format!("   {line}")), style));
+            }
+        }
     }
 
     out.push_str(&format!("└{}┘\n", "─".repeat(WIDTH - 2)));
@@ -334,6 +341,11 @@ mod tests {
             explanation: "Send an order update to customer@example.com.".into(),
             affected_resources: vec!["customer@example.com".into()],
             tainted,
+            taint_sources: if tainted {
+                vec!["web:https://crm.example/customers/7".to_owned()]
+            } else {
+                vec![]
+            },
             status: ApprovalStatus::Pending,
             requested_at: agentos_core::now(),
             decided_at: None,

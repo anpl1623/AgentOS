@@ -132,6 +132,90 @@ permissions:
 ";
 
 #[tokio::test]
+async fn a_run_reports_its_identity_before_it_finishes() {
+    // What a user interface needs: it has to show the trace of a run that may
+    // take minutes, so it cannot wait for the run to end to learn what to show.
+    let harness = Harness::new(OPEN_POLICY).await;
+    std::fs::write(harness.workspace.join("input.txt"), "data").unwrap();
+
+    let provider = Arc::new(MockProvider::new(vec![
+        ScriptedTurn::call(
+            "c1",
+            "filesystem.read",
+            serde_json::json!({"path": "input.txt"}),
+        ),
+        ScriptedTurn::text("Read it."),
+    ]));
+    let mut runtime = harness.runtime.clone();
+    runtime.set_provider_factory(Arc::new(FixedProviderFactory::new(provider)));
+
+    let task = runtime
+        .create_task(harness.agent.id, "Read the input.")
+        .await
+        .unwrap();
+    let (run_id, handle) = runtime
+        .start_task(
+            &task,
+            Arc::new(RecordingGate::approving()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    // The run exists and is addressable immediately.
+    let run = runtime.database().runs().get(run_id).await.unwrap();
+    assert_eq!(run.task_id, task.id);
+    assert!(runtime.running_runs().await.contains(&run_id));
+
+    let outcome = handle.await.unwrap().unwrap();
+    assert!(outcome.succeeded(), "{outcome:?}");
+    assert_eq!(outcome.run_id, run_id);
+    assert!(!runtime.running_runs().await.contains(&run_id));
+}
+
+#[tokio::test]
+async fn a_backgrounded_run_can_be_cancelled_by_identity() {
+    // The stop button: the interface holds only a run id and must be able to
+    // stop work with it.
+    let harness = Harness::new(OPEN_POLICY).await;
+
+    let script: Vec<ScriptedTurn> = (0..50)
+        .map(|i| {
+            ScriptedTurn::call(
+                &format!("c{i}"),
+                "filesystem.list",
+                serde_json::json!({"path": "."}),
+            )
+        })
+        .collect();
+    let provider = Arc::new(MockProvider::new(script));
+    let mut runtime = harness.runtime.clone();
+    runtime.set_provider_factory(Arc::new(FixedProviderFactory::new(provider)));
+
+    let task = runtime
+        .create_task(harness.agent.id, "Loop forever.")
+        .await
+        .unwrap();
+    let (run_id, handle) = runtime
+        .start_task(
+            &task,
+            Arc::new(RecordingGate::approving()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    assert!(runtime.cancel_run(run_id).await, "the run should be live");
+
+    let outcome = handle.await.unwrap().unwrap();
+    assert_eq!(outcome.state, TaskState::Cancelled);
+    assert_eq!(
+        runtime.task(task.id).await.unwrap().status,
+        TaskStatus::Cancelled
+    );
+}
+
+#[tokio::test]
 async fn a_task_runs_tools_and_reports_back() {
     let harness = Harness::new(OPEN_POLICY).await;
     std::fs::write(harness.workspace.join("input.txt"), "seven customers").unwrap();
@@ -411,7 +495,14 @@ async fn taint_forces_an_approval_that_would_not_otherwise_be_needed() {
 
     let request = gate.requests().await.remove(0);
     assert!(request.tainted);
-    assert!(request.explanation.contains("read untrusted data"));
+    assert!(
+        request
+            .taint_sources
+            .iter()
+            .any(|source| source.starts_with("file:")),
+        "the approval should name where the untrusted data came from: {:?}",
+        request.taint_sources
+    );
 
     let trace = harness.runtime.trace(outcome.run_id).await.unwrap();
     assert_eq!(trace.approvals.len(), 1);

@@ -199,6 +199,7 @@ actually work — see [`docs/architecture.md`](docs/architecture.md) and the dec
 | `agentos-providers` | Anthropic, OpenAI-compatible, and mock model providers |
 | `agentos-browser` | Deterministic browser automation over CDP |
 | `agentos-demo` | The mock CRM and the demonstration scenario |
+| `apps/desktop` | The desktop application — Tauri 2, React, TypeScript |
 | `agentos-runtime` | Task state machine, agent loop, composition root |
 | `agentos-cli` | The `agentos` binary |
 
@@ -508,12 +509,14 @@ AgentOS is currently under active development. The architecture and APIs are exp
 - Model providers: Anthropic, any OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio, vLLM),
   and a scripted mock
 - The `agentos` CLI
+- The desktop application: dashboard, the approval card, live execution traces, agent and policy
+  editing, a streaming activity feed, and settings
 
 - An end-to-end demonstration: a local mock CRM, driven by a real browser, with a prompt-injection
   payload planted in one of the customer records
 
-**Not built yet:** the desktop application, computer control, the scheduler, the orchestrator, and
-integrations. See the roadmap below.
+**Not built yet:** computer control, the scheduler, the orchestrator, and integrations. See the
+roadmap below.
 
 The project is **not yet intended for unrestricted autonomous operation of production businesses.**
 
@@ -537,7 +540,7 @@ alongside the execution loop rather than after it.
 - [x] Structured events
 - [x] SQLite persistence
 - [x] CLI client
-- [ ] Tauri desktop application
+- [x] Tauri desktop application — dashboard, approvals, tasks with live traces, agents, activity, settings
 
 ## Phase 2 — Computer Control
 
@@ -607,11 +610,10 @@ alongside the execution loop rather than after it.
 
 ## Requirements
 
-- [Rust](https://rustup.rs) 1.85 or newer
+- [Rust](https://rustup.rs) 1.85 or newer — for the runtime and the CLI
+- [Node](https://nodejs.org) 20 or newer — only for the desktop application
 
-That is the whole list. The database is embedded, and the test suite needs no network, no API key
-and no external service. Node and the Tauri prerequisites become necessary when the desktop
-application lands.
+The database is embedded, and the test suite needs no network, no API key and no external service.
 
 ## Getting Started
 
@@ -686,6 +688,22 @@ afterwards — and that none of those refusals depended on the model noticing an
 `--scripted` needs no API key: it replays a fixed model transcript through the real runtime, so the
 permission decisions you see are real ones. Drop the flag to run it against a configured provider,
 and add `--headed` to watch the browser work.
+
+## The desktop application
+
+```bash
+cd apps/desktop
+npm install
+npm run tauri dev
+```
+
+It is a client of the same runtime the CLI uses — it holds no agent logic of its own, and the two
+cannot disagree about what an agent may do. Its TypeScript types are generated from the Rust view
+models, so a change on one side fails to compile on the other.
+
+Running `npm run dev` alone opens the interface in an ordinary browser against fixture data, which is
+useful for working on a screen without launching the whole application. Those fixtures are
+development-only and are removed from a production build.
 
 ## Commands
 

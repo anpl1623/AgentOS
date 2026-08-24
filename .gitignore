@@ -14,3 +14,6 @@ dist/
 
 .env
 .env.local
+
+# Tauri's generated schemas and build artefacts
+apps/desktop/src-tauri/gen/
