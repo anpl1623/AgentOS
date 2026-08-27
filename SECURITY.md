@@ -19,8 +19,8 @@ warranted we will coordinate disclosure with you and credit you unless you would
 AgentOS assumes:
 
 - **Any content an agent reads is hostile.** Webpages, files, emails, command output, API responses,
-  and anything a plugin returns. Text that appears to give the agent instructions is treated as data
-  reporting what somebody wrote, never as an instruction.
+  window titles, the pixels in a screenshot, and anything a plugin returns. Text that appears to give
+  the agent instructions is treated as data reporting what somebody wrote, never as an instruction.
 - **The model may be fully compromised.** Not "might be nudged" — assume it has been persuaded and is
   now issuing an attacker's tool calls verbatim. Every control must hold anyway. There is a test for
   exactly this scenario.
@@ -44,6 +44,8 @@ AgentOS assumes:
 | Audit integrity | Append-only SQLite triggers, plus a SHA-256 hash chain over a canonical timestamp format |
 | Credentials | OS keychain where available; never in the database, never logged, redacted from provider errors |
 | Batch files | `terminal.exec` refuses `.bat`/`.cmd`, the one path where Windows hands an argv to a shell |
+| Input goes where it was authorised | Every `computer.*` call names the application it targets, which must be the one in front — re-checked before every individual event |
+| Agents cannot approve themselves | The computer tools refuse to send input to AgentOS's own process, whatever the policy says |
 
 The load-bearing point: **permission decisions are computed from the policy, the tool's declared
 requirements and the run's taint state. Model output is not an input.** A model that has been
@@ -63,6 +65,36 @@ Being explicit about the gaps is more useful than implying there are none:
   The hash chain detects partial edits; it does not prevent a wholesale rewrite.
 - **Side channels within an allowed scope.** An agent permitted to write to a directory you sync to
   the cloud can exfiltrate through it. Scope grants to what the task needs.
+- **Synthetic input is not scopable to an action, and the check on it is racy.** Naming the target
+  application binds *who receives* a keystroke. It cannot bind *what the keystroke does*: at the
+  policy layer, Return on a focused dialogue, Cmd-Q, and the letter `a` are one capability on one
+  resource. The only distinction AgentOS can draw is whether a keystroke commits — a newline, or
+  Return — which it prices as a higher risk, the way `browser.type` prices `submit`. And the check is
+  against a moving target: the operating system routes an injected event when it delivers it, after
+  the call returns, so re-checking immediately beforehand narrows the window to one event delivery
+  without closing it. A multi-character `type` is one event per character; focus is re-read before
+  each, so a change part-way through stops the rest, and what already landed cannot be recalled. The
+  honest summary: **anything you can do with a keyboard, an agent holding `computer.type` can do,
+  including typing a shell command into a terminal window — where the shell gets your full
+  environment rather than the allowlist `terminal.exec` would have given it.** Grant it the way you
+  would grant `terminal.exec` on `*`, not the way you would grant `browser.type`.
+- **A screenshot has no scope the policy can express.** A window capture is at least attributable to
+  an application; a display capture is whatever is on that display — a password manager, an open
+  private key, a two-factor code in a notification banner. Path scoping, origin scoping and the
+  keychain protect data at rest and in transit, and none of them protects pixels. The audit log
+  records that a capture happened and what it was of; it cannot record what was in it. Screen reads
+  do at least raise taint, so what an agent does *after* looking is held to a higher bar.
+- **An application's name is its own claim.** `application: Mail` on an approval card is what the
+  process in front reports it is called, not a verified identity. It is the first resource kind in
+  AgentOS whose value is not resolved by the runtime — a path is canonicalised, an origin comes from
+  a browser AgentOS launched — and globs make it worse, since `Mail*` matches `Mail Stealer`. Any
+  process can also raise itself to the front, so "Mail is in front" is a condition an attacker who
+  already has code on the machine can arrange.
+- **A coordinate is not reviewable.** `click (412, 908) in "Mail"` is everything the approval card
+  can say, and it is not enough to decide anything with. [ADR 5](docs/adr/0005-deterministic-browser-automation.md)
+  settled this for the browser by refusing to interact by coordinate at all; computer control has no
+  such option, which is why the browser tools exist and should be preferred whenever the target is a
+  web page.
 - **Credentials in the environment.** A machine with no OS keychain — a headless server, a container,
   CI, some WSL setups — has nowhere secure to keep a key, so AgentOS falls back to reading
   `ANTHROPIC_API_KEY` and friends from the environment. Anything that can read the process

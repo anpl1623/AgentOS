@@ -504,7 +504,8 @@ impl Runtime {
     }
 }
 
-/// Build the registry every client gets: the built-in tools plus the browser.
+/// Build the registry every client gets: the built-in tools, the browser, and
+/// computer control.
 ///
 /// The composition root owns this so that the CLI and the desktop application
 /// cannot end up offering different tools for the same installation — and so
@@ -512,13 +513,36 @@ impl Runtime {
 /// actually given.
 ///
 /// Public and free of side effects: listing the tools should not create a
-/// database.
+/// database, launch a browser, or ask macOS for the Accessibility permission.
 #[must_use]
 pub fn build_registry(config: &RuntimeConfig) -> Arc<ToolRegistry> {
+    build_registry_with(agentos_browser::BrowserOptions::new(
+        config.browser_profiles(),
+    ))
+}
+
+/// The same registry, with the browser configured differently.
+///
+/// The demonstration runs headed so that a human can watch it work. That is the
+/// only reason this exists — a second registry composed by hand is how the
+/// catalogue and the runtime drift apart, which has happened here before.
+#[must_use]
+pub fn build_registry_with(browser: agentos_browser::BrowserOptions) -> Arc<ToolRegistry> {
+    build_registry_sharing(&Arc::new(agentos_browser::BrowserPool::new(browser)))
+}
+
+/// The same registry again, around a browser pool the caller already holds.
+///
+/// Only a test needs this: to assert that a run released its browser it has to
+/// be looking at the same pool the tools are using, and a second pool would make
+/// the assertion pass by being empty.
+#[must_use]
+pub fn build_registry_sharing(pool: &Arc<agentos_browser::BrowserPool>) -> Arc<ToolRegistry> {
     let mut registry = agentos_tools::standard_registry();
-    let options = agentos_browser::BrowserOptions::new(config.browser_profiles());
-    let (_pool, tools) = agentos_browser::build(options);
-    for tool in tools {
+    for tool in agentos_browser::browser_tools(Arc::clone(pool)) {
+        registry.register(tool);
+    }
+    for tool in agentos_computer::build() {
         registry.register(tool);
     }
     Arc::new(registry)

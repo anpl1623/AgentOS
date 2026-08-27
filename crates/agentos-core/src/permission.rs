@@ -51,6 +51,17 @@ pub enum ResourceRef {
         /// The origin.
         origin: String,
     },
+    /// An application on the user's desktop, by the name it reports.
+    ///
+    /// Unlike the other scoped kinds, this value is not resolved by the runtime:
+    /// a path is canonicalised and an origin comes from a browser AgentOS itself
+    /// launched, but an application name is whatever the process in front says
+    /// it is called. It scopes input to the window the operator meant; it is not
+    /// proof of identity.
+    Application {
+        /// The application name, e.g. `Mail`.
+        application: String,
+    },
     /// A named non-path resource, e.g. an integration account.
     Named {
         /// The resource name.
@@ -64,6 +75,7 @@ impl fmt::Display for ResourceRef {
             Self::Path { path } => write!(f, "path:{path}"),
             Self::Program { program } => write!(f, "program:{program}"),
             Self::Origin { origin } => write!(f, "origin:{origin}"),
+            Self::Application { application } => write!(f, "application:{application}"),
             Self::Named { name } => write!(f, "name:{name}"),
         }
     }
@@ -290,6 +302,43 @@ mod tests {
         });
         assert_eq!(cap.qualified_name(), "filesystem.write");
         assert_eq!(cap.to_string(), "filesystem.write on path:/tmp/x");
+    }
+
+    #[test]
+    fn every_resource_kind_renders_with_its_own_prefix() {
+        // Rules are compared by their rendered form, so two kinds sharing a
+        // prefix would be indistinguishable — an application rule and an
+        // integration-account rule of the same name would collapse into one.
+        let rendered = [
+            ResourceRef::Path {
+                path: "/tmp/x".into(),
+            },
+            ResourceRef::Program {
+                program: "git".into(),
+            },
+            ResourceRef::Origin {
+                origin: "https://example.com".into(),
+            },
+            ResourceRef::Application {
+                application: "Mail".into(),
+            },
+            ResourceRef::Named {
+                name: "Mail".into(),
+            },
+        ]
+        .map(|resource| resource.to_string());
+
+        let prefixes: Vec<&str> = rendered
+            .iter()
+            .filter_map(|text| text.split_once(':'))
+            .map(|(prefix, _)| prefix)
+            .collect();
+        assert_eq!(
+            prefixes,
+            vec!["path", "program", "origin", "application", "name"]
+        );
+        assert_eq!(rendered[3], "application:Mail");
+        assert_ne!(rendered[3], rendered[4]);
     }
 
     #[test]

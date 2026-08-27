@@ -71,12 +71,10 @@ mod tests {
     fn browser_tools_are_marked_as_returning_untrusted_data() {
         // A page an agent reads is the canonical source of injected text. If any
         // of these stopped raising taint, the escalation would silently vanish.
+        // Screenshots included: a capture of a hostile page is that page.
         let (_pool, tools) = build(BrowserOptions::new(std::env::temp_dir()));
         for tool in &tools {
             let metadata = tool.metadata();
-            if metadata.name == "browser.screenshot" {
-                continue;
-            }
             assert!(
                 metadata.returns_untrusted_data,
                 "`{}` reads the web and must raise taint",

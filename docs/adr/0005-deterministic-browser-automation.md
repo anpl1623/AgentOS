@@ -25,8 +25,9 @@ selector for each, so the model has something concrete to name rather than guess
 Screenshots exist — `browser.screenshot` — for a human to look at and for a future vision fallback.
 They are not how the agent decides where to click.
 
-The browser layer is kept separate from computer control, which does not exist yet. They solve
-different problems: a browser exposes structure, a native application generally does not.
+The browser layer is kept separate from computer control. They solve different problems: a browser
+exposes structure, a native application generally does not. See
+[ADR 6](0006-computer-control.md).
 
 AgentOS does not bundle or download a browser. It looks for one already installed, in a defined
 order, including Playwright-managed builds that many developers already have.

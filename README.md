@@ -179,8 +179,8 @@ This allows AgentOS to eventually support:
 
 without creating separate agent implementations.
 
-Today the runtime and a CLI client exist. The desktop interface is next, and it will consume the
-same runtime rather than reimplementing any of it.
+The runtime, a CLI and a desktop application exist today. The two clients consume the same runtime
+and hold no agent logic of their own.
 
 For the detail — how the trust boundary, the policy engine, taint tracking and the audit chain
 actually work — see [`docs/architecture.md`](docs/architecture.md) and the decision records in
@@ -198,6 +198,7 @@ actually work — see [`docs/architecture.md`](docs/architecture.md) and the dec
 | `agentos-tools` | Tool trait, registry, and the authorisation pipeline |
 | `agentos-providers` | Anthropic, OpenAI-compatible, and mock model providers |
 | `agentos-browser` | Deterministic browser automation over CDP |
+| `agentos-computer` | Screen, mouse and keyboard, scoped to the application in front |
 | `agentos-demo` | The mock CRM and the demonstration scenario |
 | `apps/desktop` | The desktop application — Tauri 2, React, TypeScript |
 | `agentos-runtime` | Task state machine, agent loop, composition root |
@@ -265,12 +266,13 @@ Initial capabilities include:
 
 ### Computer
 
-- Screenshots
+- Screenshots — of one window, or of a whole display
 - Mouse control
 - Keyboard input
 - Clicking
 - Dragging
 - Scrolling
+- Window and display inspection
 
 ### Browser
 
@@ -299,9 +301,16 @@ Initial capabilities include:
 
 All capabilities are subject to the AgentOS permission system.
 
-**Built today:** filesystem, terminal and browser. Run `agentos tools` to see the current catalogue,
-including which tools return attacker-controllable data and therefore raise the approval bar for the
-rest of a run. Computer control is next.
+**Built today:** filesystem, terminal, browser and computer control. Run `agentos tools` to see the
+current catalogue, including which tools return attacker-controllable data and therefore raise the
+approval bar for the rest of a run.
+
+Computer control is scoped to the **application in front**: a call names the application it is for,
+that name has to be the one with focus, and the check is repeated before every individual keystroke.
+It is a real narrowing and an honestly narrow one — it binds who receives an event, never what the
+event does. Prefer the browser tools whenever the target is a web page, and read the limitations in
+[`SECURITY.md`](SECURITY.md) before granting `computer.type` to anything. See
+[ADR 6](docs/adr/0006-computer-control.md).
 
 Browser interaction is deterministic — CSS selectors over the Chrome DevTools Protocol, not
 screenshots and coordinates. `browser.click #send-button` is a reviewable action in a way that
@@ -436,7 +445,9 @@ That is enforced structurally rather than by asking the model nicely:
 - **Paths are resolved before they are checked.** `../` and symlinks are resolved to where they
   really point, including for files that do not exist yet, and only then tested for containment.
 - **Agents cannot escalate.** `runtime.modify_policy`, `modify_agent`, `disable_audit` and
-  `disable_approvals` are permanently denied and cannot be granted by any policy.
+  `disable_approvals` are permanently denied and cannot be granted by any policy. Nor can an agent
+  reach the approval prompt physically: the computer tools refuse to send input to AgentOS's own
+  process, whatever the policy says.
 - **The audit log is append-only and tamper-evident.** SQLite triggers refuse `UPDATE` and `DELETE`;
   a SHA-256 chain makes edits detectable.
 
@@ -505,7 +516,7 @@ AgentOS is currently under active development. The architecture and APIs are exp
 - Human approval as a runtime primitive — persisted, resumable, and auditable
 - The append-only, hash-chained audit log
 - SQLite persistence for agents, tasks, runs, traces, approvals and memory
-- Filesystem, terminal and browser tools
+- Filesystem, terminal, browser and computer-control tools
 - Model providers: Anthropic, any OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio, vLLM),
   and a scripted mock
 - The `agentos` CLI
@@ -515,8 +526,7 @@ AgentOS is currently under active development. The architecture and APIs are exp
 - An end-to-end demonstration: a local mock CRM, driven by a real browser, with a prompt-injection
   payload planted in one of the customer records
 
-**Not built yet:** computer control, the scheduler, the orchestrator, and integrations. See the
-roadmap below.
+**Not built yet:** the scheduler, the orchestrator, and integrations. See the roadmap below.
 
 The project is **not yet intended for unrestricted autonomous operation of production businesses.**
 
@@ -544,13 +554,14 @@ alongside the execution loop rather than after it.
 
 ## Phase 2 — Computer Control
 
-- [ ] macOS computer control
-- [ ] Windows computer control
-- [ ] Screenshots
-- [ ] Mouse interaction
-- [ ] Keyboard interaction
-- [ ] Application interaction
-- [ ] Accessibility permission detection
+- [x] macOS computer control
+- [x] Windows computer control
+- [x] Screenshots — one window, or a whole display
+- [x] Mouse interaction — move, click, drag, scroll
+- [x] Keyboard interaction — text and single keys with modifiers
+- [x] Application interaction — capabilities scoped to the application in front
+- [x] Accessibility permission detection — reported by `agentos doctor`
+- [ ] Vision: giving the model the screenshot it takes
 
 ## Phase 3 — Browser
 
@@ -746,6 +757,12 @@ permissions:
     navigate:
       effect: allow
       origins: ["https://*.example.com"]
+
+  computer:
+    screenshot: ask
+    type:
+      effect: ask
+      applications: [Mail]
 
   payments:
     execute: deny
