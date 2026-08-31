@@ -59,12 +59,7 @@ pub async fn run(args: DemoArgs, config: &RuntimeConfig) -> Result<()> {
         // agent work means composing a registry with headed browser tools and
         // installing it. Everything else about the run is identical.
         let options = agentos_browser::BrowserOptions::new(config.browser_profiles()).headed(true);
-        let mut registry = agentos_tools::standard_registry();
-        let (_pool, tools) = agentos_browser::build(options);
-        for tool in tools {
-            registry.register(tool);
-        }
-        runtime.set_registry(std::sync::Arc::new(registry));
+        runtime.set_registry(agentos_runtime::build_registry_with(options));
     }
 
     let crm = MockCrm::start().await.context("starting the mock CRM")?;

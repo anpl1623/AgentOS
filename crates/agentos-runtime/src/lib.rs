@@ -254,6 +254,50 @@ impl Runtime {
         approvals: Arc<dyn ApprovalGate>,
         cancel: CancellationToken,
     ) -> Result<RunOutcome, RuntimeError> {
+        let prepared = self.prepare_run(task, approvals, cancel).await?;
+        self.drive(prepared).await
+    }
+
+    /// Begin a run and hand back its identity immediately.
+    ///
+    /// The run proceeds in the background. A user interface needs this: it has
+    /// to show the trace of a run that may take minutes, so it cannot wait for
+    /// the run to finish before learning what to show.
+    ///
+    /// The returned handle resolves to the same outcome [`Self::run_task`]
+    /// would produce. Dropping it does not stop the run — use
+    /// [`Self::cancel_run`], which is what the operator's stop button does.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError`] if the run cannot be started. Once started, failures
+    /// are reported through the outcome rather than here.
+    pub async fn start_task(
+        &self,
+        task: &Task,
+        approvals: Arc<dyn ApprovalGate>,
+        cancel: CancellationToken,
+    ) -> Result<
+        (
+            TaskRunId,
+            tokio::task::JoinHandle<Result<RunOutcome, RuntimeError>>,
+        ),
+        RuntimeError,
+    > {
+        let prepared = self.prepare_run(task, approvals, cancel).await?;
+        let run_id = prepared.run.id;
+        let runtime = self.clone();
+        let handle = tokio::spawn(async move { runtime.drive(prepared).await });
+        Ok((run_id, handle))
+    }
+
+    /// Everything a run needs, assembled but not yet started.
+    async fn prepare_run(
+        &self,
+        task: &Task,
+        approvals: Arc<dyn ApprovalGate>,
+        cancel: CancellationToken,
+    ) -> Result<PreparedRun, RuntimeError> {
         let agent = self.database.agents().get(task.agent_id).await?;
         if !agent.is_enabled() {
             return Err(RuntimeError::DisabledAgent(agent.name));
@@ -291,18 +335,32 @@ impl Runtime {
         })?;
 
         let context = ToolContext::new(agent.id, task.id, run.id, workspace);
-        let objective = task.objective.clone();
 
-        let agent_loop = AgentLoop::new(
+        Ok(PreparedRun {
+            objective: task.objective.clone(),
             agent,
             run,
-            self.database.clone(),
             provider,
             pipeline,
             machine,
             context,
-            Arc::new(TaintTracker::new()),
             cancel,
+        })
+    }
+
+    /// Drive a prepared run to a terminal state.
+    async fn drive(&self, prepared: PreparedRun) -> Result<RunOutcome, RuntimeError> {
+        let objective = prepared.objective;
+        let agent_loop = AgentLoop::new(
+            prepared.agent,
+            prepared.run,
+            self.database.clone(),
+            prepared.provider,
+            prepared.pipeline,
+            prepared.machine,
+            prepared.context,
+            Arc::new(TaintTracker::new()),
+            prepared.cancel,
         );
 
         let outcome = agent_loop.run(&objective).await;
@@ -446,7 +504,8 @@ impl Runtime {
     }
 }
 
-/// Build the registry every client gets: the built-in tools plus the browser.
+/// Build the registry every client gets: the built-in tools, the browser, and
+/// computer control.
 ///
 /// The composition root owns this so that the CLI and the desktop application
 /// cannot end up offering different tools for the same installation — and so
@@ -454,16 +513,64 @@ impl Runtime {
 /// actually given.
 ///
 /// Public and free of side effects: listing the tools should not create a
-/// database.
+/// database, launch a browser, or ask macOS for the Accessibility permission.
 #[must_use]
 pub fn build_registry(config: &RuntimeConfig) -> Arc<ToolRegistry> {
+    build_registry_with(agentos_browser::BrowserOptions::new(
+        config.browser_profiles(),
+    ))
+}
+
+/// The same registry, with the browser configured differently.
+///
+/// The demonstration runs headed so that a human can watch it work. That is the
+/// only reason this exists — a second registry composed by hand is how the
+/// catalogue and the runtime drift apart, which has happened here before.
+#[must_use]
+pub fn build_registry_with(browser: agentos_browser::BrowserOptions) -> Arc<ToolRegistry> {
+    build_registry_sharing(&Arc::new(agentos_browser::BrowserPool::new(browser)))
+}
+
+/// The same registry again, around a browser pool the caller already holds.
+///
+/// Only a test needs this: to assert that a run released its browser it has to
+/// be looking at the same pool the tools are using, and a second pool would make
+/// the assertion pass by being empty.
+#[must_use]
+pub fn build_registry_sharing(pool: &Arc<agentos_browser::BrowserPool>) -> Arc<ToolRegistry> {
     let mut registry = agentos_tools::standard_registry();
-    let options = agentos_browser::BrowserOptions::new(config.browser_profiles());
-    let (_pool, tools) = agentos_browser::build(options);
-    for tool in tools {
+    for tool in agentos_browser::browser_tools(Arc::clone(pool)) {
+        registry.register(tool);
+    }
+    for tool in agentos_computer::build() {
         registry.register(tool);
     }
     Arc::new(registry)
+}
+
+/// A run that has been assembled but not started.
+///
+/// Splitting assembly from execution is what lets a caller learn a run's
+/// identity before it finishes — the row exists and the state machine is ready,
+/// but no model has been called yet.
+struct PreparedRun {
+    objective: String,
+    agent: Agent,
+    run: TaskRun,
+    provider: agentos_providers::SharedProvider,
+    pipeline: ToolPipeline,
+    machine: Arc<RunStateMachine>,
+    context: ToolContext,
+    cancel: CancellationToken,
+}
+
+impl std::fmt::Debug for PreparedRun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedRun")
+            .field("agent", &self.agent.name)
+            .field("run", &self.run.id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Everything recorded about one run.

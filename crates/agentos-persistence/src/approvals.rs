@@ -38,8 +38,9 @@ impl ApprovalRepository {
         sqlx::query(
             "INSERT INTO approvals (id, agent_id, agent_name, task_id, run_id, tool, arguments,
                                     capability, risk, reason, explanation, affected_resources,
-                                    tainted, status, requested_at, decided_at, decision_note)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                                    tainted, taint_sources, status, requested_at, decided_at,
+                                    decision_note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         )
         .bind(request.id.to_string())
         .bind(request.agent_id.to_string())
@@ -57,6 +58,7 @@ impl ApprovalRepository {
             &request.affected_resources,
         )?)
         .bind(i64::from(request.tainted))
+        .bind(write_json("taint_sources", &request.taint_sources)?)
         .bind(request.status.as_str())
         .bind(write_time(&request.requested_at))
         .bind(crate::convert::write_optional_time(
@@ -209,6 +211,11 @@ fn hydrate(row: &sqlx::sqlite::SqliteRow) -> Result<ApprovalRequest, DbError> {
             row.try_get::<String, _>("affected_resources")?.as_str(),
         )?,
         tainted: row.try_get::<i64, _>("tainted")? != 0,
+        taint_sources: read_json(
+            TABLE,
+            "taint_sources",
+            row.try_get::<String, _>("taint_sources")?.as_str(),
+        )?,
         status: read_unit_enum::<ApprovalStatus>(
             TABLE,
             "status",
@@ -271,6 +278,7 @@ pub(crate) mod tests {
             explanation: "Send an order update to customer@example.com.".to_owned(),
             affected_resources: vec!["customer@example.com".to_owned()],
             tainted: true,
+            taint_sources: vec!["web:https://crm.example/customers/7".to_owned()],
             status: ApprovalStatus::Pending,
             requested_at: agentos_core::now(),
             decided_at: None,

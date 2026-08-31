@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The AgentOS window. Core APIs only — no filesystem, shell or HTTP plugin is granted to the webview, because everything the interface needs goes through the runtime's own command surface, where the policy engine can see it.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

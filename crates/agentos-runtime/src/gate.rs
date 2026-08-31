@@ -147,6 +147,7 @@ mod tests {
             explanation: "writes a file".into(),
             affected_resources: vec![],
             tainted: false,
+            taint_sources: vec![],
             status: ApprovalStatus::Pending,
             requested_at: agentos_core::now(),
             decided_at: None,

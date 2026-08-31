@@ -116,6 +116,21 @@ pub async fn run(config: &RuntimeConfig) -> Result<()> {
         ),
     }
 
+    // Computer control needs the operating system's permission, and on macOS it
+    // needs two separate ones. Better to learn that here than half-way through a
+    // task. Like the browser row, a missing grant is a fact about the machine
+    // rather than a broken install, so it does not count as a problem.
+    let preflight = agentos_computer::preflight();
+    if preflight.supported {
+        report_grant(&style, "input", preflight.input, INPUT_REMEDY);
+        report_grant(&style, "screen", preflight.capture, CAPTURE_REMEDY);
+    } else {
+        println!(
+            "  {} computer       not supported on this platform — the computer tools will refuse",
+            style.yellow("--")
+        );
+    }
+
     println!();
     if problems == 0 {
         println!("{}", style.green("Everything checks out."));
@@ -166,4 +181,25 @@ pub async fn run(config: &RuntimeConfig) -> Result<()> {
 /// Keychain errors are often multi-line; the first line is the useful part.
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or(text)
+}
+
+/// Where macOS keeps the two grants computer control needs.
+const INPUT_REMEDY: &str = "System Settings > Privacy & Security > Accessibility";
+const CAPTURE_REMEDY: &str = "System Settings > Privacy & Security > Screen Recording";
+
+/// One operating-system permission, in the same shape as the rows above.
+fn report_grant(style: &Style, label: &str, grant: agentos_computer::Grant, remedy: &str) {
+    match grant {
+        agentos_computer::Grant::Granted => {
+            println!("  {} {label:<14} granted", style.green("ok"));
+        }
+        agentos_computer::Grant::Missing => {
+            println!(
+                "  {} {label:<14} not granted — allow AgentOS in {remedy}",
+                style.yellow("--")
+            );
+        }
+        // Nothing to report on a platform that does not gate it.
+        agentos_computer::Grant::NotApplicable => {}
+    }
 }

@@ -84,6 +84,12 @@ pub struct ApprovalRequest {
     /// Surfaced prominently: "this agent has read a webpage" changes how a human
     /// should read the request.
     pub tainted: bool,
+    /// Where that untrusted data came from, most useful first.
+    ///
+    /// Data rather than a sentence, so each client writes its own: the terminal
+    /// wants one line, a window wants a highlighted panel, and neither should be
+    /// parsing prose the runtime composed for the other.
+    pub taint_sources: Vec<String>,
     /// Current status.
     pub status: ApprovalStatus,
     /// When it was raised.

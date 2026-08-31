@@ -50,6 +50,32 @@ impl NamePattern {
     }
 }
 
+/// Which sort of thing a resource is.
+///
+/// Exists so that comparing a pattern against a resource is a comparison of
+/// kinds first and values second, and so that adding a [`ResourceRef`] variant
+/// without teaching the matcher about it fails to compile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceKind {
+    Path,
+    Program,
+    Origin,
+    Application,
+    Named,
+}
+
+impl ResourceKind {
+    const fn of(resource: &ResourceRef) -> Self {
+        match resource {
+            ResourceRef::Path { .. } => Self::Path,
+            ResourceRef::Program { .. } => Self::Program,
+            ResourceRef::Origin { .. } => Self::Origin,
+            ResourceRef::Application { .. } => Self::Application,
+            ResourceRef::Named { .. } => Self::Named,
+        }
+    }
+}
+
 /// Matches the resource half of a capability.
 #[derive(Debug, Clone)]
 pub enum ResourcePattern {
@@ -69,6 +95,13 @@ pub enum ResourcePattern {
     },
     /// Matches a network origin by glob.
     Origin {
+        /// Source text.
+        source: String,
+        /// Compiled matcher.
+        matcher: GlobMatcher,
+    },
+    /// Matches a desktop application by glob.
+    Application {
         /// Source text.
         source: String,
         /// Compiled matcher.
@@ -101,6 +134,7 @@ impl ResourcePattern {
         Ok(match kind {
             GlobKind::Program => Self::Program { source, matcher },
             GlobKind::Origin => Self::Origin { source, matcher },
+            GlobKind::Application => Self::Application { source, matcher },
             GlobKind::Named => Self::Named { source, matcher },
         })
     }
@@ -111,28 +145,57 @@ impl ResourcePattern {
         Self::PathPrefix { root }
     }
 
+    /// The kind of resource this pattern is written against.
+    ///
+    /// `None` for [`Self::Any`], which is not about any one kind.
+    const fn kind(&self) -> Option<ResourceKind> {
+        match self {
+            Self::Any => None,
+            Self::PathPrefix { .. } => Some(ResourceKind::Path),
+            Self::Program { .. } => Some(ResourceKind::Program),
+            Self::Origin { .. } => Some(ResourceKind::Origin),
+            Self::Application { .. } => Some(ResourceKind::Application),
+            Self::Named { .. } => Some(ResourceKind::Named),
+        }
+    }
+
     /// Whether this pattern matches `resource`.
     ///
     /// A capability with no resource is matched only by [`Self::Any`]: a rule
     /// scoped to specific paths must not silently apply to an unscoped request.
+    ///
+    /// Kinds are compared before values, through a private `ResourceKind`, so
+    /// that a new resource kind is a compile error here — in the function that
+    /// decides authorisation — rather than a silent refusal to match.
     #[must_use]
     pub fn matches(&self, resource: Option<&ResourceRef>) -> bool {
+        let Some(resource) = resource else {
+            return matches!(self, Self::Any);
+        };
+        // A pattern of one kind never matches a resource of another.
+        if self
+            .kind()
+            .is_some_and(|kind| kind != ResourceKind::of(resource))
+        {
+            return false;
+        }
         match (self, resource) {
             (Self::Any, _) => true,
-            (_, None) => false,
-            (Self::PathPrefix { root }, Some(ResourceRef::Path { path })) => {
+            (Self::PathPrefix { root }, ResourceRef::Path { path }) => {
                 is_within(root, Path::new(path))
             }
-            (Self::Program { matcher, .. }, Some(ResourceRef::Program { program })) => {
+            (Self::Program { matcher, .. }, ResourceRef::Program { program }) => {
                 matcher.is_match(program)
             }
-            (Self::Origin { matcher, .. }, Some(ResourceRef::Origin { origin })) => {
+            (Self::Origin { matcher, .. }, ResourceRef::Origin { origin }) => {
                 matcher.is_match(origin)
             }
-            (Self::Named { matcher, .. }, Some(ResourceRef::Named { name })) => {
-                matcher.is_match(name)
+            (Self::Application { matcher, .. }, ResourceRef::Application { application }) => {
+                matcher.is_match(application)
             }
-            // A pattern of one kind never matches a resource of another.
+            (Self::Named { matcher, .. }, ResourceRef::Named { name }) => matcher.is_match(name),
+            // Unreachable: the kinds agreed, so the pair is one of the above.
+            // Refusing is the right answer if that ever stops being true.
             _ => false,
         }
     }
@@ -152,6 +215,7 @@ impl ResourcePattern {
             }
             Self::Program { source, .. }
             | Self::Origin { source, .. }
+            | Self::Application { source, .. }
             | Self::Named { source, .. } => {
                 if source == "*" {
                     1
@@ -172,6 +236,7 @@ impl ResourcePattern {
             Self::PathPrefix { root } => format!("path:{}", root.display()),
             Self::Program { source, .. } => format!("program:{source}"),
             Self::Origin { source, .. } => format!("origin:{source}"),
+            Self::Application { source, .. } => format!("application:{source}"),
             Self::Named { source, .. } => format!("name:{source}"),
         }
     }
@@ -184,6 +249,8 @@ pub enum GlobKind {
     Program,
     /// A network origin.
     Origin,
+    /// A desktop application.
+    Application,
     /// A named resource.
     Named,
 }
@@ -237,6 +304,37 @@ mod tests {
         assert!(!pattern.matches(Some(&ResourceRef::Program {
             program: "/home/bin/x".into()
         })));
+
+        // An application and an integration account can share a name. A rule
+        // about one must not authorise the other.
+        let application = ResourcePattern::glob(GlobKind::Application, "Mail").unwrap();
+        let named = ResourcePattern::glob(GlobKind::Named, "Mail").unwrap();
+        assert!(application.matches(Some(&ResourceRef::Application {
+            application: "Mail".into()
+        })));
+        assert!(!application.matches(Some(&ResourceRef::Named {
+            name: "Mail".into()
+        })));
+        assert!(!named.matches(Some(&ResourceRef::Application {
+            application: "Mail".into()
+        })));
+        assert_ne!(application, named);
+    }
+
+    #[test]
+    fn application_globs_match_by_name() {
+        let pattern = ResourcePattern::glob(GlobKind::Application, "Mail").unwrap();
+        assert!(pattern.matches(Some(&ResourceRef::Application {
+            application: "Mail".into()
+        })));
+        // Matching is case-sensitive and anchored, so a lookalike is refused.
+        assert!(!pattern.matches(Some(&ResourceRef::Application {
+            application: "Mail Stealer".into()
+        })));
+        assert!(!pattern.matches(Some(&ResourceRef::Application {
+            application: "mail".into()
+        })));
+        assert_eq!(pattern.describe(), "application:Mail");
     }
 
     #[test]

@@ -20,7 +20,7 @@ response to them:
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  Clients            agentos-cli          (desktop app, later)    │
+│  Clients            agentos-cli          apps/desktop            │
 ├──────────────────────────────────────────────────────────────────┤
 │  Runtime            agentos-runtime                              │
 │                     state machine · agent loop · approval gate   │
@@ -28,8 +28,10 @@ response to them:
 │  Execution          agentos-tools        agentos-providers       │
 │                     pipeline · registry  anthropic · openai ·    │
 │                     filesystem · terminal  mock                  │
-│                     agentos-browser      agentos-demo            │
-│                     CDP · sessions       mock CRM · scenario     │
+│                     agentos-browser      agentos-computer        │
+│                     CDP · sessions       screen · input          │
+│                     agentos-demo                                 │
+│                     mock CRM · scenario                          │
 ├──────────────────────────────────────────────────────────────────┤
 │  Policy             agentos-permissions                          │
 │                     policy engine · path sandboxing              │
@@ -152,6 +154,37 @@ Everything read from a page is `DataSource::Web`, tagged with the URL, and taint
 record whose notes field contains "ignore your instructions" is data about what somebody typed into a
 CRM. See [ADR 5](adr/0005-deterministic-browser-automation.md).
 
+## Computer control
+
+The browser knows what it is clicking. A desktop does not: a keystroke goes wherever focus is, and
+what it means there depends on what is underneath. So the scope on offer is the **application in
+front**, as a `ResourceRef::Application` matched by glob, and three rules make it mean something.
+
+- **The caller names its target.** Every `computer.*` call carries the application it is for, and
+  planning refuses unless that application has focus. A tool that resolved the target for itself at
+  execution time would faithfully type the message it was authorised to send to Mail into whatever
+  had taken focus in the meantime.
+- **Not knowing is a refusal.** With nothing in front, the call fails rather than falling back to an
+  unscoped capability — which any rule listing no resources would match.
+- **AgentOS is never a target.** An agent that can click can click Approve. This is the one place a
+  tool overrides the policy engine instead of consulting it, because `IMMUTABLE_DENY` is a list of
+  `(domain, action)` pairs and has no resource to hang the rule on.
+
+Focus is re-read before every individual event, not once per call, so a change part-way through a
+piece of typing stops the rest of it rather than splitting a password across two windows. What
+already landed cannot be recalled, and the error says how much did.
+
+`Desktop` is the entire platform boundary — macOS and Windows have a backend, everything else
+refuses — and the shipped `RecordingDesktop` lets a policy be exercised with no screen involved. The
+authorisation logic therefore runs on every platform in CI, including the one that could never
+perform the actions.
+
+Window titles and screenshots are both `DataSource::Screen`, and taint-raising. Reading the screen is
+the broadest read in the system, and a capture cannot be put inside the nonce envelope that
+neutralises text. What the scope does *not* do — bind what an event means, verify that an
+application is what it says it is — is in [`SECURITY.md`](../SECURITY.md). See
+[ADR 6](adr/0006-computer-control.md).
+
 ## Taint tracking
 
 `TaintTracker` records whether a run has ingested externally-influenced data. Once it has, the policy
@@ -245,7 +278,6 @@ so it runs on every commit rather than being a demo somebody performs occasional
 
 ## Roadmap
 
-**Next:** the Tauri 2 desktop application — dashboard, agents, tasks with live traces, the approval
-card, activity, settings — consuming this runtime with no logic of its own; computer control for
-macOS and Windows behind one Rust interface; scheduler; orchestrator with task graphs; multi-agent
-delegation; plugins.
+**Next:** giving the model the screenshots it can already take, so a native application with no
+usable structure is reachable; a scheduler; an orchestrator with task graphs; multi-agent delegation;
+plugins; and the integrations in the README's phase 6.

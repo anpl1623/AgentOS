@@ -977,7 +977,11 @@ impl Screenshot {
                     Capability::new(permission_domains::BROWSER, "read"),
                     Capability::new(permission_domains::FILESYSTEM, "write"),
                 ],
-                false,
+                // A capture of a page is a read of that page. The model cannot
+                // see the image today, but the run has still looked at the
+                // outside world, and the file on disk is a decoder away from
+                // being in the context window.
+                true,
             ),
             pool,
         }
@@ -1070,7 +1074,7 @@ impl Tool for Screenshot {
             .map_err(|source| ToolError::io("writing the screenshot", source))?;
 
         Ok(ToolOutput::text(
-            DataSource::Runtime,
+            DataSource::Web { url: url.clone() },
             format!(
                 "Saved a {bytes}-byte screenshot of {url} to {}",
                 destination.display()

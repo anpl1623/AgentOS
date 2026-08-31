@@ -48,7 +48,10 @@ smell worth discussing.
    Reading a file you may read and writing it somewhere you may not is still exfiltration.
 4. Set `returns_untrusted_data: true` if the output could be influenced by anyone other than the
    operator. This is what drives taint escalation, and getting it wrong quietly removes a control.
-5. Register it in `standard_registry()`.
+5. Register it in `standard_registry()`, or — if the tool family needs its own crate, the way the
+   browser and computer layers do — in `agentos_runtime::build_registry`. There is one composition
+   root on purpose: a second registry assembled by hand is how the catalogue and the runtime drift
+   apart, which has happened here before.
 6. Write tests for the ways it could be misused, not only the way it is meant to be used.
 
 `plan` must be free of side effects. It runs before authorisation, and the whole model depends on

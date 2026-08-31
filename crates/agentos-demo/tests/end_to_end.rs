@@ -27,7 +27,7 @@ use agentos_demo::{MockCrm, crm};
 use agentos_providers::{MockProvider, ScriptedTurn};
 use agentos_runtime::{FixedProviderFactory, RunOutcome, Runtime};
 use agentos_secrets::InMemorySecretStore;
-use agentos_tools::{RecordingGate, ToolRegistry};
+use agentos_tools::RecordingGate;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
@@ -63,19 +63,14 @@ impl Harness {
             .await
             .unwrap();
 
-        // Standard tools plus the browser, sharing one pool.
-        let (pool, browser_tools) =
-            agentos_browser::build(BrowserOptions::new(root.join("browser-profiles")));
-        let mut registry = ToolRegistry::new();
-        for tool in agentos_tools::standard_registry().names() {
-            if let Some(tool) = agentos_tools::standard_registry().get(&tool) {
-                registry.register(tool);
-            }
-        }
-        for tool in browser_tools {
-            registry.register(tool);
-        }
-        runtime.set_registry(Arc::new(registry));
+        // The registry the runtime composes, not a hand-built lookalike: this
+        // test is meant to exercise what an installation actually offers. The
+        // pool is shared so that the assertion about released sessions is
+        // looking at the same pool the tools used.
+        let pool = Arc::new(agentos_browser::BrowserPool::new(BrowserOptions::new(
+            root.join("browser-profiles"),
+        )));
+        runtime.set_registry(agentos_runtime::build_registry_sharing(&pool));
 
         let agent = runtime
             .create_agent(

@@ -802,10 +802,23 @@ async fn the_approval_card_names_what_the_agent_has_been_reading() {
         )
         .await;
 
+    // The sources travel as data, not as a sentence baked into the explanation:
+    // a terminal and a window want to word this differently, and neither should
+    // be parsing prose the runtime composed for the other.
     let request = harness.gate.requests().await.remove(0);
     assert!(request.tainted);
-    assert!(request.explanation.contains("untrusted.txt"));
-    assert!(request.explanation.contains("read untrusted data"));
+    assert!(
+        request
+            .taint_sources
+            .iter()
+            .any(|source| source.contains("untrusted.txt")),
+        "expected the source to be named: {:?}",
+        request.taint_sources
+    );
+    assert!(
+        !request.explanation.contains("read untrusted data"),
+        "the explanation should describe the action, not narrate the taint state"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -80,6 +80,15 @@ pub enum DataSource {
         /// The program that produced the output.
         program: String,
     },
+    /// A capture of the screen.
+    ///
+    /// Pixels are content like any other. A hostile page rendered in a window is
+    /// as attacker-controlled as the same page read through the DOM, and unlike
+    /// text there is no envelope to put it in.
+    Screen {
+        /// What was captured — an application name, or a display.
+        target: String,
+    },
 }
 
 impl DataSource {
@@ -93,6 +102,7 @@ impl DataSource {
             Self::Web { url } => format!("web:{url}"),
             Self::File { path } => format!("file:{path}"),
             Self::Terminal { program } => format!("terminal:{program}"),
+            Self::Screen { target } => format!("screen:{target}"),
         }
     }
 
@@ -104,9 +114,11 @@ impl DataSource {
     pub const fn is_externally_influenced(&self) -> bool {
         match self {
             Self::User | Self::Runtime => false,
-            Self::Tool { .. } | Self::Web { .. } | Self::File { .. } | Self::Terminal { .. } => {
-                true
-            }
+            Self::Tool { .. }
+            | Self::Web { .. }
+            | Self::File { .. }
+            | Self::Terminal { .. }
+            | Self::Screen { .. } => true,
         }
     }
 }
@@ -517,6 +529,13 @@ mod tests {
             }
             .is_externally_influenced()
         );
+        // A screen capture is the broadest read in the system: whatever is on
+        // the display, including windows the agent was never granted.
+        let screen = DataSource::Screen {
+            target: "Mail".into(),
+        };
+        assert!(screen.is_externally_influenced());
+        assert_eq!(screen.label(), "screen:Mail");
         assert!(!DataSource::User.is_externally_influenced());
         assert!(!DataSource::Runtime.is_externally_influenced());
     }

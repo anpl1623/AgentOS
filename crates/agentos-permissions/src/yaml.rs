@@ -14,8 +14,11 @@
 //!
 //! permissions:
 //!   computer:
-//!     mouse: allow
-//!     keyboard: allow
+//!     screenshot: ask
+//!     click: [Mail]                    # shorthand: allow, but only while Mail is in front
+//!     type:
+//!       effect: ask
+//!       applications: [Mail]
 //!
 //!   filesystem:
 //!     read: [~/Documents/Sales]        # shorthand: allow, scoped to these paths
@@ -146,6 +149,9 @@ pub struct DetailedSpec {
     /// Network origins or globs.
     #[serde(default)]
     pub origins: Vec<String>,
+    /// Desktop application names or globs.
+    #[serde(default)]
+    pub applications: Vec<String>,
     /// Named resources or globs.
     #[serde(default)]
     pub names: Vec<String>,
@@ -218,6 +224,7 @@ fn compile_rule(
     for (kind, values) in [
         (GlobKind::Program, &detailed.programs),
         (GlobKind::Origin, &detailed.origins),
+        (GlobKind::Application, &detailed.applications),
         (GlobKind::Named, &detailed.names),
     ] {
         for raw in values {
@@ -266,6 +273,10 @@ fn shorthand_to_detailed(domain: &str, resources: &[String]) -> DetailedSpec {
         },
         domains::BROWSER | domains::NETWORK => DetailedSpec {
             origins: values,
+            ..DetailedSpec::default()
+        },
+        domains::COMPUTER => DetailedSpec {
+            applications: values,
             ..DetailedSpec::default()
         },
         _ => DetailedSpec {
@@ -505,6 +516,49 @@ permissions:
             RiskLevel::Medium,
         );
         assert_eq!(engine.evaluate(&remote).effect, Effect::Deny);
+    }
+
+    #[test]
+    fn computer_shorthand_infers_application_patterns() {
+        // Before `computer` had its own arm this fell through to `names`, which
+        // compiles happily and then matches nothing — an operator would write an
+        // application allowlist, watch every call be denied, and be tempted to
+        // replace it with an unscoped `allow`.
+        let yaml = "permissions:\n  computer:\n    click: [Mail]\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+
+        let allowed = PermissionRequest::new(
+            "computer.click",
+            Capability::new("computer", "click").with_resource(ResourceRef::Application {
+                application: "Mail".into(),
+            }),
+            RiskLevel::High,
+        );
+        assert_eq!(engine.evaluate(&allowed).effect, Effect::Allow);
+
+        let elsewhere = PermissionRequest::new(
+            "computer.click",
+            Capability::new("computer", "click").with_resource(ResourceRef::Application {
+                application: "Terminal".into(),
+            }),
+            RiskLevel::High,
+        );
+        assert_eq!(engine.evaluate(&elsewhere).effect, Effect::Deny);
+    }
+
+    #[test]
+    fn an_application_scoped_rule_refuses_a_call_with_no_application() {
+        // The backend failing to name the frontmost application must not become
+        // an unscoped grant.
+        let yaml = "permissions:\n  computer:\n    type:\n      effect: allow\n      applications: [Mail]\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+
+        let unscoped = PermissionRequest::new(
+            "computer.type",
+            Capability::new("computer", "type"),
+            RiskLevel::High,
+        );
+        assert_eq!(engine.evaluate(&unscoped).effect, Effect::Deny);
     }
 
     #[test]
