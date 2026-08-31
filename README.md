@@ -617,6 +617,23 @@ alongside the execution loop rather than after it.
 
 ---
 
+# Install
+
+Every release ships the desktop application for macOS, Windows and Linux, and the `agentos` CLI for
+four targets, on the [releases page](https://github.com/anpl1623/AgentOS/releases).
+
+**These builds are not code-signed.** AgentOS has no Apple Developer certificate and no Windows
+code-signing certificate. macOS will refuse to open the application on first launch — right-click and
+choose Open, or run `xattr -dr com.apple.quarantine /Applications/AgentOS.app` — and Windows
+SmartScreen will say the publisher is unknown. Neither is something to do to software you have not
+decided to trust, which is why building from source is a first-class path and takes one command.
+
+Every CLI archive ships a checksum beside it:
+
+```bash
+sha256sum -c agentos-0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+```
+
 # Development
 
 ## Requirements

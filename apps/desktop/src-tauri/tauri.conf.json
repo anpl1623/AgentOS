@@ -33,6 +33,20 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "category": "DeveloperTool",
+    "publisher": "AgentOS Contributors",
+    "copyright": "Copyright (c) AgentOS Contributors. MIT licensed.",
+    "shortDescription": "A local-first runtime for AI agents that act on your computer.",
+    "longDescription": "AgentOS runs AI agents against your own machine under a deny-by-default policy, with human approval as a runtime primitive and an append-only, hash-chained audit log. The desktop application holds no agent logic of its own: it renders what the runtime reports and forwards what a person decides.",
+    "licenseFile": "../../../LICENSE",
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+      }
+    }
   }
 }
