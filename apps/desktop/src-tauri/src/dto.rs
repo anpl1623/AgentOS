@@ -512,6 +512,9 @@ pub struct CreateAgentInput {
     pub model: String,
     /// Base URL override, for OpenAI-compatible endpoints.
     pub base_url: Option<String>,
+    /// Whether this model can be shown images. `null` takes the provider's
+    /// default, which is off for a local endpoint whose model is unknown.
+    pub vision: Option<bool>,
     /// Tools to grant.
     pub tools: Vec<String>,
 }

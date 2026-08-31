@@ -24,7 +24,7 @@ use std::sync::Arc;
 use agentos_core::permission::{Capability, ResourceRef, permission_domains};
 use agentos_core::risk::RiskLevel;
 use agentos_core::tool::ToolMetadata;
-use agentos_core::trust::DataSource;
+use agentos_core::trust::{DataSource, UntrustedImage};
 use agentos_tools::{
     Tool, ToolContext, ToolError, ToolOutput, ToolPlan, metadata_for, parse_arguments,
 };
@@ -36,6 +36,14 @@ use tokio_util::sync::CancellationToken;
 use crate::desktop::{Desktop, FocusedApplication};
 use crate::error::ComputerError;
 use crate::input::{Axis, Button, InputAction, Key, Modifier, Point};
+
+/// The capability action that permits sending pixels to a model.
+///
+/// Separate from `screenshot` because they are different acts with different
+/// blast radii: one writes a file the operator owns, the other transmits the
+/// contents of their screen to somebody else's server. A policy that granted the
+/// first before this existed does not silently acquire the second.
+const VISION_ACTION: &str = "vision";
 
 /// Longest string `computer.type` will enter in one call.
 ///
@@ -309,8 +317,10 @@ pub enum CaptureTarget {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenshotArgs {
-    /// Filename to write inside the agent's workspace.
-    pub filename: String,
+    /// Filename to write inside the agent's workspace. Omit to capture without
+    /// keeping a copy on disk, which only makes sense alongside `attach`.
+    #[serde(default)]
+    pub filename: Option<String>,
     /// What to capture. Defaults to the window in front.
     #[serde(default)]
     pub target: CaptureTarget,
@@ -318,6 +328,14 @@ pub struct ScreenshotArgs {
     /// there, and refused for a display capture, which is nobody's window.
     #[serde(default)]
     pub application: Option<String>,
+    /// Whether to show the capture to the model.
+    ///
+    /// Off unless asked for. Saving a screenshot puts pixels on the operator's
+    /// own disk; showing one to a model sends them to a third party, and an
+    /// existing policy that permitted the first must not start permitting the
+    /// second because the runtime was upgraded.
+    #[serde(default)]
+    pub attach: bool,
 }
 
 /// Captures the screen as a PNG.
@@ -334,11 +352,13 @@ impl Screenshot {
         Self {
             metadata: metadata_for::<ScreenshotArgs>(
                 "computer.screenshot",
-                "Save a PNG of the window in front, or of a whole display, into the agent's \
-                 workspace. A display capture includes every other application visible on it.",
+                "Capture the window in front, or a whole display. Set `filename` to save a PNG \
+                 into the agent's workspace, set `attach` to be shown the image, or both. A \
+                 display capture includes every other application visible on it.",
                 RiskLevel::Medium,
                 vec![
                     Capability::new(permission_domains::COMPUTER, "screenshot"),
+                    Capability::new(permission_domains::COMPUTER, VISION_ACTION),
                     Capability::new(permission_domains::FILESYSTEM, "write"),
                 ],
                 true,
@@ -352,9 +372,18 @@ impl Screenshot {
     /// The same resolution every other write goes through, so a filename of
     /// `../../.ssh/authorized_keys` is caught here rather than trusted because
     /// it arrived through a screenshot tool.
-    fn destination(&self, filename: &str, context: &ToolContext) -> Result<PathBuf, ToolError> {
+    fn destination(
+        &self,
+        filename: Option<&String>,
+        context: &ToolContext,
+    ) -> Result<Option<PathBuf>, ToolError> {
+        let Some(filename) = filename else {
+            return Ok(None);
+        };
         let candidate = context.workspace.join(filename);
-        agentos_permissions::path::resolve_secure(&candidate).map_err(ToolError::Path)
+        agentos_permissions::path::resolve_secure(&candidate)
+            .map(Some)
+            .map_err(ToolError::Path)
     }
 }
 
@@ -366,10 +395,22 @@ impl Tool for Screenshot {
 
     fn validate(&self, arguments: &serde_json::Value) -> Result<serde_json::Value, ToolError> {
         let args: ScreenshotArgs = parse_arguments(&self.metadata.name, arguments)?;
-        if args.filename.trim().is_empty() {
+        if args
+            .filename
+            .as_ref()
+            .is_some_and(|name| name.trim().is_empty())
+        {
             return Err(ToolError::invalid(
                 &self.metadata.name,
                 "`filename` must not be empty",
+            ));
+        }
+        // A capture that is neither saved nor shown is a capture for nobody. It
+        // would still read the screen, so it is refused rather than run.
+        if args.filename.is_none() && !args.attach {
+            return Err(ToolError::invalid(
+                &self.metadata.name,
+                "set `filename` to save the capture, `attach` to be shown it, or both",
             ));
         }
         match (args.target, &args.application) {
@@ -391,16 +432,17 @@ impl Tool for Screenshot {
         context: &ToolContext,
     ) -> Result<ToolPlan, ToolError> {
         let args: ScreenshotArgs = parse_arguments(&self.metadata.name, arguments)?;
-        let destination = self.destination(&args.filename, context)?;
+        let destination = self.destination(args.filename.as_ref(), context)?;
 
         // A window capture can be scoped to the application; a display capture
         // cannot be scoped to anything, because a display is not one
         // application's. That asymmetry is the point of offering both.
-        let (capability, what) = match (args.target, args.application.clone()) {
+        let (capability, vision_capability, what) = match (args.target, args.application.clone()) {
             (CaptureTarget::Window, Some(application)) => {
                 require_in_front(self.desktop.as_ref(), &application).map_err(ToolError::from)?;
                 (
                     application_capability("screenshot", &application),
+                    application_capability(VISION_ACTION, &application),
                     format!("the {application} window"),
                 )
             }
@@ -412,22 +454,42 @@ impl Tool for Screenshot {
             }
             (CaptureTarget::Display, _) => (
                 Capability::new(permission_domains::COMPUTER, "screenshot"),
+                Capability::new(permission_domains::COMPUTER, VISION_ACTION),
                 "the whole display, including every other application on it".to_owned(),
             ),
         };
 
-        Ok(ToolPlan::new(
-            RiskLevel::Medium,
-            format!("Capture {what} to {}", destination.display()),
-        )
-        .requiring(capability)
-        .requiring(
-            Capability::new(permission_domains::FILESYSTEM, "write").with_resource(
-                ResourceRef::Path {
-                    path: destination.display().to_string(),
-                },
+        // Sending a whole display to a third party is the broadest egress in the
+        // system: every window on it, including the ones the agent was never
+        // granted and the ones the operator forgot were open.
+        let risk = match (args.attach, args.target) {
+            (true, CaptureTarget::Display) => RiskLevel::High,
+            _ => RiskLevel::Medium,
+        };
+
+        let summary = match (&destination, args.attach) {
+            (Some(path), true) => format!(
+                "Capture {what}, show it to the model, and save it to {}",
+                path.display()
             ),
-        ))
+            (Some(path), false) => format!("Capture {what} to {}", path.display()),
+            (None, _) => format!("Capture {what} and show it to the model"),
+        };
+
+        let mut plan = ToolPlan::new(risk, summary).requiring(capability);
+        if args.attach {
+            plan = plan.requiring(vision_capability);
+        }
+        if let Some(path) = &destination {
+            plan = plan.requiring(
+                Capability::new(permission_domains::FILESYSTEM, "write").with_resource(
+                    ResourceRef::Path {
+                        path: path.display().to_string(),
+                    },
+                ),
+            );
+        }
+        Ok(plan)
     }
 
     async fn execute(
@@ -437,7 +499,7 @@ impl Tool for Screenshot {
         _cancel: CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
         let args: ScreenshotArgs = parse_arguments(&self.metadata.name, &arguments)?;
-        let destination = self.destination(&args.filename, context)?;
+        let destination = self.destination(args.filename.as_ref(), context)?;
 
         let desktop = Arc::clone(&self.desktop);
         let target = args.target;
@@ -465,37 +527,78 @@ impl Tool for Screenshot {
         .map_err(|error| ToolError::Failed(error.to_string()))?
         .map_err(ToolError::from)?;
 
-        if let Some(parent) = destination.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|source| ToolError::io("creating the screenshot directory", source))?;
-        }
         let bytes = capture.png.len();
-        tokio::fs::write(&destination, &capture.png)
-            .await
-            .map_err(|source| ToolError::io("writing the screenshot", source))?;
+        let source = DataSource::Screen {
+            target: capture.target.clone(),
+        };
 
-        Ok(ToolOutput::text(
-            DataSource::Screen {
-                target: capture.target.clone(),
-            },
+        // The file on disk is the capture exactly as the screen was. Only what
+        // goes to the model is resized, so the operator's own copy is never the
+        // lossy one.
+        if let Some(destination) = &destination {
+            if let Some(parent) = destination.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|source| ToolError::io("creating the screenshot directory", source))?;
+            }
+            tokio::fs::write(destination, &capture.png)
+                .await
+                .map_err(|source| ToolError::io("writing the screenshot", source))?;
+        }
+
+        let attached = if args.attach {
+            let prepared = agentos_tools::vision::prepare(
+                &capture.png,
+                context.max_image_edge,
+                context.max_image_bytes,
+            )
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+            Some(prepared)
+        } else {
+            None
+        };
+
+        let saved = destination
+            .as_ref()
+            .map(|path| format!(" and saved {bytes} bytes to {}", path.display()))
+            .unwrap_or_default();
+        let shown = match &attached {
+            Some(prepared) if prepared.resized => format!(
+                " The image below is the same capture scaled to {}x{} to fit the model's limits.",
+                prepared.width, prepared.height
+            ),
+            Some(_) => " The image below is that capture.".to_owned(),
+            None => String::new(),
+        };
+
+        let mut output = ToolOutput::text(
+            source.clone(),
             format!(
-                "Captured {} at {}x{} pixels and saved {bytes} bytes to {}. Coordinates for the \
-                 other computer tools are in points, not in this image's pixels — call \
-                 `computer.inspect` for the scale factor.",
-                capture.target,
-                capture.pixel_width,
-                capture.pixel_height,
-                destination.display()
+                "Captured {} at {}x{} pixels{saved}.{shown} Coordinates for the other computer \
+                 tools are in points, not in this image's pixels — call `computer.inspect` for \
+                 the scale factor.",
+                capture.target, capture.pixel_width, capture.pixel_height,
             ),
         )
         .with_structured(serde_json::json!({
-            "path": destination.display().to_string(),
+            "path": destination.as_ref().map(|path| path.display().to_string()),
             "bytes": bytes,
             "target": capture.target,
             "pixel_width": capture.pixel_width,
             "pixel_height": capture.pixel_height,
-        })))
+            "attached": args.attach,
+        }));
+
+        if let Some(prepared) = attached {
+            output = output.with_image(UntrustedImage::new(
+                source,
+                prepared.format,
+                prepared.data,
+                prepared.width,
+                prepared.height,
+            ));
+        }
+        Ok(output)
     }
 }
 
@@ -1443,6 +1546,144 @@ mod tests {
         assert!(display.summary.contains("every other application"));
         // Both still have to be allowed to write where they are writing.
         assert_eq!(display.capabilities[1].domain, "filesystem");
+    }
+
+    #[tokio::test]
+    async fn showing_a_capture_to_a_model_needs_more_than_saving_one() {
+        let desktop: Arc<dyn Desktop> = Arc::new(RecordingDesktop::in_front("Mail"));
+        let tool = tool_named(desktop, "computer.screenshot");
+
+        let saved = tool
+            .plan(
+                &serde_json::json!({
+                    "filename": "shot.png", "target": "window", "application": "Mail"
+                }),
+                &context(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !saved
+                .capabilities
+                .iter()
+                .any(|capability| capability.action == VISION_ACTION),
+            "an upgrade must not turn an existing screenshot grant into an egress grant"
+        );
+
+        let shown = tool
+            .plan(
+                &serde_json::json!({
+                    "filename": "shot.png", "target": "window",
+                    "application": "Mail", "attach": true
+                }),
+                &context(),
+            )
+            .await
+            .unwrap();
+        let vision = shown
+            .capabilities
+            .iter()
+            .find(|capability| capability.action == VISION_ACTION)
+            .expect("attaching requires the vision capability");
+        assert_eq!(
+            vision.resource,
+            Some(ResourceRef::Application {
+                application: "Mail".to_owned()
+            }),
+            "showing one window to a model is not showing the screen to a model"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_capture_that_is_only_shown_asks_for_no_write() {
+        let desktop: Arc<dyn Desktop> = Arc::new(RecordingDesktop::in_front("Mail"));
+        let plan = tool_named(desktop, "computer.screenshot")
+            .plan(
+                &serde_json::json!({"target": "display", "attach": true}),
+                &context(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !plan
+                .capabilities
+                .iter()
+                .any(|capability| capability.domain == "filesystem"),
+            "nothing is written, so nothing should be asked for"
+        );
+        // A whole display, leaving the machine.
+        assert_eq!(plan.risk, RiskLevel::High);
+    }
+
+    #[tokio::test]
+    async fn a_capture_for_nobody_is_refused() {
+        let desktop: Arc<dyn Desktop> = Arc::new(RecordingDesktop::in_front("Mail"));
+        let tool = tool_named(desktop, "computer.screenshot");
+        assert!(
+            tool.validate(&serde_json::json!({"target": "display"}))
+                .is_err(),
+            "a capture that is neither saved nor shown still reads the screen"
+        );
+        assert!(
+            tool.validate(&serde_json::json!({"target": "display", "attach": true}))
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_attached_capture_comes_back_as_an_untrusted_image() {
+        let desktop: Arc<dyn Desktop> = Arc::new(RecordingDesktop::in_front("Mail"));
+        let output = tool_named(desktop, "computer.screenshot")
+            .execute(
+                serde_json::json!({
+                    "target": "window", "application": "Mail", "attach": true
+                }),
+                &context(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(output.images.len(), 1);
+        let image = &output.images[0];
+        assert_eq!(
+            image.source,
+            DataSource::Screen {
+                target: "Mail".to_owned()
+            },
+            "pixels carry the provenance the taint tracker reads"
+        );
+        assert_eq!(image.format, agentos_core::trust::ImageFormat::Png);
+        assert!(!image.is_empty());
+        assert_eq!(output.structured.as_ref().unwrap()["attached"], true);
+        assert!(
+            output.structured.as_ref().unwrap()["path"].is_null(),
+            "no filename was given, so nothing was written"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_capture_that_is_not_attached_carries_no_pixels() {
+        let desktop: Arc<dyn Desktop> = Arc::new(RecordingDesktop::in_front("Mail"));
+        let directory = tempfile::tempdir().unwrap();
+        let output = tool_named(desktop, "computer.screenshot")
+            .execute(
+                serde_json::json!({
+                    "filename": "shot.png", "target": "window", "application": "Mail"
+                }),
+                &ToolContext::new(
+                    AgentId::new(),
+                    TaskId::new(),
+                    TaskRunId::new(),
+                    directory.path().to_path_buf(),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(output.images.is_empty());
+        assert!(directory.path().join("shot.png").exists());
     }
 
     #[tokio::test]

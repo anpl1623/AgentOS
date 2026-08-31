@@ -24,7 +24,102 @@ const AGENT_TOOLS: &[&str] = &[
     "filesystem.list",
     "filesystem.delete",
     "terminal.exec",
+    // Registered only by the vision tests; a name the registry does not hold is
+    // simply not offered to the model.
+    "test.capture",
 ];
+
+/// A tool that returns a picture, so the loop's handling of images can be tested
+/// without a screen or a browser.
+///
+/// It borrows `filesystem.read` on a workspace path for its capability rather
+/// than inventing a domain, so the existing test policies authorise it and the
+/// test is about images rather than about policy.
+#[derive(Debug)]
+struct Capture {
+    metadata: agentos_core::tool::ToolMetadata,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct CaptureArgs {}
+
+impl Capture {
+    fn new() -> Self {
+        Self {
+            metadata: agentos_tools::metadata_for::<CaptureArgs>(
+                "test.capture",
+                "Capture the screen.",
+                agentos_core::risk::RiskLevel::Low,
+                vec![agentos_core::permission::Capability::new(
+                    agentos_core::permission::permission_domains::FILESYSTEM,
+                    "read",
+                )],
+                true,
+            ),
+        }
+    }
+
+    fn path(context: &agentos_tools::ToolContext) -> String {
+        context.workspace.join("screen.png").display().to_string()
+    }
+}
+
+#[async_trait::async_trait]
+impl agentos_tools::Tool for Capture {
+    fn metadata(&self) -> &agentos_core::tool::ToolMetadata {
+        &self.metadata
+    }
+
+    fn validate(
+        &self,
+        arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, agentos_tools::ToolError> {
+        Ok(arguments.clone())
+    }
+
+    async fn plan(
+        &self,
+        _arguments: &serde_json::Value,
+        context: &agentos_tools::ToolContext,
+    ) -> Result<agentos_tools::ToolPlan, agentos_tools::ToolError> {
+        Ok(
+            agentos_tools::ToolPlan::new(agentos_core::risk::RiskLevel::Low, "Capture the screen")
+                .requiring(
+                    agentos_core::permission::Capability::new(
+                        agentos_core::permission::permission_domains::FILESYSTEM,
+                        "read",
+                    )
+                    .with_resource(
+                        agentos_core::permission::ResourceRef::Path {
+                            path: Self::path(context),
+                        },
+                    ),
+                ),
+        )
+    }
+
+    async fn execute(
+        &self,
+        _arguments: serde_json::Value,
+        _context: &agentos_tools::ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<agentos_tools::ToolOutput, agentos_tools::ToolError> {
+        let source = agentos_core::trust::DataSource::Screen {
+            target: "Fake Display".to_owned(),
+        };
+        Ok(
+            agentos_tools::ToolOutput::text(source.clone(), "Captured the screen.").with_image(
+                agentos_core::trust::UntrustedImage::new(
+                    source,
+                    agentos_core::trust::ImageFormat::Png,
+                    vec![0xde, 0xad, 0xbe, 0xef],
+                    64,
+                    64,
+                ),
+            ),
+        )
+    }
+}
 
 struct Harness {
     runtime: Runtime,
@@ -101,6 +196,29 @@ impl Harness {
         runtime.set_provider_factory(Arc::new(FixedProviderFactory::new(provider)));
         runtime
             .run_objective(self.agent.id, "Do the work.", gate, cancel)
+            .await
+    }
+
+    /// Run against a provider the caller keeps a handle on, with the capture
+    /// tool registered, so the test can inspect what the model was shown.
+    async fn run_seeing(
+        &self,
+        provider: Arc<MockProvider>,
+        gate: Arc<dyn ApprovalGate>,
+    ) -> Result<agentos_runtime::RunOutcome, RuntimeError> {
+        let mut registry = agentos_tools::standard_registry();
+        registry.register(Arc::new(Capture::new()));
+
+        let mut runtime = self.runtime.clone();
+        runtime.set_registry(Arc::new(registry));
+        runtime.set_provider_factory(Arc::new(FixedProviderFactory::new(provider)));
+        runtime
+            .run_objective(
+                self.agent.id,
+                "Do the work.",
+                gate,
+                CancellationToken::new(),
+            )
             .await
     }
 }
@@ -798,4 +916,91 @@ async fn memory_from_a_web_source_reaches_the_model_as_untrusted() {
         "a web-sourced memory was replayed as trusted text"
     );
     assert!(conversation.contains("source=\"web:https://evil.example\""));
+}
+
+#[tokio::test]
+async fn a_model_that_can_see_is_shown_the_capture() {
+    let harness = Harness::new(OPEN_POLICY).await;
+    let provider = Arc::new(
+        MockProvider::new(vec![
+            ScriptedTurn::call("c1", "test.capture", serde_json::json!({})),
+            ScriptedTurn::text("I looked."),
+        ])
+        .seeing(),
+    );
+
+    harness
+        .run_seeing(Arc::clone(&provider), Arc::new(RecordingGate::approving()))
+        .await
+        .unwrap();
+
+    let images = provider.last_images();
+    assert_eq!(images.len(), 1);
+    assert_eq!(
+        images[0].source,
+        agentos_core::trust::DataSource::Screen {
+            target: "Fake Display".to_owned()
+        },
+        "an image reaches the model carrying where it came from"
+    );
+    assert_eq!(images[0].tool_call_id.as_deref(), Some("c1"));
+}
+
+#[tokio::test]
+async fn a_model_that_cannot_see_is_told_so_rather_than_shown_nothing() {
+    let harness = Harness::new(OPEN_POLICY).await;
+    // No `.seeing()`: this mock reports no vision, like a text-only local model.
+    let provider = Arc::new(MockProvider::new(vec![
+        ScriptedTurn::call("c1", "test.capture", serde_json::json!({})),
+        ScriptedTurn::text("I could not look."),
+    ]));
+
+    harness
+        .run_seeing(Arc::clone(&provider), Arc::new(RecordingGate::approving()))
+        .await
+        .unwrap();
+
+    assert!(
+        provider.last_images().is_empty(),
+        "pixels must not be sent to a model that cannot read them"
+    );
+    let conversation = provider.last_rendered_conversation();
+    assert!(
+        conversation.contains("cannot be shown"),
+        "a model left to guess will describe a screen it never saw: {conversation}"
+    );
+    assert!(conversation.contains("test.capture"));
+}
+
+#[tokio::test]
+async fn a_run_keeps_only_its_most_recent_captures() {
+    let harness = Harness::new(OPEN_POLICY).await;
+    let mut script: Vec<ScriptedTurn> = (0..6)
+        .map(|i| ScriptedTurn::call(&format!("c{i}"), "test.capture", serde_json::json!({})))
+        .collect();
+    script.push(ScriptedTurn::text("Done looking."));
+
+    let provider = Arc::new(MockProvider::new(script).seeing());
+    harness
+        .run_seeing(Arc::clone(&provider), Arc::new(RecordingGate::approving()))
+        .await
+        .unwrap();
+
+    let images = provider.last_images();
+    assert_eq!(
+        images.len(),
+        3,
+        "six captures were taken; the conversation must not carry all six on every turn"
+    );
+    // The ones kept are the newest.
+    let kept: Vec<&str> = images
+        .iter()
+        .filter_map(|image| image.tool_call_id.as_deref())
+        .collect();
+    assert_eq!(kept, ["c3", "c4", "c5"]);
+
+    // What replaced the others still says what it was and where it came from.
+    let conversation = provider.last_rendered_conversation();
+    assert!(conversation.contains("dropped from the conversation"));
+    assert!(conversation.contains("screen:Fake Display"));
 }

@@ -13,6 +13,7 @@ name = "agentos"
 path = "src/main.rs"
 
 [dependencies]
+chrono.workspace = true
 agentos-audit.workspace = true
 agentos-browser.workspace = true
 agentos-computer.workspace = true

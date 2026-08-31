@@ -22,7 +22,7 @@ use std::sync::Arc;
 use agentos_core::permission::{Capability, ResourceRef, permission_domains};
 use agentos_core::risk::RiskLevel;
 use agentos_core::tool::ToolMetadata;
-use agentos_core::trust::DataSource;
+use agentos_core::trust::{DataSource, UntrustedImage};
 use agentos_tools::{
     Tool, ToolContext, ToolError, ToolOutput, ToolPlan, metadata_for, parse_arguments,
 };
@@ -40,6 +40,14 @@ pub const MAX_WAIT_SECS: u64 = 60;
 
 /// How often to re-check while waiting for an element.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// The capability action that permits sending a page's pixels to a model.
+///
+/// Distinct from `read` for the same reason `computer.vision` is distinct from
+/// `computer.screenshot`: reading a page's text and handing a model a picture of
+/// it are different acts, and a policy that allowed the first before this
+/// existed must not silently acquire the second.
+const VISION_ACTION: &str = "vision";
 
 /// Cap on extracted text, before the pipeline's own cap.
 const MAX_EXTRACT_BYTES: usize = 200 * 1024;
@@ -953,8 +961,17 @@ impl Tool for History {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenshotArgs {
-    /// Filename to write inside the agent's workspace.
-    pub filename: String,
+    /// Filename to write inside the agent's workspace. Omit to capture without
+    /// keeping a copy on disk, which only makes sense alongside `attach`.
+    #[serde(default)]
+    pub filename: Option<String>,
+    /// Whether to show the capture to the model.
+    ///
+    /// This is the vision fallback: for a page that offers usable structure,
+    /// `browser.inspect` and `browser.extract` are cheaper, more accurate and
+    /// far easier to audit. Reach for a picture when the DOM has nothing to say.
+    #[serde(default)]
+    pub attach: bool,
 }
 
 /// Captures the page as a PNG.
@@ -971,16 +988,18 @@ impl Screenshot {
         Self {
             metadata: metadata_for::<ScreenshotArgs>(
                 "browser.screenshot",
-                "Save a PNG of the current page into the agent's workspace.",
+                "Capture the current page. Set `filename` to save a PNG into the agent's \
+                 workspace, set `attach` to be shown the image, or both. Prefer \
+                 `browser.inspect` and `browser.extract` where the page has usable structure; \
+                 a picture is the fallback for one that does not.",
                 RiskLevel::Medium,
                 vec![
                     Capability::new(permission_domains::BROWSER, "read"),
+                    Capability::new(permission_domains::BROWSER, VISION_ACTION),
                     Capability::new(permission_domains::FILESYSTEM, "write"),
                 ],
-                // A capture of a page is a read of that page. The model cannot
-                // see the image today, but the run has still looked at the
-                // outside world, and the file on disk is a decoder away from
-                // being in the context window.
+                // A capture of a page is a read of that page, whether or not the
+                // pixels are ever shown to a model.
                 true,
             ),
             pool,
@@ -994,11 +1013,16 @@ impl Screenshot {
     /// being trusted because it came from a browser tool.
     fn destination(
         &self,
-        filename: &str,
+        filename: Option<&String>,
         context: &ToolContext,
-    ) -> Result<std::path::PathBuf, ToolError> {
+    ) -> Result<Option<std::path::PathBuf>, ToolError> {
+        let Some(filename) = filename else {
+            return Ok(None);
+        };
         let candidate = context.workspace.join(filename);
-        agentos_permissions::path::resolve_secure(&candidate).map_err(ToolError::Path)
+        agentos_permissions::path::resolve_secure(&candidate)
+            .map(Some)
+            .map_err(ToolError::Path)
     }
 }
 
@@ -1010,10 +1034,22 @@ impl Tool for Screenshot {
 
     fn validate(&self, arguments: &serde_json::Value) -> Result<serde_json::Value, ToolError> {
         let args: ScreenshotArgs = parse_arguments(&self.metadata.name, arguments)?;
-        if args.filename.trim().is_empty() {
+        if args
+            .filename
+            .as_ref()
+            .is_some_and(|name| name.trim().is_empty())
+        {
             return Err(ToolError::invalid(
                 &self.metadata.name,
                 "`filename` must not be empty",
+            ));
+        }
+        // A capture that is neither saved nor shown is a capture for nobody. It
+        // would still read the page, so it is refused rather than run.
+        if args.filename.is_none() && !args.attach {
+            return Err(ToolError::invalid(
+                &self.metadata.name,
+                "set `filename` to save the capture, `attach` to be shown it, or both",
             ));
         }
         Ok(arguments.clone())
@@ -1028,20 +1064,32 @@ impl Tool for Screenshot {
         let origin = current_origin(&self.pool, context)
             .await
             .map_err(ToolError::from)?;
-        let destination = self.destination(&args.filename, context)?;
+        let destination = self.destination(args.filename.as_ref(), context)?;
 
-        Ok(ToolPlan::new(
-            RiskLevel::Medium,
-            format!("Screenshot {origin} to {}", destination.display()),
-        )
-        .requiring(origin_capability("read", &origin))
-        .requiring(
-            Capability::new(permission_domains::FILESYSTEM, "write").with_resource(
-                ResourceRef::Path {
-                    path: destination.display().to_string(),
-                },
+        let summary = match (&destination, args.attach) {
+            (Some(path), true) => format!(
+                "Screenshot {origin}, show it to the model, and save it to {}",
+                path.display()
             ),
-        ))
+            (Some(path), false) => format!("Screenshot {origin} to {}", path.display()),
+            (None, _) => format!("Screenshot {origin} and show it to the model"),
+        };
+
+        let mut plan =
+            ToolPlan::new(RiskLevel::Medium, summary).requiring(origin_capability("read", &origin));
+        if args.attach {
+            plan = plan.requiring(origin_capability(VISION_ACTION, &origin));
+        }
+        if let Some(path) = &destination {
+            plan = plan.requiring(
+                Capability::new(permission_domains::FILESYSTEM, "write").with_resource(
+                    ResourceRef::Path {
+                        path: path.display().to_string(),
+                    },
+                ),
+            );
+        }
+        Ok(plan)
     }
 
     async fn execute(
@@ -1052,39 +1100,81 @@ impl Tool for Screenshot {
     ) -> Result<ToolOutput, ToolError> {
         let args: ScreenshotArgs = parse_arguments(&self.metadata.name, &arguments)?;
         let (_session, page, url) = session_page(&self.pool, context).await?;
-        let destination = self.destination(&args.filename, context)?;
+        let destination = self.destination(args.filename.as_ref(), context)?;
 
+        // A full-page capture of a long document is worth having on disk, but it
+        // is the wrong thing to show a model: rescaled to fit, a ten-screen page
+        // becomes a strip of unreadable pixels. What is shown is the viewport,
+        // which is what a person looking at the page would see.
         let png = page
             .screenshot(
                 chromiumoxide::page::ScreenshotParams::builder()
-                    .full_page(true)
+                    .full_page(!args.attach)
                     .build(),
             )
             .await
             .map_err(|error| command_error("taking a screenshot", &error))?;
 
-        if let Some(parent) = destination.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|source| ToolError::io("creating the screenshot directory", source))?;
-        }
         let bytes = png.len();
-        tokio::fs::write(&destination, png)
-            .await
-            .map_err(|source| ToolError::io("writing the screenshot", source))?;
+        let source = DataSource::Web { url: url.clone() };
 
-        Ok(ToolOutput::text(
-            DataSource::Web { url: url.clone() },
-            format!(
-                "Saved a {bytes}-byte screenshot of {url} to {}",
-                destination.display()
+        if let Some(destination) = &destination {
+            if let Some(parent) = destination.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|source| ToolError::io("creating the screenshot directory", source))?;
+            }
+            tokio::fs::write(destination, &png)
+                .await
+                .map_err(|source| ToolError::io("writing the screenshot", source))?;
+        }
+
+        let attached = if args.attach {
+            Some(
+                agentos_tools::vision::prepare(
+                    &png,
+                    context.max_image_edge,
+                    context.max_image_bytes,
+                )
+                .map_err(|error| ToolError::Failed(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+
+        let saved = destination
+            .as_ref()
+            .map(|path| format!(" and saved it to {}", path.display()))
+            .unwrap_or_default();
+        let shown = match &attached {
+            Some(prepared) => format!(
+                " The image below is the visible viewport at {}x{} pixels.",
+                prepared.width, prepared.height
             ),
+            None => String::new(),
+        };
+
+        let mut output = ToolOutput::text(
+            source.clone(),
+            format!("Took a {bytes}-byte screenshot of {url}{saved}.{shown}"),
         )
         .with_structured(serde_json::json!({
-            "path": destination.display().to_string(),
+            "path": destination.as_ref().map(|path| path.display().to_string()),
             "bytes": bytes,
             "url": url,
-        })))
+            "attached": args.attach,
+        }));
+
+        if let Some(prepared) = attached {
+            output = output.with_image(UntrustedImage::new(
+                source,
+                prepared.format,
+                prepared.data,
+                prepared.width,
+                prepared.height,
+            ));
+        }
+        Ok(output)
     }
 
     async fn end_run(&self, run_id: agentos_core::ids::TaskRunId) {
@@ -1142,6 +1232,48 @@ fn truncate(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn screenshot_tool() -> Screenshot {
+        // No browser is launched: validation and metadata are decided before
+        // anything reaches the page.
+        Screenshot::new(Arc::new(BrowserPool::new(
+            crate::session::BrowserOptions::new(std::env::temp_dir()),
+        )))
+    }
+
+    #[test]
+    fn a_page_capture_for_nobody_is_refused() {
+        let tool = screenshot_tool();
+        assert!(
+            tool.validate(&serde_json::json!({})).is_err(),
+            "a capture that is neither saved nor shown still reads the page"
+        );
+        assert!(tool.validate(&serde_json::json!({"attach": true})).is_ok());
+        assert!(
+            tool.validate(&serde_json::json!({"filename": "a.png"}))
+                .is_ok()
+        );
+        assert!(
+            tool.validate(&serde_json::json!({"filename": "  "}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn showing_a_page_to_a_model_is_its_own_grant() {
+        let tool = screenshot_tool();
+        let actions: Vec<&str> = tool
+            .metadata()
+            .required_capabilities
+            .iter()
+            .map(|capability| capability.action.as_str())
+            .collect();
+        assert!(actions.contains(&"read"));
+        assert!(
+            actions.contains(&VISION_ACTION),
+            "`agentos tools` has to be able to show that this tool can send pixels out"
+        );
+    }
 
     #[test]
     fn origins_drop_the_path_and_query() {

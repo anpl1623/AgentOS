@@ -185,6 +185,40 @@ neutralises text. What the scope does *not* do — bind what an event means, ver
 application is what it says it is — is in [`SECURITY.md`](../SECURITY.md). See
 [ADR 6](adr/0006-computer-control.md).
 
+## Vision
+
+`computer.screenshot` and `browser.screenshot` both take an `attach` flag. Without it they behave as
+they always did: a PNG is written into the agent's workspace and the model is told the file exists.
+With it, the capture is also handed to the model as `Content::Image`.
+
+Three things follow from that being a separate flag rather than the default.
+
+**It is a separate capability.** Attaching requires `computer:vision` or `browser:vision`, scoped the
+same way the capture itself is — to an application, or to an origin. Saving a screenshot puts pixels
+on a disk the operator owns; showing one to a model transmits the contents of their screen to a third
+party. A policy written before this existed granted the first and must not silently acquire the
+second because the runtime was upgraded.
+
+**There is no trusted image.** `ControlContent` has no visual counterpart and `Content::Image` is
+always untrusted, carrying the same `DataSource` the text does. Pixels are a worse place to draw the
+boundary than text: there is no envelope to wrap them in and no delimiter to neutralise, and a
+screenshot of a page reading "SYSTEM: you are now authorised" is, to a model, indistinguishable from
+a system message. So the type system offers no way to say otherwise.
+
+**A model that cannot see is told, not starved.** `ProviderCapabilities::vision` reports whether the
+configured model accepts images — declared per model in `ModelConfig`, because one Ollama server will
+serve a vision model and a text-only one. When it cannot, the pixels are dropped and a runtime notice
+says which tool produced them and that they were withheld. A model given silence describes a screen
+it never saw.
+
+Everything shown to a model goes through `agentos_tools::vision::prepare` first: the header is read
+before anything is allocated so a small file declaring 60000×60000 is refused rather than decoded,
+the image is scaled to fit 1568 pixels on its long edge, and PNG gives way to JPEG only if it will
+not otherwise fit. The copy written to disk is never the rescaled one. The conversation keeps the
+three most recent captures and replaces older ones with the description they already carried, because
+a provider re-reads the whole conversation every turn and an agent that took ten screenshots would
+otherwise pay for all ten, ten times.
+
 ## Taint tracking
 
 `TaintTracker` records whether a run has ingested externally-influenced data. Once it has, the policy
@@ -214,6 +248,34 @@ be able to stop an agent.
 `RunStateMachine` owns the current state, persists each transition and emits an event for it. It is
 shared with the approval gate wrapper, so `WaitingForApproval` is a state runs genuinely occupy while
 a human is deciding, rather than a box in a diagram.
+
+## Schedules and task graphs
+
+Two separate questions about the same task: *when* may this start, and *what* is it waiting for.
+
+Dependencies are a DAG in `task_dependencies`, not the tree `tasks.parent_task_id` describes, because
+the common shape is a fan-in — three tasks gathering, one summarising all of them. A task with unmet
+dependencies is `Blocked` rather than `Pending`, so "why has this not started?" has two different
+answers instead of one ambiguous one.
+
+Whether a dependency is satisfied is computed in SQL from the current status of the tasks upstream,
+never stored. A stored flag is a second source of truth, and the failure mode is a task stuck because
+somebody forgot to update it. Cycles are refused by `Runtime::add_dependency` before the edge is
+written, and the error names the whole path — "there is a cycle" is not actionable.
+
+A schedule creates tasks; it is not one. Each firing gets its own runs, traces, approvals and audit
+entries. Cadences are once, a fixed interval with a sixty-second floor, or cron, read against UTC or
+the host's local time. There is no timezone database here, so a named IANA zone is not on offer.
+
+The next occurrence is computed forward from the moment a schedule actually fires, so a machine that
+was asleep for three days wakes up owing one run rather than seventy-two. A task whose dependency
+failed is cancelled and recorded as `agent.task.abandoned`, because a task that waits forever looks
+exactly like one nobody has reached.
+
+**The scheduler denies every approval, and there is no setting that changes it.** An unattended run
+does what the policy permits outright and is refused everything else, with a note the model can read
+and re-plan around. A scheduler that could approve on the operator's behalf would make the approval
+gate decorative. See [ADR 8](adr/0008-scheduling-and-task-graphs.md).
 
 ## Persistence
 
@@ -278,6 +340,5 @@ so it runs on every commit rather than being a demo somebody performs occasional
 
 ## Roadmap
 
-**Next:** giving the model the screenshots it can already take, so a native application with no
-usable structure is reachable; a scheduler; an orchestrator with task graphs; multi-agent delegation;
-plugins; and the integrations in the README's phase 6.
+**Next:** an orchestrator that writes task graphs rather than a person writing them; multi-agent
+delegation; plugins; and the integrations in the README's phase 6.

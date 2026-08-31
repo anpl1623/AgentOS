@@ -25,6 +25,11 @@ model: string,
  */
 base_url: string | null, 
 /**
+ * Whether this model can be shown images. `null` takes the provider's
+ * default, which is off for a local endpoint whose model is unknown.
+ */
+vision: boolean | null, 
+/**
  * Tools to grant.
  */
 tools: Array<string>, };

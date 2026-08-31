@@ -63,6 +63,10 @@ enum Command {
     #[command(subcommand)]
     Provider(commands::provider::ProviderCommand),
 
+    /// Standing instructions, and the loop that acts on them.
+    #[command(subcommand)]
+    Schedule(commands::schedule::ScheduleCommand),
+
     /// Run the end-to-end demonstration against a local mock CRM.
     Demo(commands::demo::DemoArgs),
 
@@ -87,6 +91,7 @@ async fn main() -> Result<()> {
         Command::Task(command) => commands::task::run(command, &config).await,
         Command::Audit(command) => commands::audit::run(command, &config).await,
         Command::Provider(command) => commands::provider::run(command, &config).await,
+        Command::Schedule(command) => commands::schedule::run(command, &config).await,
         Command::Demo(args) => commands::demo::run(args, &config).await,
         Command::Tools => commands::tools::run(&config).await,
     }

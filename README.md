@@ -381,6 +381,11 @@ AgentOS is designed to eventually support specialized agents working under an or
                      Shared Runtime
 ```
 
+The graph itself exists: tasks depend on other tasks, a scheduler starts each one when everything it
+waits for has succeeded, and a branch whose dependency failed is cancelled rather than left waiting.
+What is still ahead is the orchestrator that *writes* such a graph — today a person does, with
+`agentos task create --depends-on` — and delegation across more than one agent.
+
 A high-level objective can be decomposed into smaller tasks and delegated to specialized agents.
 
 For example:
@@ -561,7 +566,7 @@ alongside the execution loop rather than after it.
 - [x] Keyboard interaction — text and single keys with modifiers
 - [x] Application interaction — capabilities scoped to the application in front
 - [x] Accessibility permission detection — reported by `agentos doctor`
-- [ ] Vision: giving the model the screenshot it takes
+- [x] Vision: giving the model the screenshot it takes — `attach`, gated by `computer:vision`
 
 ## Phase 3 — Browser
 
@@ -571,7 +576,7 @@ alongside the execution loop rather than after it.
 - [x] Text extraction — returned as untrusted data tagged with its origin
 - [x] Browser state — element inspection with stable selectors
 - [x] Browser permissions — capabilities scoped by origin
-- [ ] Vision fallback for pages with no usable structure
+- [x] Vision fallback for pages with no usable structure — `attach`, gated by `browser:vision`
 
 ## Phase 4 — Safety *(done, ahead of phases 2 and 3)*
 
@@ -587,9 +592,9 @@ alongside the execution loop rather than after it.
 ## Phase 5 — Memory & Orchestration
 
 - [x] Persistent memory — structured, with provenance, behind a swappable interface
-- [ ] Task graphs
-- [ ] Task dependencies
-- [ ] Scheduler
+- [x] Task graphs — a DAG, checked for cycles when an edge is written
+- [x] Task dependencies — a task starts when every task it waits for has succeeded
+- [x] Scheduler — cron or interval, running unattended behind a deny-all approval gate
 - [ ] Agent orchestration
 - [ ] Multi-agent execution
 
@@ -616,6 +621,23 @@ alongside the execution loop rather than after it.
 - [ ] Community workflows
 
 ---
+
+# Install
+
+Every release ships the desktop application for macOS, Windows and Linux, and the `agentos` CLI for
+four targets, on the [releases page](https://github.com/anpl1623/AgentOS/releases).
+
+**These builds are not code-signed.** AgentOS has no Apple Developer certificate and no Windows
+code-signing certificate. macOS will refuse to open the application on first launch — right-click and
+choose Open, or run `xattr -dr com.apple.quarantine /Applications/AgentOS.app` — and Windows
+SmartScreen will say the publisher is unknown. Neither is something to do to software you have not
+decided to trust, which is why building from source is a first-class path and takes one command.
+
+Every CLI archive ships a checksum beside it:
+
+```bash
+sha256sum -c agentos-0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+```
 
 # Development
 
@@ -700,6 +722,47 @@ afterwards — and that none of those refusals depended on the model noticing an
 permission decisions you see are real ones. Drop the flag to run it against a configured provider,
 and add `--headed` to watch the browser work.
 
+## Work that runs on its own
+
+A schedule is a standing instruction: give this agent this objective, on this cadence. Each firing
+creates its own task, so every occurrence keeps its own runs, traces, approvals and audit trail.
+
+```bash
+./target/release/agentos schedule create morning-review \
+  "Review overdue follow-ups and draft messages for the ones that need chasing." \
+  --agent sales --cron "0 9 * * MON-FRI" --local
+```
+
+Tasks can also wait for each other. Create the ones that go first, then the ones that depend on
+them; the graph is a DAG and an edge that would close a cycle is refused when it is written, not
+discovered later by a scheduler that never starts anything.
+
+```bash
+GATHER=$(./target/release/agentos task create "Pull this week's failed payments." --agent ops)
+./target/release/agentos task create "Summarise them for the finance channel." \
+  --agent ops --depends-on "$GATHER"
+```
+
+Nothing fires until a scheduler is running:
+
+```bash
+./target/release/agentos schedule run
+```
+
+**A scheduled run happens with nobody watching, so every approval it would have asked for is
+refused.** Anything the policy permits outright proceeds; anything that would have put a card in
+front of a person is denied with a note the agent can read and re-plan around. There is no flag that
+changes this. An agent that needs a person to say yes needs a person, and a scheduler that could say
+yes on your behalf would make the approval gate decorative.
+
+Two more things worth knowing before leaving one running:
+
+- **Missed firings do not pile up.** The next occurrence is computed forward from the moment a
+  schedule actually fires. A laptop asleep for three days wakes up owing one run, not seventy-two.
+- **Dead branches are reported, not left hanging.** If a task fails, everything waiting on it is
+  cancelled and recorded in the audit log, because a task that waits forever looks exactly like one
+  nobody has got to yet.
+
 ## The desktop application
 
 ```bash
@@ -723,7 +786,8 @@ development-only and are removed from a production build.
 | `agentos doctor` | Check the installation and report what is missing |
 | `agentos agent create \| list \| show \| set` | Manage agents |
 | `agentos policy show \| set \| validate` | Inspect and edit permission policies |
-| `agentos task run \| list \| show \| cancel` | Run and inspect tasks |
+| `agentos task run \| create \| list \| show \| cancel` | Run and inspect tasks, and build graphs of them |
+| `agentos schedule create \| list \| pause \| resume \| delete \| run` | Standing instructions, and the loop that acts on them |
 | `agentos audit tail \| verify` | Read the log and check its integrity |
 | `agentos provider list \| set-key \| remove-key` | Manage credentials |
 | `agentos demo` | Run the end-to-end demonstration against a local mock CRM |
@@ -760,6 +824,12 @@ permissions:
 
   computer:
     screenshot: ask
+    # Saving a capture and showing one to a model are separate grants. The
+    # first writes a file you own; the second sends your screen to somebody
+    # else's server.
+    vision:
+      effect: ask
+      applications: [Mail]
     type:
       effect: ask
       applications: [Mail]

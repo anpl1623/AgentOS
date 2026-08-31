@@ -126,28 +126,34 @@ pub fn build_provider(
     match model.provider.as_str() {
         provider_ids::ANTHROPIC => {
             let key = required_key(provider_ids::ANTHROPIC, secrets)?;
-            Ok(std::sync::Arc::new(AnthropicProvider::new(
-                key,
-                model.base_url.clone(),
-            )?))
+            let provider = AnthropicProvider::new(key, model.base_url.clone())?;
+            Ok(std::sync::Arc::new(match model.vision {
+                Some(vision) => provider.with_vision(vision),
+                None => provider,
+            }))
         }
         provider_ids::OPENAI => {
             let key = required_key(provider_ids::OPENAI, secrets)?;
-            Ok(std::sync::Arc::new(OpenAiCompatibleProvider::new(
+            let provider = OpenAiCompatibleProvider::new(
                 provider_ids::OPENAI,
                 Some(key),
                 model.base_url.clone(),
-            )?))
+            )?;
+            Ok(std::sync::Arc::new(match model.vision {
+                Some(vision) => provider.with_vision(vision),
+                None => provider,
+            }))
         }
         // A local server usually wants no credential at all, so a missing key
         // is normal rather than an error.
         provider_ids::OLLAMA => {
             let key = secrets.get(&provider_key(provider_ids::OLLAMA)).ok();
-            Ok(std::sync::Arc::new(OpenAiCompatibleProvider::new(
-                provider_ids::OLLAMA,
-                key,
-                model.base_url.clone(),
-            )?))
+            let provider =
+                OpenAiCompatibleProvider::new(provider_ids::OLLAMA, key, model.base_url.clone())?;
+            Ok(std::sync::Arc::new(match model.vision {
+                Some(vision) => provider.with_vision(vision),
+                None => provider,
+            }))
         }
         provider_ids::MOCK => Ok(std::sync::Arc::new(MockProvider::answering(
             "The mock provider does not reason. Configure a real provider with \

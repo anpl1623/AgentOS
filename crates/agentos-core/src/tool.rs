@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::permission::Capability;
 use crate::risk::RiskLevel;
-use crate::trust::{DataSource, UntrustedContent};
+use crate::trust::{DataSource, UntrustedContent, UntrustedImage};
 
 /// Everything a tool declares about itself.
 ///
@@ -139,6 +139,13 @@ pub struct ToolResult {
     pub outcome: ToolOutcome,
     /// The payload, always untrusted.
     pub content: UntrustedContent,
+    /// Images the tool produced, always untrusted.
+    ///
+    /// Separate from `content` because providers transport images as their own
+    /// content blocks, and because a model without vision must be given the
+    /// text and denied the pixels rather than being given neither.
+    #[serde(default)]
+    pub images: Vec<UntrustedImage>,
     /// Structured data for the UI and for programmatic consumers.
     ///
     /// Never shown to the model as control-plane content.
@@ -158,8 +165,16 @@ impl ToolResult {
             tool: tool.into(),
             outcome: ToolOutcome::Success,
             content,
+            images: Vec::new(),
             structured: None,
         }
+    }
+
+    /// Attach untrusted images to a result.
+    #[must_use]
+    pub fn with_images(mut self, images: Vec<UntrustedImage>) -> Self {
+        self.images = images;
+        self
     }
 
     /// A failure result. The message is still untrusted: error strings routinely
@@ -177,6 +192,7 @@ impl ToolResult {
             content: UntrustedContent::new(DataSource::Tool { tool: tool.clone() }, message.into()),
             tool,
             outcome,
+            images: Vec::new(),
             structured: None,
         }
     }

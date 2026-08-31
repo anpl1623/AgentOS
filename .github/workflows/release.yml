@@ -1,0 +1,283 @@
+name: Release
+
+# Pushing a tag is the whole trigger. Everything the release contains is built
+# from that tag by this file, so what ships is reproducible from the repository
+# rather than from somebody's laptop.
+on:
+  push:
+    tags: ["v*"]
+  # A dry run builds every artifact and uploads them to the workflow instead of
+  # to a release, so the packaging can be exercised without publishing anything.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: Verify the tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check the tag against the versions in the tree
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          crate=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          tauri=$(grep -m1 '"version"' apps/desktop/src-tauri/tauri.conf.json | cut -d'"' -f4)
+          npm=$(grep -m1 '"version"' apps/desktop/package.json | cut -d'"' -f4)
+
+          # The desktop crate asserts these agree at test time too. Repeated here
+          # because a release that ships mismatched version numbers is a support
+          # burden that lasts far longer than the minute this check costs.
+          if [ "$crate" != "$tauri" ] || [ "$crate" != "$npm" ]; then
+            echo "::error::versions disagree: workspace $crate, tauri $tauri, npm $npm"
+            exit 1
+          fi
+
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [ "$tag" != "$crate" ]; then
+              echo "::error::tag v$tag does not match the workspace version $crate"
+              exit 1
+            fi
+            if ! grep -q "^## \[$crate\]" CHANGELOG.md; then
+              echo "::error::CHANGELOG.md has no section for $crate"
+              exit 1
+            fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$crate" >> "$GITHUB_OUTPUT"
+
+  draft:
+    name: Draft the release
+    needs: verify
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Created as a draft so nothing is visible until every platform has
+      # actually produced an artifact. A release that is missing the Windows
+      # installer for twenty minutes is worse than one that appears late.
+      - name: Create the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "draft already exists; reusing it"
+            exit 0
+          fi
+          # The notes are this version's changelog section followed by the
+          # standing download-and-verify instructions, so the release page is
+          # readable without a round trip to the repository.
+          {
+            awk -v v="## [$VERSION]" '
+              $0 ~ "^## \\[" && found { exit }
+              $0 == v { found = 1; next }
+              found { print }
+            ' CHANGELOG.md
+            echo
+            cat .github/release-notes.md
+          } > notes.md
+
+          gh release create "v$VERSION" \
+            --draft \
+            --title "AgentOS v$VERSION" \
+            --notes-file notes.md
+
+  desktop:
+    name: Desktop (${{ matrix.label }})
+    needs: [verify, draft]
+    # `always()` so a dry run, which skips the draft job, still builds.
+    if: always() && needs.verify.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One universal binary rather than two downloads nobody can tell apart.
+          - label: macOS (universal)
+            os: macos-latest
+            args: --target universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - label: Windows (x64)
+            os: windows-latest
+            args: ""
+            rust-targets: ""
+          - label: Linux (x64)
+            os: ubuntu-22.04
+            args: ""
+            rust-targets: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install Tauri's Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: apps/desktop
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # Signing is opt-in. When these secrets are absent the bundles are
+          # built unsigned rather than the release failing, because an
+          # unsigned build somebody can verify by hand is more useful than no
+          # build at all — see docs/releasing.md for what that costs the user.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop
+          args: ${{ matrix.args }}
+          tagName: ${{ needs.verify.outputs.publish == 'true' && format('v{0}', needs.verify.outputs.version) || '' }}
+          releaseDraft: true
+          includeUpdaterJson: false
+
+      - name: Keep the bundles when nothing is being published
+        if: needs.verify.outputs.publish != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: |
+            target/**/release/bundle/**/*.dmg
+            target/**/release/bundle/**/*.app.tar.gz
+            target/**/release/bundle/**/*.msi
+            target/**/release/bundle/**/*-setup.exe
+            target/**/release/bundle/**/*.deb
+            target/**/release/bundle/**/*.AppImage
+          if-no-files-found: error
+
+  cli:
+    name: CLI (${{ matrix.target }})
+    needs: [verify, draft]
+    if: always() && needs.verify.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The CLI needs none of the webview libraries, so only the one crate is
+      # built. `--locked` so a release is built from the lockfile in the tag.
+      - name: Build
+        run: cargo build --release --locked -p agentos-cli --target ${{ matrix.target }}
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.verify.outputs.version }}"
+          name="agentos-$version-${{ matrix.target }}"
+          staging="$(mktemp -d)/$name"
+          mkdir -p "$staging"
+
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target }}/release/agentos.exe" "$staging/"
+          else
+            cp "target/${{ matrix.target }}/release/agentos" "$staging/"
+          fi
+          cp README.md LICENSE CHANGELOG.md SECURITY.md "$staging/"
+
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            archive="dist/$name.zip"
+            (cd "$(dirname "$staging")" && 7z a -tzip "$name.zip" "$name" >/dev/null)
+            mv "$(dirname "$staging")/$name.zip" "$archive"
+          else
+            archive="dist/$name.tar.gz"
+            tar -czf "$archive" -C "$(dirname "$staging")" "$name"
+          fi
+
+          # Checksums are generated next to the artifact on the machine that
+          # built it, so a corrupted upload is detectable by the person
+          # downloading it rather than only by us.
+          if command -v sha256sum >/dev/null; then
+            (cd dist && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
+          else
+            (cd dist && shasum -a 256 "$(basename "$archive")" > "$(basename "$archive").sha256")
+          fi
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to the draft release
+        if: needs.verify.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release upload "v${{ needs.verify.outputs.version }}" dist/* --clobber
+
+      - name: Keep the archive when nothing is being published
+        if: needs.verify.outputs.publish != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [verify, desktop, cli]
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Every platform produced something before anyone can see any of it.
+          gh release edit "v$VERSION" --draft=false --latest

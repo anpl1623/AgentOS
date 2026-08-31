@@ -37,6 +37,28 @@ pub enum TaskCommand {
         unattended: bool,
     },
 
+    /// Create a task without running it, for a scheduler to pick up.
+    ///
+    /// This is how a task graph is built: create the tasks that go first, then
+    /// create the ones that wait for them with `--depends-on`. Nothing starts
+    /// until `agentos schedule run` is going.
+    Create {
+        /// What to do.
+        objective: String,
+
+        /// Which agent. Defaults to the only one, if there is only one.
+        #[arg(long)]
+        agent: Option<String>,
+
+        /// Task this one waits for. Repeatable; every one must succeed first.
+        #[arg(long = "depends-on")]
+        depends_on: Vec<String>,
+
+        /// Hold the task until this RFC 3339 time.
+        #[arg(long, conflicts_with = "depends_on")]
+        at: Option<String>,
+    },
+
     /// List recent tasks.
     List {
         /// How many to show.
@@ -125,6 +147,62 @@ pub async fn run(command: TaskCommand, config: &RuntimeConfig) -> Result<()> {
             }
         }
 
+        TaskCommand::Create {
+            objective,
+            agent,
+            depends_on,
+            at,
+        } => {
+            let agent = resolve_agent(&runtime, agent.as_deref()).await?;
+
+            let dependencies = depends_on
+                .iter()
+                .map(|raw| {
+                    raw.parse::<TaskId>()
+                        .with_context(|| format!("`{raw}` is not a task identifier"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let task = match at {
+                Some(text) => {
+                    let when = chrono::DateTime::parse_from_rfc3339(&text)
+                        .with_context(|| {
+                            format!("`{text}` is not an RFC 3339 time, e.g. 2026-09-01T09:00:00Z")
+                        })?
+                        .with_timezone(&chrono::Utc);
+                    runtime.create_task_at(agent.id, &objective, when).await?
+                }
+                None => {
+                    runtime
+                        .create_task_after(agent.id, &objective, &dependencies)
+                        .await?
+                }
+            };
+
+            println!("{} {}", style.dim("Task     "), task.id);
+            println!("{} {}", style.dim("Agent    "), agent.name);
+            println!("{} {}", style.dim("Status   "), task.status.as_str());
+            if !dependencies.is_empty() {
+                println!(
+                    "{} {}",
+                    style.dim("Waits for"),
+                    dependencies
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            if let Some(when) = task.scheduled_for {
+                println!("{} {}", style.dim("Not until"), when.to_rfc3339());
+            }
+            println!();
+            println!(
+                "Nothing starts until a scheduler is running. Start one with {}.",
+                style.bold("agentos schedule run")
+            );
+        }
+
         TaskCommand::List { limit } => {
             let tasks = runtime.database().tasks().list(limit).await?;
             if tasks.is_empty() {
@@ -180,7 +258,7 @@ pub async fn run(command: TaskCommand, config: &RuntimeConfig) -> Result<()> {
 ///
 /// With exactly one agent configured, naming it every time is friction for no
 /// benefit. With several, guessing would be worse than asking.
-async fn resolve_agent(
+pub(crate) async fn resolve_agent(
     runtime: &agentos_runtime::Runtime,
     requested: Option<&str>,
 ) -> Result<agentos_core::agent::Agent> {

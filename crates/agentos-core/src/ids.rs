@@ -108,6 +108,11 @@ define_id!(
     TaskStepId,
     "task_step"
 );
+define_id!(
+    /// Identifies a recurring schedule.
+    ScheduleId,
+    "schedule"
+);
 
 #[cfg(test)]
 mod tests {

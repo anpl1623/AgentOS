@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+image.workspace = true
 agentos-audit.workspace = true
 agentos-core.workspace = true
 agentos-permissions.workspace = true

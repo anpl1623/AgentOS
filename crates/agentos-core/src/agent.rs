@@ -40,6 +40,16 @@ pub struct ModelConfig {
     pub max_output_tokens: Option<u32>,
     /// Base URL override, for OpenAI-compatible endpoints such as Ollama.
     pub base_url: Option<String>,
+    /// Whether this model can be shown images.
+    ///
+    /// Vision is a property of the model, not of the endpoint: one Ollama
+    /// server will happily serve a vision model and a text-only one. `None`
+    /// takes the provider's default, which is why this is a three-state field
+    /// rather than a bool — an operator running a vision model locally has to
+    /// be able to say so, and one running a text-only model behind an
+    /// OpenAI-compatible URL has to be able to say that too.
+    #[serde(default)]
+    pub vision: Option<bool>,
 }
 
 impl ModelConfig {
@@ -52,7 +62,15 @@ impl ModelConfig {
             temperature: None,
             max_output_tokens: None,
             base_url: None,
+            vision: None,
         }
+    }
+
+    /// Declare whether this model can be shown images.
+    #[must_use]
+    pub const fn with_vision(mut self, vision: bool) -> Self {
+        self.vision = Some(vision);
+        self
     }
 }
 

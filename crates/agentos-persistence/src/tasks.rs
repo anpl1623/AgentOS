@@ -30,14 +30,17 @@ impl TaskRepository {
     pub async fn insert(&self, task: &Task) -> Result<(), DbError> {
         sqlx::query(
             "INSERT INTO tasks (id, agent_id, objective, status, parent_task_id,
-                                created_at, started_at, completed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                                scheduled_for, schedule_id, created_at, started_at,
+                                completed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )
         .bind(task.id.to_string())
         .bind(task.agent_id.to_string())
         .bind(&task.objective)
         .bind(task.status.as_str())
         .bind(task.parent_task_id.map(|id| id.to_string()))
+        .bind(write_optional_time(task.scheduled_for.as_ref()))
+        .bind(task.schedule_id.map(|id| id.to_string()))
         .bind(write_time(&task.created_at))
         .bind(write_optional_time(task.started_at.as_ref()))
         .bind(write_optional_time(task.completed_at.as_ref()))
@@ -116,6 +119,69 @@ impl TaskRepository {
         rows.iter().map(hydrate).collect()
     }
 
+    /// Tasks that could be started right now.
+    ///
+    /// A task qualifies when the clock permits it and every task it depends on
+    /// has succeeded. Both halves are evaluated here in SQL rather than by
+    /// reading the graph into memory, so a scheduler asking "what now?" pays for
+    /// one query however wide the graph is.
+    ///
+    /// `blocked` rows are included: whether a dependency is satisfied is a fact
+    /// about the database at this instant, not a status somebody has to remember
+    /// to update.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Sql`] on failure.
+    pub async fn list_runnable(&self, limit: i64) -> Result<Vec<Task>, DbError> {
+        let rows = sqlx::query(
+            "SELECT t.* FROM tasks t
+              WHERE t.status IN ('pending', 'blocked')
+                AND (t.scheduled_for IS NULL OR t.scheduled_for <= ?1)
+                AND NOT EXISTS (
+                      SELECT 1 FROM task_dependencies d
+                        JOIN tasks p ON p.id = d.depends_on_task_id
+                       WHERE d.task_id = t.id
+                         AND p.status <> 'succeeded'
+                    )
+              ORDER BY COALESCE(t.scheduled_for, t.created_at)
+              LIMIT ?2",
+        )
+        .bind(write_time(&agentos_core::now()))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(hydrate).collect()
+    }
+
+    /// Tasks that can never run, because something they depend on will not
+    /// succeed.
+    ///
+    /// Reported rather than swept, so the caller decides what a dead branch
+    /// means. Leaving them blocked forever would be a silent hang.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Sql`] on failure.
+    pub async fn list_unreachable(&self, limit: i64) -> Result<Vec<Task>, DbError> {
+        let rows = sqlx::query(
+            "SELECT t.* FROM tasks t
+              WHERE t.status IN ('pending', 'blocked')
+                AND EXISTS (
+                      SELECT 1 FROM task_dependencies d
+                        JOIN tasks p ON p.id = d.depends_on_task_id
+                       WHERE d.task_id = t.id
+                         AND p.status IN ('failed', 'cancelled')
+                    )
+              ORDER BY t.created_at
+              LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(hydrate).collect()
+    }
+
     /// Update a task's status and lifecycle timestamps.
     ///
     /// # Errors
@@ -183,6 +249,8 @@ fn hydrate(row: &sqlx::sqlite::SqliteRow) -> Result<Task, DbError> {
             row.try_get::<String, _>("status")?.as_str(),
         )?,
         parent_task_id: read_optional_id(TABLE, "parent_task_id", row.try_get("parent_task_id")?)?,
+        scheduled_for: read_optional_time(TABLE, "scheduled_for", row.try_get("scheduled_for")?)?,
+        schedule_id: read_optional_id(TABLE, "schedule_id", row.try_get("schedule_id")?)?,
         created_at: read_time(
             TABLE,
             "created_at",

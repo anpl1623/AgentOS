@@ -85,3 +85,46 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("could not start the AgentOS window");
 }
+
+#[cfg(test)]
+mod version_tests {
+    /// The version appears in three files, and a release that ships three
+    /// different numbers is a support burden long outliving the minute this
+    /// costs. The release workflow repeats the check against the tag; this one
+    /// catches the mismatch at the commit that introduces it.
+    #[test]
+    fn the_three_manifests_agree_on_the_version() {
+        let crate_version = env!("CARGO_PKG_VERSION");
+
+        let tauri_conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json"))
+                .expect("tauri.conf.json is valid JSON");
+        let package_json: serde_json::Value =
+            serde_json::from_str(include_str!("../../package.json"))
+                .expect("package.json is valid JSON");
+
+        assert_eq!(
+            tauri_conf["version"].as_str(),
+            Some(crate_version),
+            "tauri.conf.json disagrees with the workspace version"
+        );
+        assert_eq!(
+            package_json["version"].as_str(),
+            Some(crate_version),
+            "apps/desktop/package.json disagrees with the workspace version"
+        );
+    }
+
+    /// A release is cut from a tag, and the workflow refuses to publish one
+    /// whose version has no section here. Checking that the current version is
+    /// written down before the tag exists is what makes that refusal cheap.
+    #[test]
+    fn the_changelog_has_a_section_for_this_version() {
+        let changelog = include_str!("../../../../CHANGELOG.md");
+        let heading = format!("## [{}]", env!("CARGO_PKG_VERSION"));
+        assert!(
+            changelog.contains(&heading),
+            "CHANGELOG.md has no `{heading}` section"
+        );
+    }
+}

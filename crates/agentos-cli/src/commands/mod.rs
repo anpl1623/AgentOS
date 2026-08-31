@@ -6,6 +6,7 @@ pub mod demo;
 pub mod doctor;
 pub mod policy;
 pub mod provider;
+pub mod schedule;
 pub mod task;
 pub mod tools;
 

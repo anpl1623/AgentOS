@@ -25,7 +25,7 @@ pub use anthropic::AnthropicProvider;
 pub use mock::{MockProvider, ScriptedTurn};
 pub use openai::OpenAiCompatibleProvider;
 pub use request::{
-    CompletionRequest, CompletionResponse, StopReason, Usage, message_for_tool_result,
+    CompletionRequest, CompletionResponse, StopReason, Usage, messages_for_tool_result,
 };
 
 /// Provider identifiers the runtime knows how to construct.
@@ -129,6 +129,12 @@ pub struct ProviderCapabilities {
     pub tools: bool,
     /// Whether it reports token usage.
     pub usage_reporting: bool,
+    /// Whether the configured model can be shown images.
+    ///
+    /// The runtime checks this before attaching a capture rather than
+    /// discovering the answer as a 400 halfway through a run, and tells the
+    /// model in plain words when a picture it asked for had to be withheld.
+    pub vision: bool,
 }
 
 /// Something that can answer a [`CompletionRequest`].

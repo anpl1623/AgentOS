@@ -294,6 +294,7 @@ pub async fn create_agent(
 
     let mut model = ModelConfig::new(&input.provider, &input.model);
     model.base_url = input.base_url.filter(|url| !url.trim().is_empty());
+    model.vision = input.vision;
 
     let agent = runtime
         .create_agent(&input.name, &input.instructions, model, input.tools)

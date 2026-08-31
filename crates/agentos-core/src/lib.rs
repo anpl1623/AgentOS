@@ -19,6 +19,7 @@ pub mod ids;
 pub mod memory;
 pub mod permission;
 pub mod risk;
+pub mod schedule;
 pub mod task;
 pub mod tool;
 pub mod trust;
@@ -27,12 +28,15 @@ pub use agent::{Agent, AgentStatus, ModelConfig};
 pub use approval::{ApprovalDecision, ApprovalRequest, ApprovalStatus};
 pub use error::CoreError;
 pub use event::{AgentEvent, Event};
-pub use ids::{AgentId, ApprovalId, EventId, MemoryId, TaskId, TaskRunId, ToolExecutionId};
+pub use ids::{
+    AgentId, ApprovalId, EventId, MemoryId, ScheduleId, TaskId, TaskRunId, ToolExecutionId,
+};
 pub use memory::{Memory, MemoryKind, MemoryQuery};
 pub use permission::{
     Capability, Effect, PermissionDecision, PermissionRequest, ResourceRef, permission_domains,
 };
 pub use risk::RiskLevel;
+pub use schedule::{Cadence, Clock, Schedule, ScheduleStatus};
 pub use task::{Task, TaskRun, TaskState, TaskStatus, TaskStep, TaskStepKind};
 pub use tool::{ToolCall, ToolMetadata, ToolOutcome, ToolResult};
 pub use trust::{
