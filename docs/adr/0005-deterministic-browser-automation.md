@@ -22,7 +22,8 @@ Browser automation is protocol-based, over CDP, via `chromiumoxide`. Elements ar
 selector. `browser.inspect` enumerates the interactive elements on a page and returns a stable
 selector for each, so the model has something concrete to name rather than guessing.
 
-Screenshots exist — `browser.screenshot` — for a human to look at and for a future vision fallback.
+Screenshots exist — `browser.screenshot` — for a human to look at and, with `attach`, as the vision
+fallback for a page the DOM has nothing to say about. See [ADR 7](0007-vision.md).
 They are not how the agent decides where to click.
 
 The browser layer is kept separate from computer control. They solve different problems: a browser
@@ -45,8 +46,10 @@ Capabilities are scoped by origin, so a policy can grant an agent one site witho
 web. That is only expressible because the runtime knows which page it is on.
 
 The cost: sites that are hostile to automation, or built entirely from canvas, are not reachable this
-way. That is the gap the vision fallback will fill, and it is a smaller gap than it looks — the
-business systems this project targets are ordinary web applications.
+way. That is the gap `browser.screenshot`'s `attach` now fills — see [ADR 7](0007-vision.md) — and it
+was a smaller gap than it looked, because the business systems this project targets are ordinary web
+applications. The fallback is a fallback: it costs a separate grant, it costs tokens, and
+`click at (412, 908)` is not a reviewable action in the way `click on #send-button` is.
 
 Not bundling a browser means a first run can fail with "no browser found". That is the right failure:
 a security-sensitive tool that silently downloads and executes a hundred megabytes of binary on first

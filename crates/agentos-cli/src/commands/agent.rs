@@ -36,6 +36,11 @@ pub enum AgentCommand {
         #[arg(long)]
         base_url: Option<String>,
 
+        /// Whether this model can be shown images. Defaults to what the provider
+        /// reports, which is off for local endpoints whose model is unknown.
+        #[arg(long)]
+        vision: Option<bool>,
+
         /// Tools to offer the agent. Repeatable. Defaults to the read-only set.
         #[arg(long = "tool")]
         tools: Vec<String>,
@@ -78,6 +83,7 @@ pub async fn run(command: AgentCommand, config: &RuntimeConfig) -> Result<()> {
             provider,
             model,
             base_url,
+            vision,
             tools,
         } => {
             let tools = if tools.is_empty() {
@@ -96,6 +102,7 @@ pub async fn run(command: AgentCommand, config: &RuntimeConfig) -> Result<()> {
 
             let mut model_config = ModelConfig::new(&provider, &model);
             model_config.base_url = base_url;
+            model_config.vision = vision;
 
             let agent = runtime
                 .create_agent(&name, &instructions, model_config, tools)
@@ -173,6 +180,9 @@ pub async fn run(command: AgentCommand, config: &RuntimeConfig) -> Result<()> {
                 "  model         {}/{}",
                 agent.model.provider, agent.model.model
             );
+            if let Some(vision) = agent.model.vision {
+                println!("  vision        {vision}");
+            }
             if let Some(base_url) = &agent.model.base_url {
                 println!("  base url      {base_url}");
             }

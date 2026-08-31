@@ -84,6 +84,8 @@ function CreateAgent({ onCreated }: { onCreated: (name: string) => void }) {
   const [provider, setProvider] = useState("anthropic");
   const [model, setModel] = useState("claude-opus-5");
   const [baseUrl, setBaseUrl] = useState("");
+  // Three states, matching the runtime: yes, no, or "whatever the provider says".
+  const [vision, setVision] = useState<"default" | "yes" | "no">("default");
   const [granted, setGranted] = useState<string[]>(["filesystem.read", "filesystem.list"]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,6 +106,7 @@ function CreateAgent({ onCreated }: { onCreated: (name: string) => void }) {
         provider,
         model,
         base_url: baseUrl.trim() === "" ? null : baseUrl.trim(),
+        vision: vision === "default" ? null : vision === "yes",
         tools: granted,
       });
       onCreated(created.name);
@@ -112,7 +115,7 @@ function CreateAgent({ onCreated }: { onCreated: (name: string) => void }) {
     } finally {
       setBusy(false);
     }
-  }, [name, instructions, provider, model, baseUrl, granted, onCreated]);
+  }, [name, instructions, provider, model, baseUrl, vision, granted, onCreated]);
 
   return (
     <div className="panel" style={{ marginBottom: 16 }}>
@@ -160,6 +163,23 @@ function CreateAgent({ onCreated }: { onCreated: (name: string) => void }) {
             />
           </div>
         ) : null}
+
+        <div className="field">
+          <label htmlFor="vision">
+            Vision · whether this model can be shown a screenshot. Sending one is a separate
+            grant (<code>computer.vision</code>, <code>browser.vision</code>) that the policy
+            still decides.
+          </label>
+          <select
+            id="vision"
+            value={vision}
+            onChange={(event) => setVision(event.target.value as "default" | "yes" | "no")}
+          >
+            <option value="default">Provider default</option>
+            <option value="yes">This model can see images</option>
+            <option value="no">Text only</option>
+          </select>
+        </div>
 
         <div className="field">
           <label>

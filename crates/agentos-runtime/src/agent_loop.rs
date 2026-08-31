@@ -23,10 +23,10 @@ use agentos_core::memory::MemoryQuery;
 use agentos_core::task::{
     TaskFailure, TaskRun, TaskState, TaskStatus, TaskStep, TaskStepKind, TaskTrigger,
 };
-use agentos_core::trust::{Message, Role};
+use agentos_core::trust::{Content, Message, Role};
 use agentos_persistence::{Database, ToolExecutionRecord};
 use agentos_providers::{
-    CompletionRequest, CompletionResponse, ProviderError, SharedProvider, message_for_tool_result,
+    CompletionRequest, CompletionResponse, ProviderError, SharedProvider, messages_for_tool_result,
 };
 use agentos_tools::{TaintTracker, ToolContext, ToolPipeline};
 use tokio_util::sync::CancellationToken;
@@ -73,6 +73,13 @@ impl RunOutcome {
 }
 
 /// Drives one run from start to finish.
+/// How many captures the conversation keeps before older ones are replaced by
+/// their description.
+///
+/// Three is enough for "before, during, after" and small enough that a long run
+/// does not turn into a slideshow the model pays for on every turn.
+const MAX_CONVERSATION_IMAGES: usize = 3;
+
 pub struct AgentLoop {
     agent: Agent,
     run: TaskRun,
@@ -325,6 +332,60 @@ impl AgentLoop {
         })
     }
 
+    /// Keep only the most recent captures in the conversation.
+    ///
+    /// Providers re-read the whole conversation on every turn, so an image sent
+    /// once is an image paid for on every subsequent request. A run that takes
+    /// twelve screenshots and keeps them all is quadratic in cost and will
+    /// exhaust a context window long before it exhausts its step budget.
+    ///
+    /// Older captures are replaced by the description they already carried, so
+    /// the model still knows what it looked at and when — it simply cannot look
+    /// again without taking a new one.
+    fn forget_stale_images(&mut self) {
+        let total: usize = self
+            .conversation
+            .iter()
+            .map(|message| {
+                message
+                    .content
+                    .iter()
+                    .filter(|c| c.image().is_some())
+                    .count()
+            })
+            .sum();
+        if total <= MAX_CONVERSATION_IMAGES {
+            return;
+        }
+
+        let mut to_drop = total - MAX_CONVERSATION_IMAGES;
+        for message in &mut self.conversation {
+            if to_drop == 0 {
+                break;
+            }
+            for content in &mut message.content {
+                if to_drop == 0 {
+                    break;
+                }
+                let Some(image) = content.image() else {
+                    continue;
+                };
+                // Still untrusted, and still from the same source: dropping the
+                // pixels does not launder where they came from.
+                let replacement = Content::Untrusted(agentos_core::trust::UntrustedContent::new(
+                    image.source.clone(),
+                    format!(
+                        "{} — dropped from the conversation to stay inside the image budget; \
+                             take another capture if you need to look again.",
+                        image.describe()
+                    ),
+                ));
+                *content = replacement;
+                to_drop -= 1;
+            }
+        }
+    }
+
     async fn call_provider(
         &self,
         request: CompletionRequest,
@@ -416,8 +477,12 @@ impl AgentLoop {
 
             // The result goes back as untrusted data, whether it succeeded or
             // was refused. A refusal the model can read is what lets it re-plan.
+            let vision = self.provider.capabilities().vision;
             self.conversation
-                .push(message_for_tool_result(&report.result));
+                .extend(messages_for_tool_result(&report.result, vision));
+            if vision {
+                self.forget_stale_images();
+            }
 
             if self.taint.is_tainted() && !self.run.tainted {
                 self.run.tainted = true;

@@ -37,9 +37,9 @@ impl AgentRepository {
     pub async fn insert(&self, agent: &Agent) -> Result<(), DbError> {
         let result = sqlx::query(
             "INSERT INTO agents (id, name, instructions, provider, model, temperature,
-                                 max_output_tokens, base_url, enabled_tools, status,
-                                 max_steps, metadata, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                                 max_output_tokens, base_url, vision, enabled_tools,
+                                 status, max_steps, metadata, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         )
         .bind(agent.id.to_string())
         .bind(&agent.name)
@@ -49,6 +49,7 @@ impl AgentRepository {
         .bind(agent.model.temperature)
         .bind(agent.model.max_output_tokens)
         .bind(agent.model.base_url.as_deref())
+        .bind(agent.model.vision)
         .bind(write_json("enabled_tools", &agent.enabled_tools)?)
         .bind(agent.status.as_str())
         .bind(agent.max_steps)
@@ -79,8 +80,8 @@ impl AgentRepository {
         let affected = sqlx::query(
             "UPDATE agents SET name = ?2, instructions = ?3, provider = ?4, model = ?5,
                                temperature = ?6, max_output_tokens = ?7, base_url = ?8,
-                               enabled_tools = ?9, status = ?10, max_steps = ?11,
-                               metadata = ?12, updated_at = ?13
+                               vision = ?9, enabled_tools = ?10, status = ?11,
+                               max_steps = ?12, metadata = ?13, updated_at = ?14
              WHERE id = ?1",
         )
         .bind(agent.id.to_string())
@@ -91,6 +92,7 @@ impl AgentRepository {
         .bind(agent.model.temperature)
         .bind(agent.model.max_output_tokens)
         .bind(agent.model.base_url.as_deref())
+        .bind(agent.model.vision)
         .bind(write_json("enabled_tools", &agent.enabled_tools)?)
         .bind(agent.status.as_str())
         .bind(agent.max_steps)
@@ -239,6 +241,7 @@ fn hydrate(row: &sqlx::sqlite::SqliteRow) -> Result<Agent, DbError> {
             temperature: row.try_get("temperature")?,
             max_output_tokens: row.try_get("max_output_tokens")?,
             base_url: row.try_get("base_url")?,
+            vision: row.try_get("vision")?,
         },
         enabled_tools,
         status: read_unit_enum::<AgentStatus>(

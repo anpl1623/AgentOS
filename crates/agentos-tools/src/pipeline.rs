@@ -357,9 +357,41 @@ impl ToolPipeline {
         )
         .await;
 
-        let mut result = ToolResult::success(&call.id, &call.tool, content);
+        // 8. Images are subject to the same budget discipline as text. A tool
+        //    that hands back more captures than the run allows has the surplus
+        //    dropped here rather than at the provider, where the operator would
+        //    never see it happen.
+        let mut images = output.images;
+        let surplus = images.len().saturating_sub(context.max_images);
+        if surplus > 0 {
+            images.truncate(context.max_images);
+            tracing::warn!(
+                tool = %call.tool,
+                dropped = surplus,
+                kept = context.max_images,
+                "dropped images over the run's per-call limit"
+            );
+        }
+        let image_bytes: usize = images
+            .iter()
+            .map(agentos_core::trust::UntrustedImage::len)
+            .sum();
+        for image in &images {
+            if taint.observe(&image.source) {
+                self.emit(
+                    context,
+                    AgentEvent::TaintRaised {
+                        source: image.source.clone(),
+                        tool: call.tool.clone(),
+                    },
+                )
+                .await;
+            }
+        }
+
+        let mut result = ToolResult::success(&call.id, &call.tool, content).with_images(images);
         result.structured = output.structured;
-        builder.success(result, output_bytes)
+        builder.success(result, output_bytes + image_bytes)
     }
 
     /// Evaluate every capability in a plan and combine the answers.
@@ -554,6 +586,7 @@ impl ReportBuilder<'_> {
             tool: self.call.tool.clone(),
             outcome,
             content,
+            images: Vec::new(),
             structured: None,
         };
         self.finish(outcome, result, message.len(), Some(message))

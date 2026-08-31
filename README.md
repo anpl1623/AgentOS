@@ -561,7 +561,7 @@ alongside the execution loop rather than after it.
 - [x] Keyboard interaction — text and single keys with modifiers
 - [x] Application interaction — capabilities scoped to the application in front
 - [x] Accessibility permission detection — reported by `agentos doctor`
-- [ ] Vision: giving the model the screenshot it takes
+- [x] Vision: giving the model the screenshot it takes — `attach`, gated by `computer:vision`
 
 ## Phase 3 — Browser
 
@@ -571,7 +571,7 @@ alongside the execution loop rather than after it.
 - [x] Text extraction — returned as untrusted data tagged with its origin
 - [x] Browser state — element inspection with stable selectors
 - [x] Browser permissions — capabilities scoped by origin
-- [ ] Vision fallback for pages with no usable structure
+- [x] Vision fallback for pages with no usable structure — `attach`, gated by `browser:vision`
 
 ## Phase 4 — Safety *(done, ahead of phases 2 and 3)*
 
@@ -760,6 +760,12 @@ permissions:
 
   computer:
     screenshot: ask
+    # Saving a capture and showing one to a model are separate grants. The
+    # first writes a file you own; the second sends your screen to somebody
+    # else's server.
+    vision:
+      effect: ask
+      applications: [Mail]
     type:
       effect: ask
       applications: [Mail]

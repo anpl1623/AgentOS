@@ -16,6 +16,7 @@ pub mod pipeline;
 pub mod taint;
 pub mod terminal;
 pub mod tool;
+pub mod vision;
 
 use std::sync::Arc;
 
@@ -26,6 +27,9 @@ pub use taint::TaintTracker;
 pub use tool::{
     DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT, Tool, ToolContext, ToolOutput, ToolPlan,
     ToolRegistry, metadata_for, parse_arguments,
+};
+pub use vision::{
+    DEFAULT_MAX_IMAGE_BYTES, DEFAULT_MAX_IMAGE_EDGE, PreparedImage, VisionError, prepare,
 };
 
 /// A registry with every tool the runtime ships.

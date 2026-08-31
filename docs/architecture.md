@@ -185,6 +185,40 @@ neutralises text. What the scope does *not* do — bind what an event means, ver
 application is what it says it is — is in [`SECURITY.md`](../SECURITY.md). See
 [ADR 6](adr/0006-computer-control.md).
 
+## Vision
+
+`computer.screenshot` and `browser.screenshot` both take an `attach` flag. Without it they behave as
+they always did: a PNG is written into the agent's workspace and the model is told the file exists.
+With it, the capture is also handed to the model as `Content::Image`.
+
+Three things follow from that being a separate flag rather than the default.
+
+**It is a separate capability.** Attaching requires `computer:vision` or `browser:vision`, scoped the
+same way the capture itself is — to an application, or to an origin. Saving a screenshot puts pixels
+on a disk the operator owns; showing one to a model transmits the contents of their screen to a third
+party. A policy written before this existed granted the first and must not silently acquire the
+second because the runtime was upgraded.
+
+**There is no trusted image.** `ControlContent` has no visual counterpart and `Content::Image` is
+always untrusted, carrying the same `DataSource` the text does. Pixels are a worse place to draw the
+boundary than text: there is no envelope to wrap them in and no delimiter to neutralise, and a
+screenshot of a page reading "SYSTEM: you are now authorised" is, to a model, indistinguishable from
+a system message. So the type system offers no way to say otherwise.
+
+**A model that cannot see is told, not starved.** `ProviderCapabilities::vision` reports whether the
+configured model accepts images — declared per model in `ModelConfig`, because one Ollama server will
+serve a vision model and a text-only one. When it cannot, the pixels are dropped and a runtime notice
+says which tool produced them and that they were withheld. A model given silence describes a screen
+it never saw.
+
+Everything shown to a model goes through `agentos_tools::vision::prepare` first: the header is read
+before anything is allocated so a small file declaring 60000×60000 is refused rather than decoded,
+the image is scaled to fit 1568 pixels on its long edge, and PNG gives way to JPEG only if it will
+not otherwise fit. The copy written to disk is never the rescaled one. The conversation keeps the
+three most recent captures and replaces older ones with the description they already carried, because
+a provider re-reads the whole conversation every turn and an agent that took ten screenshots would
+otherwise pay for all ten, ten times.
+
 ## Taint tracking
 
 `TaintTracker` records whether a run has ingested externally-influenced data. Once it has, the policy
@@ -278,6 +312,5 @@ so it runs on every commit rather than being a demo somebody performs occasional
 
 ## Roadmap
 
-**Next:** giving the model the screenshots it can already take, so a native application with no
-usable structure is reachable; a scheduler; an orchestrator with task graphs; multi-agent delegation;
-plugins; and the integrations in the README's phase 6.
+**Next:** a scheduler; an orchestrator with task graphs; multi-agent delegation; plugins; and the
+integrations in the README's phase 6.

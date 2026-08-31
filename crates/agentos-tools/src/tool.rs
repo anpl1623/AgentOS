@@ -10,7 +10,7 @@ use agentos_core::ids::{AgentId, TaskId, TaskRunId};
 use agentos_core::permission::Capability;
 use agentos_core::risk::RiskLevel;
 use agentos_core::tool::ToolMetadata;
-use agentos_core::trust::{DataSource, UntrustedContent};
+use agentos_core::trust::{DataSource, UntrustedContent, UntrustedImage};
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
@@ -25,6 +25,13 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// A tool that returns a hundred megabytes of attacker-controlled text is a
 /// denial-of-service against the context window, and an expensive one.
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 64 * 1024;
+
+/// Default cap on how many images a single call may return.
+///
+/// One capture answers one question. A tool returning a filmstrip is either a
+/// mistake or an attempt to fill the context window, and both are worth
+/// stopping at the pipeline rather than at the provider.
+pub const DEFAULT_MAX_IMAGES: usize = 4;
 
 /// Everything a tool needs to know about the run it is executing inside.
 #[derive(Debug, Clone)]
@@ -44,6 +51,12 @@ pub struct ToolContext {
     pub timeout: Duration,
     /// Cap on returned output.
     pub max_output_bytes: usize,
+    /// Cap on how many images one call may return.
+    pub max_images: usize,
+    /// Longest edge, in pixels, images are resized to fit within.
+    pub max_image_edge: u32,
+    /// Cap on the encoded size of each returned image.
+    pub max_image_bytes: usize,
 }
 
 impl ToolContext {
@@ -57,6 +70,9 @@ impl ToolContext {
             workspace,
             timeout: DEFAULT_TIMEOUT,
             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
+            max_images: DEFAULT_MAX_IMAGES,
+            max_image_edge: crate::vision::DEFAULT_MAX_IMAGE_EDGE,
+            max_image_bytes: crate::vision::DEFAULT_MAX_IMAGE_BYTES,
         }
     }
 
@@ -71,6 +87,20 @@ impl ToolContext {
     #[must_use]
     pub const fn with_max_output_bytes(mut self, max_output_bytes: usize) -> Self {
         self.max_output_bytes = max_output_bytes;
+        self
+    }
+
+    /// Override the image budgets.
+    #[must_use]
+    pub const fn with_image_budget(
+        mut self,
+        max_images: usize,
+        max_image_edge: u32,
+        max_image_bytes: usize,
+    ) -> Self {
+        self.max_images = max_images;
+        self.max_image_edge = max_image_edge;
+        self.max_image_bytes = max_image_bytes;
         self
     }
 }
@@ -130,6 +160,11 @@ impl ToolPlan {
 pub struct ToolOutput {
     /// The payload. Always untrusted — see [`agentos_core::trust`].
     pub content: UntrustedContent,
+    /// Images the model should be shown, always untrusted.
+    ///
+    /// A tool attaches these only when the call was authorised to send pixels
+    /// to a model; the pipeline then enforces the run's image budget over them.
+    pub images: Vec<UntrustedImage>,
     /// Structured data for the UI and programmatic consumers, never shown to
     /// the model as control-plane content.
     pub structured: Option<serde_json::Value>,
@@ -141,8 +176,16 @@ impl ToolOutput {
     pub fn text(source: DataSource, body: impl Into<String>) -> Self {
         Self {
             content: UntrustedContent::new(source, body),
+            images: Vec::new(),
             structured: None,
         }
+    }
+
+    /// Attach an untrusted image for the model to look at.
+    #[must_use]
+    pub fn with_image(mut self, image: UntrustedImage) -> Self {
+        self.images.push(image);
+        self
     }
 
     /// Attach structured data.

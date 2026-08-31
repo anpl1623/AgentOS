@@ -84,6 +84,13 @@ Being explicit about the gaps is more useful than implying there are none:
   keychain protect data at rest and in transit, and none of them protects pixels. The audit log
   records that a capture happened and what it was of; it cannot record what was in it. Screen reads
   do at least raise taint, so what an agent does *after* looking is held to a higher bar.
+- **Showing a capture to a model sends it off the machine.** `computer:vision` and `browser:vision`
+  are separate capabilities from taking the capture, and both default to ungranted, precisely because
+  the two acts differ: saving a screenshot writes a file you own, attaching one transmits your screen
+  to whoever serves your model. Everything in the bullet above about what a display capture contains
+  applies again, to a third party's servers and their retention policy. Grant `vision` scoped to the
+  narrowest application or origin that does the job, and prefer a window capture over a display one.
+  Nothing in the runtime can un-send an image.
 - **An application's name is its own claim.** `application: Mail` on an approval card is what the
   process in front reports it is called, not a verified identity. It is the first resource kind in
   AgentOS whose value is not resolved by the runtime — a path is canonicalised, an origin comes from

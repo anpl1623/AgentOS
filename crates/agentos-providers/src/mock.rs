@@ -58,6 +58,12 @@ pub struct MockProvider {
     seen: Mutex<Vec<CompletionRequest>>,
     /// What to do once the script runs out.
     exhausted: ScriptedTurn,
+    /// Whether this mock claims to accept images.
+    ///
+    /// Off by default so the suite's baseline is the harder case: a model that
+    /// cannot see, which is the one where a screenshot has to degrade honestly
+    /// rather than vanish.
+    vision: bool,
 }
 
 impl MockProvider {
@@ -72,6 +78,7 @@ impl MockProvider {
             cursor: AtomicUsize::new(0),
             seen: Mutex::new(Vec::new()),
             exhausted: ScriptedTurn::Text("Done.".to_owned()),
+            vision: false,
         }
     }
 
@@ -108,6 +115,30 @@ impl MockProvider {
 
     /// The rendered text of every message in the most recent request.
     ///
+    /// Declare that this mock accepts images.
+    #[must_use]
+    pub const fn seeing(mut self) -> Self {
+        self.vision = true;
+        self
+    }
+
+    /// Every image the model was shown in the most recent request.
+    #[must_use]
+    pub fn last_images(&self) -> Vec<agentos_core::trust::UntrustedImage> {
+        self.requests()
+            .last()
+            .map(|request| {
+                request
+                    .messages
+                    .iter()
+                    .flat_map(|message: &Message| message.content.iter())
+                    .filter_map(Content::image)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Useful for asserting on what the model was actually shown.
     #[must_use]
     pub fn last_rendered_conversation(&self) -> String {
@@ -136,6 +167,7 @@ impl ModelProvider for MockProvider {
         ProviderCapabilities {
             tools: true,
             usage_reporting: true,
+            vision: self.vision,
         }
     }
 

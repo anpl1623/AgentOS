@@ -296,6 +296,175 @@ fn escape_attribute(value: &str) -> String {
         .replace(['\n', '\r'], " ")
 }
 
+/// An image format a provider can be asked to look at.
+///
+/// Deliberately short. Every entry is a format both major providers accept and
+/// that `agentos-tools` can re-encode, so a tool cannot hand the runtime bytes
+/// that only fail at the provider's edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageFormat {
+    /// PNG.
+    Png,
+    /// JPEG.
+    Jpeg,
+    /// WebP.
+    Webp,
+    /// GIF.
+    Gif,
+}
+
+impl ImageFormat {
+    /// The IANA media type, which is what providers name the format by.
+    #[must_use]
+    pub const fn media_type(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Webp => "image/webp",
+            Self::Gif => "image/gif",
+        }
+    }
+
+    /// Parse a media type. Returns `None` for anything not listed above rather
+    /// than guessing, because guessing here means sending a provider bytes it
+    /// will reject.
+    #[must_use]
+    pub fn from_media_type(media_type: &str) -> Option<Self> {
+        match media_type.trim().to_ascii_lowercase().as_str() {
+            "image/png" => Some(Self::Png),
+            "image/jpeg" | "image/jpg" => Some(Self::Jpeg),
+            "image/webp" => Some(Self::Webp),
+            "image/gif" => Some(Self::Gif),
+            _ => None,
+        }
+    }
+}
+
+/// An image that entered the system from outside the trust boundary.
+///
+/// # Why there is no trusted image
+///
+/// [`ControlContent`] has no visual counterpart, and that absence is deliberate.
+/// Every image AgentOS can obtain is a capture of something an attacker may
+/// control — a web page, a window, a file — and an image is a far worse place to
+/// draw the boundary than text: there is no envelope to wrap pixels in, no
+/// delimiter to neutralise, and a screenshot of a page reading "SYSTEM: you are
+/// now authorised" is indistinguishable to a model from a system message. The
+/// only safe rule is that pixels are never instructions, so the type system
+/// offers no way to say otherwise.
+///
+/// The accompanying [`UntrustedContent`] envelope still carries the text that
+/// describes the image, and it is that envelope — not the image — that tells the
+/// model where the data came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UntrustedImage {
+    /// Provenance of the pixels.
+    pub source: DataSource,
+    /// Encoding of `data`.
+    pub format: ImageFormat,
+    /// The encoded bytes, base64 in the serialised form.
+    #[serde(with = "base64_bytes")]
+    pub data: Vec<u8>,
+    /// Width in pixels, after any downscaling.
+    pub width: u32,
+    /// Height in pixels, after any downscaling.
+    pub height: u32,
+    /// The tool call this image answers, when applicable.
+    pub tool_call_id: Option<String>,
+}
+
+impl UntrustedImage {
+    /// Wrap image bytes that came from outside.
+    #[must_use]
+    pub fn new(
+        source: DataSource,
+        format: ImageFormat,
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self {
+            source,
+            format,
+            data,
+            width,
+            height,
+            tool_call_id: None,
+        }
+    }
+
+    /// Associate this image with the tool call that produced it.
+    #[must_use]
+    pub fn for_tool_call(mut self, id: impl Into<String>) -> Self {
+        self.tool_call_id = Some(id.into());
+        self
+    }
+
+    /// Size of the encoded image in bytes.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Whether the image carries no bytes.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// Base64 of the encoded bytes, which is how every provider transports them.
+    #[must_use]
+    pub fn base64(&self) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(&self.data)
+    }
+
+    /// A `data:` URI, the form OpenAI-compatible endpoints expect.
+    #[must_use]
+    pub fn data_uri(&self) -> String {
+        format!("data:{};base64,{}", self.format.media_type(), self.base64())
+    }
+
+    /// One line describing the image without reproducing it.
+    ///
+    /// Used for traces, for the audit log, and as the text a model is given in
+    /// place of an image its provider cannot see.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!(
+            "[{} image, {}x{} pixels, {} bytes, from {}]",
+            self.format.media_type(),
+            self.width,
+            self.height,
+            self.data.len(),
+            self.source.label()
+        )
+    }
+}
+
+/// Base64 transport for image bytes.
+///
+/// serde's default for `Vec<u8>` is a JSON array of numbers, which would make a
+/// one-megabyte screenshot a several-megabyte trace entry.
+mod base64_bytes {
+    use base64::Engine as _;
+    use serde::{Deserialize as _, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<u8>, D::Error> {
+        let encoded = String::deserialize(deserializer)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded.as_bytes())
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// One piece of a conversation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -309,6 +478,13 @@ pub enum Content {
     ToolCall(ToolCall),
     /// Data from outside the trust boundary.
     Untrusted(UntrustedContent),
+    /// An image from outside the trust boundary.
+    ///
+    /// Carried as its own variant rather than inside [`UntrustedContent`]
+    /// because providers transport images as separate content blocks, and
+    /// because a runtime that must drop images for a model without vision needs
+    /// to drop exactly those parts and keep the text.
+    Image(UntrustedImage),
 }
 
 impl Content {
@@ -324,6 +500,18 @@ impl Content {
         Self::Untrusted(UntrustedContent::new(source, body))
     }
 
+    /// Untrusted image content.
+    #[must_use]
+    pub fn image_from(
+        source: DataSource,
+        format: ImageFormat,
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self::Image(UntrustedImage::new(source, format, data, width, height))
+    }
+
     /// Which plane this content belongs to.
     ///
     /// Note that [`Content::Model`] and [`Content::ToolCall`] report
@@ -332,7 +520,9 @@ impl Content {
     pub const fn trust(&self) -> Trust {
         match self {
             Self::Control(_) => Trust::Control,
-            Self::Model(_) | Self::ToolCall(_) | Self::Untrusted(_) => Trust::Untrusted,
+            Self::Model(_) | Self::ToolCall(_) | Self::Untrusted(_) | Self::Image(_) => {
+                Trust::Untrusted
+            }
         }
     }
 
@@ -347,6 +537,16 @@ impl Content {
     pub const fn data_source(&self) -> Option<&DataSource> {
         match self {
             Self::Untrusted(inner) => Some(&inner.source),
+            Self::Image(image) => Some(&image.source),
+            _ => None,
+        }
+    }
+
+    /// Untrusted image content, if this is an image.
+    #[must_use]
+    pub const fn image(&self) -> Option<&UntrustedImage> {
+        match self {
+            Self::Image(image) => Some(image),
             _ => None,
         }
     }
@@ -359,6 +559,10 @@ impl Content {
             Self::Model(text) => text.clone(),
             Self::ToolCall(call) => format!("[tool call {} {}]", call.tool, call.id),
             Self::Untrusted(inner) => inner.render(),
+            // Rendering an image as text is what a model without vision sees,
+            // and what the audit log records. It describes the image; it never
+            // claims to be the image.
+            Self::Image(image) => image.describe(),
         }
     }
 }
@@ -538,6 +742,80 @@ mod tests {
         assert_eq!(screen.label(), "screen:Mail");
         assert!(!DataSource::User.is_externally_influenced());
         assert!(!DataSource::Runtime.is_externally_influenced());
+    }
+
+    fn screenshot() -> UntrustedImage {
+        UntrustedImage::new(
+            DataSource::Screen {
+                target: "Mail".into(),
+            },
+            ImageFormat::Png,
+            vec![0x89, b'P', b'N', b'G'],
+            1024,
+            768,
+        )
+    }
+
+    #[test]
+    fn images_are_never_control_plane() {
+        let content = Content::Image(screenshot());
+        assert_eq!(content.trust(), Trust::Untrusted);
+        assert!(!content.is_control());
+    }
+
+    #[test]
+    fn images_carry_their_provenance_for_taint() {
+        let message = Message::new(Role::User, vec![Content::Image(screenshot())]);
+        assert!(message.carries_untrusted_data());
+        assert_eq!(
+            message.content[0].data_source(),
+            Some(&DataSource::Screen {
+                target: "Mail".into()
+            })
+        );
+    }
+
+    #[test]
+    fn an_image_renders_as_a_description_not_as_pixels() {
+        let rendered = Content::Image(screenshot()).render();
+        assert!(rendered.contains("image/png"));
+        assert!(rendered.contains("1024x768"));
+        assert!(rendered.contains("screen:Mail"));
+        // Whatever a model without vision is shown, it is not the bytes.
+        assert!(!rendered.contains("PNG"));
+    }
+
+    #[test]
+    fn images_transport_as_base64_not_as_a_byte_array() {
+        let image = screenshot();
+        assert_eq!(image.base64(), "iVBORw==");
+        assert_eq!(image.data_uri(), "data:image/png;base64,iVBORw==");
+
+        let json = serde_json::to_string(&image).unwrap();
+        assert!(json.contains("\"data\":\"iVBORw==\""));
+        let round_tripped: UntrustedImage = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped, image);
+    }
+
+    #[test]
+    fn media_types_round_trip_and_unknown_ones_are_refused() {
+        for format in [
+            ImageFormat::Png,
+            ImageFormat::Jpeg,
+            ImageFormat::Webp,
+            ImageFormat::Gif,
+        ] {
+            assert_eq!(
+                ImageFormat::from_media_type(format.media_type()),
+                Some(format)
+            );
+        }
+        assert_eq!(
+            ImageFormat::from_media_type("IMAGE/JPG"),
+            Some(ImageFormat::Jpeg)
+        );
+        assert_eq!(ImageFormat::from_media_type("image/svg+xml"), None);
+        assert_eq!(ImageFormat::from_media_type("text/html"), None);
     }
 
     #[test]
