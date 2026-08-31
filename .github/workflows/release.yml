@@ -147,19 +147,55 @@ jobs:
         run: npm ci
         working-directory: apps/desktop
 
+      # Signing is opt-in, and opting out has to mean the variables are *absent*
+      # rather than present and empty. Tauri's bundler reads them with
+      # `std::env::var`, which returns `Ok("")` for a variable that is defined
+      # and blank, so `APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}` on a
+      # repository with no such secret reads as "sign this" and fails at
+      # `security import` with no certificate to import.
+      #
+      # Exporting through $GITHUB_ENV only when the secret is non-empty is what
+      # makes the absent case genuinely absent. An unsigned build somebody can
+      # verify by hand is more useful than no build at all — see
+      # docs/releasing.md for what that costs the person installing it.
+      - name: Prepare macOS signing
+        if: runner.os == 'macOS'
+        env:
+          CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ACCOUNT: ${{ secrets.APPLE_ID }}
+          APPLE_ACCOUNT_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CERTIFICATE:-}" ] || [ -z "${CERTIFICATE_PASSWORD:-}" ]; then
+            echo "No Apple signing secrets; building unsigned. See docs/releasing.md."
+            exit 0
+          fi
+
+          # Heredoc form, because a base64 certificate may contain newlines and a
+          # bare `KEY=value` line would truncate it at the first one.
+          {
+            printf 'APPLE_CERTIFICATE<<AGENTOS_EOF\n%s\nAGENTOS_EOF\n' "$CERTIFICATE"
+            printf 'APPLE_CERTIFICATE_PASSWORD=%s\n' "$CERTIFICATE_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+          for pair in \
+            "APPLE_SIGNING_IDENTITY=${SIGNING_IDENTITY:-}" \
+            "APPLE_ID=${APPLE_ACCOUNT:-}" \
+            "APPLE_PASSWORD=${APPLE_ACCOUNT_PASSWORD:-}" \
+            "APPLE_TEAM_ID=${TEAM_ID:-}"
+          do
+            [ -n "${pair#*=}" ] && echo "$pair" >> "$GITHUB_ENV"
+          done
+
+          echo "Apple signing secrets present; the bundle will be signed."
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          # Signing is opt-in. When these secrets are absent the bundles are
-          # built unsigned rather than the release failing, because an
-          # unsigned build somebody can verify by hand is more useful than no
-          # build at all — see docs/releasing.md for what that costs the user.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: apps/desktop
           args: ${{ matrix.args }}

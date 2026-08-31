@@ -39,6 +39,14 @@ The workflow signs and notarises the macOS bundles when these repository secrets
 builds them unsigned when they are not. It never fails for want of a certificate: an unsigned build
 somebody can verify by hand is more useful than no build at all.
 
+Opting out means the variables are *absent*, not present and empty, and the workflow goes to some
+trouble to make that so. Tauri's bundler reads them with `std::env::var`, which returns `Ok("")` for
+a variable that is defined and blank — so writing `APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}`
+in a repository with no such secret reads as "sign this" and fails at `security import` with nothing
+to import. They are exported through `$GITHUB_ENV` from a guarded step instead. A half-configured set
+— a certificate with no password — counts as absent, because attempting a signature that cannot
+succeed only turns a working unsigned build into no build.
+
 | Secret | What it is |
 | --- | --- |
 | `APPLE_CERTIFICATE` | Base64 of a `.p12` export of a Developer ID Application certificate |
