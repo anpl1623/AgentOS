@@ -29,4 +29,12 @@ pub enum CoreError {
         /// The offending input.
         value: String,
     },
+
+    /// A domain invariant was violated in a way that needs explaining.
+    ///
+    /// Used where the reason is worth reading — a cron expression the parser
+    /// rejected, an interval below the floor — rather than reducible to the name
+    /// of a field.
+    #[error("{0}")]
+    Invalid(String),
 }

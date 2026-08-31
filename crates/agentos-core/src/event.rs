@@ -263,6 +263,30 @@ pub enum AgentEvent {
         /// Where the claim came from.
         source: DataSource,
     },
+
+    /// A schedule came due and produced a task.
+    ScheduleFired {
+        /// The schedule.
+        schedule_id: crate::ids::ScheduleId,
+        /// Its name, so a deleted schedule's history still reads.
+        name: String,
+        /// What it created.
+        task_id: TaskId,
+    },
+
+    /// A task was given up on because something it depended on will not
+    /// succeed.
+    ///
+    /// Recorded rather than left implicit: a task that silently waits forever is
+    /// indistinguishable from one nobody has got to yet.
+    TaskAbandoned {
+        /// The task.
+        task_id: TaskId,
+        /// The dependency that ended it.
+        blocked_by: TaskId,
+        /// What happened to that dependency.
+        reason: String,
+    },
 }
 
 impl AgentEvent {
@@ -296,6 +320,8 @@ impl AgentEvent {
             Self::ToolArgumentsRejected { .. } => "tool.arguments.rejected",
             Self::UnknownToolRequested { .. } => "tool.unknown",
             Self::MemoryRecorded { .. } => "agent.memory.recorded",
+            Self::ScheduleFired { .. } => "schedule.fired",
+            Self::TaskAbandoned { .. } => "agent.task.abandoned",
         }
     }
 

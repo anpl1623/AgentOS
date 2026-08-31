@@ -84,6 +84,12 @@ Being explicit about the gaps is more useful than implying there are none:
   keychain protect data at rest and in transit, and none of them protects pixels. The audit log
   records that a capture happened and what it was of; it cannot record what was in it. Screen reads
   do at least raise taint, so what an agent does *after* looking is held to a higher bar.
+- **A scheduled run has nobody to ask.** `agentos schedule run` drives every run behind a gate that
+  refuses every approval, so a schedule can only do what its policy permits outright. That makes the
+  policy the whole of the control: anything you set to `allow` will happen unattended, at three in
+  the morning, with no chance to change your mind. Read a policy twice before scheduling against it,
+  and prefer `ask` for anything you would want to see — the run will be refused rather than
+  proceeding, which is the failure you want.
 - **Showing a capture to a model sends it off the machine.** `computer:vision` and `browser:vision`
   are separate capabilities from taking the capture, and both default to ungranted, precisely because
   the two acts differ: saving a screenshot writes a file you own, attaching one transmits your screen

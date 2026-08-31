@@ -10,6 +10,23 @@ it is technically a breaking change.
 
 ## [Unreleased]
 
+### Added
+
+- **Schedules.** A standing instruction to give an agent the same objective on a cadence — once, a
+  fixed interval, or a cron expression read against UTC or local time. Each firing creates its own
+  task. `agentos schedule create | list | pause | resume | delete | run`.
+- **Task graphs.** Tasks can wait for other tasks. A DAG rather than a tree, with cycles refused when
+  an edge is written and the whole path named in the error. `agentos task create --depends-on`.
+- **A scheduler.** Fires due schedules, starts tasks whose dependencies have succeeded, and cancels
+  branches whose dependency failed rather than leaving them waiting.
+
+### Security
+
+- A scheduled run happens with nobody present, so it is driven behind a gate that **refuses every
+  approval**. Anything the policy permits outright proceeds; anything that would have asked a person
+  is denied with a note the agent can read. There is no setting that changes this, which means the
+  policy is the whole of the control for unattended work. See [`SECURITY.md`](SECURITY.md).
+
 ## [0.1.0]
 
 The first release. Runtime, safety, browser, computer control, CLI and desktop application.

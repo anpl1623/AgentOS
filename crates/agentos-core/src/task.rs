@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Timestamp;
 use crate::error::CoreError;
-use crate::ids::{AgentId, TaskId, TaskRunId, TaskStepId, ToolExecutionId};
+use crate::ids::{AgentId, ScheduleId, TaskId, TaskRunId, TaskStepId, ToolExecutionId};
 
 /// Lifecycle state of a run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -313,6 +313,12 @@ pub enum TaskStatus {
     /// Never run.
     #[default]
     Pending,
+    /// Waiting on another task in its graph.
+    ///
+    /// Distinct from `Pending` because the two need different answers to "why
+    /// has this not started?". A pending task is waiting for a scheduler; a
+    /// blocked one is waiting for something that may never happen.
+    Blocked,
     /// A run is in progress.
     Running,
     /// The most recent run succeeded.
@@ -329,6 +335,7 @@ impl TaskStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
+            Self::Blocked => "blocked",
             Self::Running => "running",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
@@ -361,6 +368,7 @@ impl FromStr for TaskStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "pending" => Ok(Self::Pending),
+            "blocked" => Ok(Self::Blocked),
             "running" => Ok(Self::Running),
             "succeeded" => Ok(Self::Succeeded),
             "failed" => Ok(Self::Failed),
@@ -386,6 +394,16 @@ pub struct Task {
     pub status: TaskStatus,
     /// The task this was spawned from, for orchestrated task graphs.
     pub parent_task_id: Option<TaskId>,
+    /// The earliest moment this task may start.
+    ///
+    /// `None` means "as soon as something picks it up". A dependency is a
+    /// different kind of wait and is recorded separately: this one is about the
+    /// clock, that one is about other work.
+    #[serde(default)]
+    pub scheduled_for: Option<Timestamp>,
+    /// The schedule that created this task, when one did.
+    #[serde(default)]
+    pub schedule_id: Option<ScheduleId>,
     /// When it was created.
     pub created_at: Timestamp,
     /// When its first run started.
@@ -404,6 +422,8 @@ impl Task {
             objective: objective.into(),
             status: TaskStatus::Pending,
             parent_task_id: None,
+            scheduled_for: None,
+            schedule_id: None,
             created_at: crate::now(),
             started_at: None,
             completed_at: None,
@@ -415,6 +435,33 @@ impl Task {
     pub const fn with_parent(mut self, parent: TaskId) -> Self {
         self.parent_task_id = Some(parent);
         self
+    }
+
+    /// Hold this task until a given moment.
+    #[must_use]
+    pub const fn scheduled_for(mut self, when: Timestamp) -> Self {
+        self.scheduled_for = Some(when);
+        self
+    }
+
+    /// Record the schedule that produced this task.
+    #[must_use]
+    pub const fn from_schedule(mut self, schedule: ScheduleId) -> Self {
+        self.schedule_id = Some(schedule);
+        self
+    }
+
+    /// Mark this task as waiting on other tasks.
+    #[must_use]
+    pub const fn blocked(mut self) -> Self {
+        self.status = TaskStatus::Blocked;
+        self
+    }
+
+    /// Whether the clock permits this task to start at `now`.
+    #[must_use]
+    pub fn is_due(&self, now: Timestamp) -> bool {
+        self.scheduled_for.is_none_or(|when| when <= now)
     }
 }
 

@@ -14,6 +14,7 @@ pub mod config;
 pub mod error;
 pub mod gate;
 pub mod prompt;
+pub mod scheduler;
 pub mod state;
 
 use std::sync::Arc;
@@ -37,6 +38,7 @@ pub use config::{
 };
 pub use error::RuntimeError;
 pub use gate::RunApprovalGate;
+pub use scheduler::{Scheduler, SchedulerOptions, TickReport};
 pub use state::RunStateMachine;
 
 /// Everything a running AgentOS installation needs.
@@ -240,6 +242,212 @@ impl Runtime {
         let task = Task::new(agent_id, objective);
         self.database.tasks().insert(&task).await?;
         Ok(task)
+    }
+
+    /// Create a task that waits for others to succeed first.
+    ///
+    /// The task is stored `Blocked` and each edge is checked for cycles before
+    /// it is written, so a graph that cannot make progress is refused at the
+    /// moment somebody describes it rather than discovered by a scheduler that
+    /// never starts anything.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::InvalidGraph`] if a named dependency does not exist,
+    /// [`RuntimeError::DependencyCycle`] if an edge would close a cycle, or
+    /// [`RuntimeError::Database`] on failure.
+    pub async fn create_task_after(
+        &self,
+        agent_id: AgentId,
+        objective: &str,
+        dependencies: &[TaskId],
+    ) -> Result<Task, RuntimeError> {
+        // Validate before writing anything, so a graph with one bad edge does
+        // not leave a half-built one behind.
+        for dependency in dependencies {
+            if self.database.tasks().find(*dependency).await?.is_none() {
+                return Err(RuntimeError::InvalidGraph(format!(
+                    "task {dependency} does not exist, so nothing can wait for it"
+                )));
+            }
+        }
+
+        let task = if dependencies.is_empty() {
+            Task::new(agent_id, objective)
+        } else {
+            Task::new(agent_id, objective).blocked()
+        };
+        self.database.tasks().insert(&task).await?;
+
+        for dependency in dependencies {
+            self.add_dependency(task.id, *dependency).await?;
+        }
+        Ok(task)
+    }
+
+    /// Hold a task until a given moment.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Database`] on failure.
+    pub async fn create_task_at(
+        &self,
+        agent_id: AgentId,
+        objective: &str,
+        when: agentos_core::Timestamp,
+    ) -> Result<Task, RuntimeError> {
+        let task = Task::new(agent_id, objective).scheduled_for(when);
+        self.database.tasks().insert(&task).await?;
+        Ok(task)
+    }
+
+    /// Record that `task` waits for `depends_on`.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::DependencyCycle`] if the edge would close a cycle,
+    /// [`RuntimeError::InvalidGraph`] if a task is missing or the edge is a
+    /// self-loop, or [`RuntimeError::Database`] on failure.
+    pub async fn add_dependency(
+        &self,
+        task: TaskId,
+        depends_on: TaskId,
+    ) -> Result<(), RuntimeError> {
+        if task == depends_on {
+            return Err(RuntimeError::InvalidGraph(
+                "a task cannot wait for itself".to_owned(),
+            ));
+        }
+        for id in [task, depends_on] {
+            if self.database.tasks().find(id).await?.is_none() {
+                return Err(RuntimeError::InvalidGraph(format!(
+                    "task {id} does not exist"
+                )));
+            }
+        }
+
+        // Walk the existing graph from `depends_on`. If `task` is reachable,
+        // then `task` is already upstream of `depends_on` and this edge would
+        // close the loop.
+        let edges = self.database.dependencies().all().await?;
+        if let Some(path) = path_between(&edges, depends_on, task) {
+            let mut cycle = vec![task];
+            cycle.extend(path);
+            return Err(RuntimeError::DependencyCycle { path: cycle });
+        }
+
+        self.database.dependencies().add(task, depends_on).await?;
+
+        // A task somebody has just made wait is not pending any more.
+        let stored = self.database.tasks().get(task).await?;
+        if matches!(stored.status, agentos_core::TaskStatus::Pending) {
+            self.database
+                .tasks()
+                .set_status(task, agentos_core::TaskStatus::Blocked)
+                .await?;
+        }
+        Ok(())
+    }
+
+    // -- Schedules ------------------------------------------------------------
+
+    /// Create a schedule.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::UnknownAgent`] if the agent does not exist,
+    /// [`RuntimeError::InvalidGraph`] never, and [`RuntimeError::Database`] on
+    /// failure. An unevaluable cadence surfaces as
+    /// [`RuntimeError::InvalidSchedule`].
+    pub async fn create_schedule(
+        &self,
+        agent_id: AgentId,
+        name: &str,
+        objective: &str,
+        cadence: agentos_core::schedule::Cadence,
+        first_run_at: agentos_core::Timestamp,
+    ) -> Result<agentos_core::schedule::Schedule, RuntimeError> {
+        let schedule =
+            agentos_core::schedule::Schedule::new(agent_id, name, objective, cadence, first_run_at)
+                .map_err(|error| RuntimeError::InvalidSchedule(error.to_string()))?;
+        self.database.schedules().insert(&schedule).await?;
+        Ok(schedule)
+    }
+
+    /// Every schedule, newest first.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Database`] on failure.
+    pub async fn schedules(&self) -> Result<Vec<agentos_core::schedule::Schedule>, RuntimeError> {
+        Ok(self.database.schedules().list().await?)
+    }
+
+    /// Stop a schedule firing without deleting it.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Database`] on failure.
+    pub async fn pause_schedule(
+        &self,
+        id: agentos_core::ids::ScheduleId,
+    ) -> Result<(), RuntimeError> {
+        let schedule = self.database.schedules().get(id).await?;
+        self.database
+            .schedules()
+            .set_status(
+                id,
+                agentos_core::schedule::ScheduleStatus::Paused,
+                schedule.next_run_at,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Start a paused schedule firing again.
+    ///
+    /// The next occurrence is computed forward from now, so a schedule that was
+    /// paused over a weekend does not wake up owing a backlog.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Database`] on failure.
+    pub async fn resume_schedule(
+        &self,
+        id: agentos_core::ids::ScheduleId,
+    ) -> Result<(), RuntimeError> {
+        let schedule = self.database.schedules().get(id).await?;
+        let now = agentos_core::now();
+        let next = match schedule.next_run_at {
+            // Its slot is still ahead; nothing was missed.
+            Some(next) if next > now => Some(next),
+            _ => schedule.cadence.next_after(now),
+        };
+        let status = if next.is_some() {
+            agentos_core::schedule::ScheduleStatus::Active
+        } else {
+            // A one-shot whose moment passed while it was paused has nothing
+            // left to do, and saying so beats leaving it active and inert.
+            agentos_core::schedule::ScheduleStatus::Finished
+        };
+        self.database
+            .schedules()
+            .set_status(id, status, next)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete a schedule. The tasks it created are left alone.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Database`] on failure.
+    pub async fn delete_schedule(
+        &self,
+        id: agentos_core::ids::ScheduleId,
+    ) -> Result<(), RuntimeError> {
+        self.database.schedules().delete(id).await?;
+        Ok(())
     }
 
     /// Execute a task and return what it produced.
@@ -588,4 +796,38 @@ pub struct RunTrace {
     pub executions: Vec<agentos_persistence::ToolExecutionRecord>,
     /// Approvals raised during the run.
     pub approvals: Vec<agentos_core::approval::ApprovalRequest>,
+}
+
+/// The path from `from` to `to` following dependency edges, if one exists.
+///
+/// An edge `(task, depends_on)` means `task` waits for `depends_on`, so this
+/// walks in the direction of "what am I waiting for". Breadth-first, so the path
+/// reported to somebody who has just written a cycle is the shortest one rather
+/// than whichever the recursion happened to find.
+fn path_between(edges: &[(TaskId, TaskId)], from: TaskId, to: TaskId) -> Option<Vec<TaskId>> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    let mut queue = VecDeque::from([from]);
+    let mut seen = HashSet::from([from]);
+    let mut came_from: HashMap<TaskId, TaskId> = HashMap::new();
+
+    while let Some(current) = queue.pop_front() {
+        if current == to {
+            let mut path = vec![current];
+            let mut cursor = current;
+            while let Some(previous) = came_from.get(&cursor) {
+                path.push(*previous);
+                cursor = *previous;
+            }
+            path.reverse();
+            return Some(path);
+        }
+        for (task, depends_on) in edges {
+            if *task == current && seen.insert(*depends_on) {
+                came_from.insert(*depends_on, current);
+                queue.push_back(*depends_on);
+            }
+        }
+    }
+    None
 }

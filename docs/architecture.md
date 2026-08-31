@@ -249,6 +249,34 @@ be able to stop an agent.
 shared with the approval gate wrapper, so `WaitingForApproval` is a state runs genuinely occupy while
 a human is deciding, rather than a box in a diagram.
 
+## Schedules and task graphs
+
+Two separate questions about the same task: *when* may this start, and *what* is it waiting for.
+
+Dependencies are a DAG in `task_dependencies`, not the tree `tasks.parent_task_id` describes, because
+the common shape is a fan-in — three tasks gathering, one summarising all of them. A task with unmet
+dependencies is `Blocked` rather than `Pending`, so "why has this not started?" has two different
+answers instead of one ambiguous one.
+
+Whether a dependency is satisfied is computed in SQL from the current status of the tasks upstream,
+never stored. A stored flag is a second source of truth, and the failure mode is a task stuck because
+somebody forgot to update it. Cycles are refused by `Runtime::add_dependency` before the edge is
+written, and the error names the whole path — "there is a cycle" is not actionable.
+
+A schedule creates tasks; it is not one. Each firing gets its own runs, traces, approvals and audit
+entries. Cadences are once, a fixed interval with a sixty-second floor, or cron, read against UTC or
+the host's local time. There is no timezone database here, so a named IANA zone is not on offer.
+
+The next occurrence is computed forward from the moment a schedule actually fires, so a machine that
+was asleep for three days wakes up owing one run rather than seventy-two. A task whose dependency
+failed is cancelled and recorded as `agent.task.abandoned`, because a task that waits forever looks
+exactly like one nobody has reached.
+
+**The scheduler denies every approval, and there is no setting that changes it.** An unattended run
+does what the policy permits outright and is refused everything else, with a note the model can read
+and re-plan around. A scheduler that could approve on the operator's behalf would make the approval
+gate decorative. See [ADR 8](adr/0008-scheduling-and-task-graphs.md).
+
 ## Persistence
 
 SQLite via `sqlx`, with runtime-checked queries so contributors never need a live `DATABASE_URL` to
@@ -312,5 +340,5 @@ so it runs on every commit rather than being a demo somebody performs occasional
 
 ## Roadmap
 
-**Next:** a scheduler; an orchestrator with task graphs; multi-agent delegation; plugins; and the
-integrations in the README's phase 6.
+**Next:** an orchestrator that writes task graphs rather than a person writing them; multi-agent
+delegation; plugins; and the integrations in the README's phase 6.

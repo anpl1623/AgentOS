@@ -381,6 +381,11 @@ AgentOS is designed to eventually support specialized agents working under an or
                      Shared Runtime
 ```
 
+The graph itself exists: tasks depend on other tasks, a scheduler starts each one when everything it
+waits for has succeeded, and a branch whose dependency failed is cancelled rather than left waiting.
+What is still ahead is the orchestrator that *writes* such a graph — today a person does, with
+`agentos task create --depends-on` — and delegation across more than one agent.
+
 A high-level objective can be decomposed into smaller tasks and delegated to specialized agents.
 
 For example:
@@ -587,9 +592,9 @@ alongside the execution loop rather than after it.
 ## Phase 5 — Memory & Orchestration
 
 - [x] Persistent memory — structured, with provenance, behind a swappable interface
-- [ ] Task graphs
-- [ ] Task dependencies
-- [ ] Scheduler
+- [x] Task graphs — a DAG, checked for cycles when an edge is written
+- [x] Task dependencies — a task starts when every task it waits for has succeeded
+- [x] Scheduler — cron or interval, running unattended behind a deny-all approval gate
 - [ ] Agent orchestration
 - [ ] Multi-agent execution
 
@@ -717,6 +722,47 @@ afterwards — and that none of those refusals depended on the model noticing an
 permission decisions you see are real ones. Drop the flag to run it against a configured provider,
 and add `--headed` to watch the browser work.
 
+## Work that runs on its own
+
+A schedule is a standing instruction: give this agent this objective, on this cadence. Each firing
+creates its own task, so every occurrence keeps its own runs, traces, approvals and audit trail.
+
+```bash
+./target/release/agentos schedule create morning-review \
+  "Review overdue follow-ups and draft messages for the ones that need chasing." \
+  --agent sales --cron "0 9 * * MON-FRI" --local
+```
+
+Tasks can also wait for each other. Create the ones that go first, then the ones that depend on
+them; the graph is a DAG and an edge that would close a cycle is refused when it is written, not
+discovered later by a scheduler that never starts anything.
+
+```bash
+GATHER=$(./target/release/agentos task create "Pull this week's failed payments." --agent ops)
+./target/release/agentos task create "Summarise them for the finance channel." \
+  --agent ops --depends-on "$GATHER"
+```
+
+Nothing fires until a scheduler is running:
+
+```bash
+./target/release/agentos schedule run
+```
+
+**A scheduled run happens with nobody watching, so every approval it would have asked for is
+refused.** Anything the policy permits outright proceeds; anything that would have put a card in
+front of a person is denied with a note the agent can read and re-plan around. There is no flag that
+changes this. An agent that needs a person to say yes needs a person, and a scheduler that could say
+yes on your behalf would make the approval gate decorative.
+
+Two more things worth knowing before leaving one running:
+
+- **Missed firings do not pile up.** The next occurrence is computed forward from the moment a
+  schedule actually fires. A laptop asleep for three days wakes up owing one run, not seventy-two.
+- **Dead branches are reported, not left hanging.** If a task fails, everything waiting on it is
+  cancelled and recorded in the audit log, because a task that waits forever looks exactly like one
+  nobody has got to yet.
+
 ## The desktop application
 
 ```bash
@@ -740,7 +786,8 @@ development-only and are removed from a production build.
 | `agentos doctor` | Check the installation and report what is missing |
 | `agentos agent create \| list \| show \| set` | Manage agents |
 | `agentos policy show \| set \| validate` | Inspect and edit permission policies |
-| `agentos task run \| list \| show \| cancel` | Run and inspect tasks |
+| `agentos task run \| create \| list \| show \| cancel` | Run and inspect tasks, and build graphs of them |
+| `agentos schedule create \| list \| pause \| resume \| delete \| run` | Standing instructions, and the loop that acts on them |
 | `agentos audit tail \| verify` | Read the log and check its integrity |
 | `agentos provider list \| set-key \| remove-key` | Manage credentials |
 | `agentos demo` | Run the end-to-end demonstration against a local mock CRM |

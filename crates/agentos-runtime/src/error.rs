@@ -41,6 +41,26 @@ pub enum RuntimeError {
     #[error("agent `{0}` is disabled")]
     DisabledAgent(String),
 
+    /// A dependency would have closed a cycle in a task graph.
+    #[error(
+        "adding that dependency would close a cycle: {}",
+        path.iter().map(ToString::to_string).collect::<Vec<_>>().join(" -> ")
+    )]
+    DependencyCycle {
+        /// The path the edge would have closed, starting and ending at the same
+        /// task. Reported in full, because "there is a cycle" is not actionable
+        /// and "A waits for B waits for C waits for A" is.
+        path: Vec<agentos_core::ids::TaskId>,
+    },
+
+    /// A task graph was described in a way that cannot be built.
+    #[error("{0}")]
+    InvalidGraph(String),
+
+    /// A schedule's cadence cannot be evaluated.
+    #[error("{0}")]
+    InvalidSchedule(String),
+
     /// The configured provider is not one the runtime can build.
     #[error("agent `{agent}` is configured for unknown provider `{provider}`")]
     UnknownProvider {

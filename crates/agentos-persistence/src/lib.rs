@@ -21,6 +21,7 @@ pub mod audit_sink;
 pub mod executions;
 pub mod memories;
 pub mod runs;
+pub mod schedules;
 pub mod settings;
 pub mod steps;
 pub mod tasks;
@@ -141,6 +142,18 @@ impl Database {
     #[must_use]
     pub fn memories(&self) -> MemoryRepository {
         MemoryRepository::new(self.pool.clone())
+    }
+
+    /// Schedules.
+    #[must_use]
+    pub fn schedules(&self) -> schedules::ScheduleRepository {
+        schedules::ScheduleRepository::new(self.pool.clone())
+    }
+
+    /// The edges of a task graph.
+    #[must_use]
+    pub fn dependencies(&self) -> schedules::DependencyRepository {
+        schedules::DependencyRepository::new(self.pool.clone())
     }
 
     /// Key/value settings.
