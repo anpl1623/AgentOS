@@ -28,6 +28,28 @@ You
 └─────────────────────────────────────┘
 ```
 
+![The AgentOS dashboard: running work, recent refusals, agents and audit state](docs/images/dashboard.png)
+
+The dashboard is the operator's view of the machine: what is running, what is waiting on a
+decision, and what was refused. The `audit chain` tile reports whether the hash chain
+verifies, which is the same check `agentos audit verify` runs from the CLI.
+
+![An approval request, escalated because the run read untrusted data](docs/images/approvals.png)
+
+An approval is where the trust boundary becomes visible. This one is escalated because the
+run had already read a web page, so the request carries the origin that tainted it, the
+rule that matched, and the exact arguments the agent proposed, rather than a summary the
+model wrote of its own intentions.
+
+![The activity log: every action, permission decision and refusal in order](docs/images/activity.png)
+
+Every action, permission decision and refusal lands in the activity log in the order it
+happened, including the ones nobody had to notice: `agent.taint.raised`,
+`permission.denied`, `permission.escalated_by_taint`.
+
+These screens are the desktop application running against its development fixtures, which
+is why it reports that it is not connected to a runtime.
+
 ## Why AgentOS?
 
 Current AI agents are becoming increasingly capable at using computers, but there is still a significant gap between:
@@ -60,7 +82,7 @@ All while keeping the user in control.
 
 # Core Principles
 
-### 🖥️ Computer-Native
+### Computer-native
 
 Agents should be able to interact with the same interfaces humans use.
 
@@ -73,7 +95,7 @@ AgentOS is designed around access to:
 - APIs
 - Business applications
 
-### 🔐 User-Controlled
+### User-controlled
 
 The AI does not own your computer.
 
@@ -99,7 +121,7 @@ Email
  └── Send             ASK
 ```
 
-### 🧠 Persistent
+### Persistent
 
 Agents need more than a conversation history.
 
@@ -113,13 +135,13 @@ AgentOS maintains structured state for:
 - Agent activity
 - Audit history
 
-### 🔌 Extensible
+### Extensible
 
 Everything an agent can do is represented as a tool.
 
 Developers can build integrations and plugins without modifying the core agent runtime.
 
-### 🌎 Open Source
+### Open source
 
 AgentOS is designed to be genuinely open source.
 
@@ -182,8 +204,8 @@ without creating separate agent implementations.
 The runtime, a CLI and a desktop application exist today. The two clients consume the same runtime
 and hold no agent logic of their own.
 
-For the detail — how the trust boundary, the policy engine, taint tracking and the audit chain
-actually work — see [`docs/architecture.md`](docs/architecture.md) and the decision records in
+For the detail on how the trust boundary, the policy engine, taint tracking and the audit
+chain actually work, see [`docs/architecture.md`](docs/architecture.md) and the decision records in
 [`docs/adr`](docs/adr).
 
 ### Crates
@@ -200,7 +222,7 @@ actually work — see [`docs/architecture.md`](docs/architecture.md) and the dec
 | `agentos-browser` | Deterministic browser automation over CDP |
 | `agentos-computer` | Screen, mouse and keyboard, scoped to the application in front |
 | `agentos-demo` | The mock CRM and the demonstration scenario |
-| `apps/desktop` | The desktop application — Tauri 2, React, TypeScript |
+| `apps/desktop` | The desktop application: Tauri 2, React, TypeScript |
 | `agentos-runtime` | Task state machine, agent loop, composition root |
 | `agentos-cli` | The `agentos` binary |
 
@@ -266,7 +288,7 @@ Initial capabilities include:
 
 ### Computer
 
-- Screenshots — of one window, or of a whole display
+- Screenshots: of one window, or of a whole display
 - Mouse control
 - Keyboard input
 - Clicking
@@ -307,12 +329,12 @@ approval bar for the rest of a run.
 
 Computer control is scoped to the **application in front**: a call names the application it is for,
 that name has to be the one with focus, and the check is repeated before every individual keystroke.
-It is a real narrowing and an honestly narrow one — it binds who receives an event, never what the
+It is a real narrowing and an honestly narrow one. It binds who receives an event, never what the
 event does. Prefer the browser tools whenever the target is a web page, and read the limitations in
 [`SECURITY.md`](SECURITY.md) before granting `computer.type` to anything. See
 [ADR 6](docs/adr/0006-computer-control.md).
 
-Browser interaction is deterministic — CSS selectors over the Chrome DevTools Protocol, not
+Browser interaction is deterministic, using CSS selectors over the Chrome DevTools Protocol, not
 screenshots and coordinates. `browser.click #send-button` is a reviewable action in a way that
 `click at (412, 908)` is not. Capabilities are scoped by origin, so an agent can be given one site
 rather than the web. See [ADR 5](docs/adr/0005-deterministic-browser-automation.md).
@@ -383,8 +405,8 @@ AgentOS is designed to eventually support specialized agents working under an or
 
 The graph itself exists: tasks depend on other tasks, a scheduler starts each one when everything it
 waits for has succeeded, and a branch whose dependency failed is cancelled rather than left waiting.
-What is still ahead is the orchestrator that *writes* such a graph — today a person does, with
-`agentos task create --depends-on` — and delegation across more than one agent.
+What is still ahead is the orchestrator that *writes* such a graph (today a person does, with
+`agentos task create --depends-on`) and delegation across more than one agent.
 
 A high-level objective can be decomposed into smaller tasks and delegated to specialized agents.
 
@@ -434,7 +456,7 @@ A webpage, email, document, or application cannot redefine the agent's authority
 That is enforced structurally rather than by asking the model nicely:
 
 - **The trust boundary is a type.** Operator instructions are the only trusted content. Model output
-  and every tool result — without exception — are not, and there is no API that converts one into the
+  and every tool result, without exception, are not, and there is no API that converts one into the
   other. Untrusted text is shown to the model inside a nonce-tagged envelope it cannot forge its way
   out of.
 - **Authorisation never reads model output.** Permission decisions come from the operator's policy,
@@ -444,7 +466,7 @@ That is enforced structurally rather than by asking the model nicely:
   that follows. This is what makes "read a poisoned page, then exfiltrate" loud instead of silent.
 - **No shell.** `terminal.exec` takes an argument vector, so `;`, `&&`, `$(...)` and globs are
   literal characters rather than an injection surface. Child processes get an environment allowlist,
-  never the parent's — so an agent cannot read your API key back out through a subprocess. `.bat`
+  never the parent's, so an agent cannot read your API key back out through a subprocess. `.bat`
   and `.cmd` files are refused outright: they are the one case where Windows hands an argument
   vector to a shell.
 - **Paths are resolved before they are checked.** `../` and symlinks are resolved to where they
@@ -518,7 +540,7 @@ AgentOS is currently under active development. The architecture and APIs are exp
 - The permission engine: deny-by-default YAML policies, specificity ordering, risk ceilings,
   path sandboxing that survives `../` and symlinks
 - The trust boundary and taint tracking
-- Human approval as a runtime primitive — persisted, resumable, and auditable
+- Human approval as a runtime primitive: persisted, resumable, and auditable
 - The append-only, hash-chained audit log
 - SQLite persistence for agents, tasks, runs, traces, approvals and memory
 - Filesystem, terminal, browser and computer-control tools
@@ -545,60 +567,60 @@ Phases 1 and 4 were built together. Safety is not a feature that can be added to
 assumed it would not be needed, so the permission engine, approval gate and audit log went in
 alongside the execution loop rather than after it.
 
-## Phase 1 — Agent Runtime
+## Phase 1: Agent runtime
 
 - [x] Rust agent runtime
 - [x] LLM provider abstraction (Anthropic, OpenAI-compatible, local, mock)
 - [x] Agent lifecycle
-- [x] Task execution — explicit state machine, retries, cancellation
+- [x] Task execution: explicit state machine, retries, cancellation
 - [x] Tool registry
 - [x] Structured events
 - [x] SQLite persistence
 - [x] CLI client
-- [x] Tauri desktop application — dashboard, approvals, tasks with live traces, agents, activity, settings
+- [x] Tauri desktop application: dashboard, approvals, tasks with live traces, agents, activity, settings
 
-## Phase 2 — Computer Control
+## Phase 2: Computer control
 
 - [x] macOS computer control
 - [x] Windows computer control
-- [x] Screenshots — one window, or a whole display
-- [x] Mouse interaction — move, click, drag, scroll
-- [x] Keyboard interaction — text and single keys with modifiers
-- [x] Application interaction — capabilities scoped to the application in front
-- [x] Accessibility permission detection — reported by `agentos doctor`
-- [x] Vision: giving the model the screenshot it takes — `attach`, gated by `computer:vision`
+- [x] Screenshots: one window, or a whole display
+- [x] Mouse interaction: move, click, drag, scroll
+- [x] Keyboard interaction: text and single keys with modifiers
+- [x] Application interaction: capabilities scoped to the application in front
+- [x] Accessibility permission detection: reported by `agentos doctor`
+- [x] Vision: giving the model the screenshot it takes: `attach`, gated by `computer:vision`
 
-## Phase 3 — Browser
+## Phase 3: Browser
 
-- [x] Browser sessions — one per run, isolated profile, closed when the run ends
+- [x] Browser sessions: one per run, isolated profile, closed when the run ends
 - [x] Navigation
-- [x] Page interaction — click, type, submit, history
-- [x] Text extraction — returned as untrusted data tagged with its origin
-- [x] Browser state — element inspection with stable selectors
-- [x] Browser permissions — capabilities scoped by origin
-- [x] Vision fallback for pages with no usable structure — `attach`, gated by `browser:vision`
+- [x] Page interaction: click, type, submit, history
+- [x] Text extraction: returned as untrusted data tagged with its origin
+- [x] Browser state: element inspection with stable selectors
+- [x] Browser permissions: capabilities scoped by origin
+- [x] Vision fallback for pages with no usable structure: `attach`, gated by `browser:vision`
 
-## Phase 4 — Safety *(done, ahead of phases 2 and 3)*
+## Phase 4: Safety *(done, ahead of phases 2 and 3)*
 
-- [x] Permission engine — deny by default, specificity ordering, risk ceilings
-- [x] Approval system — persisted, resumable, a real runtime state
-- [x] Filesystem sandbox — canonical resolution, symlink- and traversal-proof
-- [x] Terminal restrictions — no shell, program allowlist, environment allowlist, timeouts
-- [x] Secure credential storage — OS keychain, redacted from errors and logs
-- [x] Audit logs — append-only by database trigger, hash-chained, verifiable
-- [x] Cancellation — from any non-terminal state, through every tool
-- [x] Prompt-injection defenses — trust boundary in the type system, taint tracking
+- [x] Permission engine: deny by default, specificity ordering, risk ceilings
+- [x] Approval system: persisted, resumable, a real runtime state
+- [x] Filesystem sandbox: canonical resolution, symlink- and traversal-proof
+- [x] Terminal restrictions: no shell, program allowlist, environment allowlist, timeouts
+- [x] Secure credential storage: OS keychain, redacted from errors and logs
+- [x] Audit logs: append-only by database trigger, hash-chained, verifiable
+- [x] Cancellation: from any non-terminal state, through every tool
+- [x] Prompt-injection defenses: trust boundary in the type system, taint tracking
 
-## Phase 5 — Memory & Orchestration
+## Phase 5: Memory and orchestration
 
-- [x] Persistent memory — structured, with provenance, behind a swappable interface
-- [x] Task graphs — a DAG, checked for cycles when an edge is written
-- [x] Task dependencies — a task starts when every task it waits for has succeeded
-- [x] Scheduler — cron or interval, running unattended behind a deny-all approval gate
+- [x] Persistent memory: structured, with provenance, behind a swappable interface
+- [x] Task graphs: a DAG, checked for cycles when an edge is written
+- [x] Task dependencies: a task starts when every task it waits for has succeeded
+- [x] Scheduler: cron or interval, running unattended behind a deny-all approval gate
 - [ ] Agent orchestration
 - [ ] Multi-agent execution
 
-## Phase 6 — Integrations
+## Phase 6: Integrations
 
 - [ ] GitHub
 - [ ] Slack
@@ -611,7 +633,7 @@ alongside the execution loop rather than after it.
 - [ ] HubSpot
 - [ ] Salesforce
 
-## Phase 7 — Agent Ecosystem
+## Phase 7: Agent ecosystem
 
 - [ ] Plugin SDK
 - [ ] Agent SDK
@@ -628,8 +650,8 @@ Every release ships the desktop application for macOS, Windows and Linux, and th
 four targets, on the [releases page](https://github.com/anpl1623/AgentOS/releases).
 
 **These builds are not code-signed.** AgentOS has no Apple Developer certificate and no Windows
-code-signing certificate. macOS will refuse to open the application on first launch — right-click and
-choose Open, or run `xattr -dr com.apple.quarantine /Applications/AgentOS.app` — and Windows
+code-signing certificate. macOS will refuse to open the application on first launch (right-click and
+choose Open, or run `xattr -dr com.apple.quarantine /Applications/AgentOS.app`), and Windows
 SmartScreen will say the publisher is unknown. Neither is something to do to software you have not
 decided to trust, which is why building from source is a first-class path and takes one command.
 
@@ -643,12 +665,12 @@ sha256sum -c agentos-0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 
 ## Requirements
 
-- [Rust](https://rustup.rs) 1.85 or newer — for the runtime and the CLI
-- [Node](https://nodejs.org) 20 or newer — only for the desktop application
+- [Rust](https://rustup.rs) 1.85 or newer: for the runtime and the CLI
+- [Node](https://nodejs.org) 20 or newer: only for the desktop application
 
 The database is embedded, and the test suite needs no network, no API key and no external service.
 
-## Getting Started
+## Getting started
 
 ```bash
 git clone https://github.com/anpl1623/AgentOS.git
@@ -660,14 +682,14 @@ cargo build --release
 ./target/release/agentos doctor
 ```
 
-Store a provider key. It goes into your operating system's keychain — never the database, never a
+Store a provider key. It goes into your operating system's keychain, never the database, never a
 config file, never a log line:
 
 ```bash
 ./target/release/agentos provider set-key anthropic
 ```
 
-On a machine with no keychain — a headless server, a container, CI — export it instead. `agentos
+On a machine with no keychain (a headless server, a container, CI) export it instead. `agentos
 doctor` tells you which applies and shows where a credential is actually coming from:
 
 ```bash
@@ -716,7 +738,7 @@ real browser. One of the customer records contains text impersonating a system m
 the agent to read a private key, upload it, and delete a directory.
 
 The interesting output is not that the agent read a website. It is the list of things it was refused
-afterwards — and that none of those refusals depended on the model noticing anything was wrong.
+afterwards, and that none of those refusals depended on the model noticing anything was wrong.
 
 `--scripted` needs no API key: it replays a fixed model transcript through the real runtime, so the
 permission decisions you see are real ones. Drop the flag to run it against a configured provider,
@@ -771,7 +793,7 @@ npm install
 npm run tauri dev
 ```
 
-It is a client of the same runtime the CLI uses — it holds no agent logic of its own, and the two
+It is a client of the same runtime the CLI uses. It holds no agent logic of its own, and the two
 cannot disagree about what an agent may do. Its TypeScript types are generated from the Rust view
 models, so a change on one side fails to compile on the other.
 
@@ -838,7 +860,7 @@ permissions:
     execute: deny
 ```
 
-Conflicts resolve by specificity, and ties go to the stricter effect — a contradictory policy fails
+Conflicts resolve by specificity, and ties go to the stricter effect, so a contradictory policy fails
 closed.
 
 ## Tests
@@ -858,7 +880,7 @@ and symlinks, shell metacharacters proving inert, an agent being unable to grant
 a fully hijacked model having every request refused, and audit tampering being detected.
 
 The end-to-end browser tests drive a real Chromium against the mock CRM. They skip, loudly, if no
-browser is installed — a skipped test that says so is honest; one that quietly passes is not.
+browser is installed. A skipped test that says so is honest; one that quietly passes is not.
 
 ---
 
@@ -953,7 +975,7 @@ See `LICENSE` for the current license and terms.
 
 ---
 
-## ⭐ Star the Project
+## Star the project
 
 If you're interested in the future of autonomous AI agents, computer-use agents, and open-source AI infrastructure, consider starring the repository and following development.
 
