@@ -21,8 +21,8 @@ machine, so what ships is reproducible from the repository.
 4. Tag and push:
 
    ```bash
-   git tag -a v0.1.0 -m "AgentOS v0.1.0"
-   git push origin v0.1.0
+   git tag -a v0.2.0 -m "AgentOS v0.2.0"
+   git push origin v0.2.0
    ```
 
 The workflow then checks the tag against the tree, creates a draft release, builds the desktop
@@ -85,5 +85,5 @@ building from source stays a first-class path and takes one command.
 Every CLI archive ships a `.sha256` generated on the machine that built it:
 
 ```bash
-sha256sum -c agentos-0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c agentos-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```

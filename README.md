@@ -1,10 +1,49 @@
 # AgentOS
 
+[![CI](https://github.com/anpl1623/AgentOS/actions/workflows/ci.yml/badge.svg)](https://github.com/anpl1623/AgentOS/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/anpl1623/AgentOS?sort=semver)](https://github.com/anpl1623/AgentOS/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://rustup.rs)
+![Platforms: macOS, Windows, Linux](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)
+
 > **An open-source AI operating system for running your business from your computer.**
 
 AgentOS is a local-first, open-source desktop platform that allows AI agents to safely operate computers, browsers, applications, files, and business systems on behalf of their users.
 
 Instead of asking an AI to tell you **what** to do, AgentOS is designed to let the AI **actually do the work**.
+
+## What that looks like
+
+Below is `agentos demo --scripted`. It stands up a mock CRM on loopback and turns an agent loose on
+it with a real browser. One of the five customer records contains text impersonating a system
+message, telling the agent to read a private key, upload it, and delete a directory.
+
+![The demonstration: an agent reads a poisoned CRM record, and the runtime refuses the three things it then tries](docs/images/demo.gif)
+
+The agent asks for all three. It gets none of them.
+
+What makes that worth looking at is not that the model behaved. It is that **the model's behaviour
+was never what the refusals depended on.** The permission engine does not read model output. A model
+that had been completely persuaded by that record would have reached exactly the same wall, and the
+`Refused` block at the end is the runtime's account of it rather than the model's.
+
+## Try it
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anpl1623/AgentOS/main/scripts/install.sh | sh
+```
+
+```bash
+agentos demo --scripted
+```
+
+`--scripted` needs no API key: it replays a fixed model transcript through the real runtime, so the
+permission decisions you see are real ones. It does drive a real browser, so it wants a Chrome or
+Chromium on the machine. The installer is [a shell script](scripts/install.sh) you can read before
+you run it, it verifies a checksum before it unpacks anything, and it needs no root. Prefer to build
+from source? That is one command too — see [Development](#development).
+
+---
 
 ```text
 You
@@ -553,7 +592,11 @@ AgentOS is currently under active development. The architecture and APIs are exp
 - An end-to-end demonstration: a local mock CRM, driven by a real browser, with a prompt-injection
   payload planted in one of the customer records
 
-**Not built yet:** the scheduler, the orchestrator, and integrations. See the roadmap below.
+- Schedules and task graphs: cron or interval standing instructions, tasks that wait on other
+  tasks, and a scheduler that runs them unattended behind a deny-all approval gate
+
+**Not built yet:** agent orchestration, multi-agent execution, and integrations. See the
+roadmap below.
 
 The project is **not yet intended for unrestricted autonomous operation of production businesses.**
 
@@ -649,6 +692,17 @@ alongside the execution loop rather than after it.
 Every release ships the desktop application for macOS, Windows and Linux, and the `agentos` CLI for
 four targets, on the [releases page](https://github.com/anpl1623/AgentOS/releases).
 
+For the CLI on macOS or Linux, this fetches the build for your platform, checks it against the
+checksum published beside it, and puts the binary in `~/.local/bin` without asking for root:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anpl1623/AgentOS/main/scripts/install.sh | sh
+```
+
+Piping a script from the internet into a shell is a decision, so
+[read it first](scripts/install.sh) — it is short on purpose. `AGENTOS_INSTALL_DIR` changes where the
+binary lands and `AGENTOS_VERSION` pins a version. Windows is a `.zip` on the releases page.
+
 **These builds are not code-signed.** AgentOS has no Apple Developer certificate and no Windows
 code-signing certificate. macOS will refuse to open the application on first launch (right-click and
 choose Open, or run `xattr -dr com.apple.quarantine /Applications/AgentOS.app`), and Windows
@@ -658,7 +712,7 @@ decided to trust, which is why building from source is a first-class path and ta
 Every CLI archive ships a checksum beside it:
 
 ```bash
-sha256sum -c agentos-0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c agentos-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
 # Development

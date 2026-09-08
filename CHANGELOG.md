@@ -10,6 +10,8 @@ it is technically a breaking change.
 
 ## [Unreleased]
 
+## [0.2.0]
+
 ### Added
 
 - **Schedules.** A standing instruction to give an agent the same objective on a cadence â€” once, a
@@ -19,6 +21,10 @@ it is technically a breaking change.
   an edge is written and the whole path named in the error. `agentos task create --depends-on`.
 - **A scheduler.** Fires due schedules, starts tasks whose dependencies have succeeded, and cancels
   branches whose dependency failed rather than leaving them waiting.
+- **An install script.** `scripts/install.sh` fetches the CLI build for the current platform from
+  the release, verifies the published checksum before unpacking it, and installs to
+  `~/.local/bin` without root. `AGENTOS_INSTALL_DIR` and `AGENTOS_VERSION` override where and
+  which.
 
 ### Security
 
@@ -65,5 +71,6 @@ Documented in [`SECURITY.md`](SECURITY.md): what AgentOS defends against, and â€
 things it does not. Screen captures have no scope a policy can express, an application's name is its
 own claim, and `computer.type` is as powerful as a keyboard.
 
-[Unreleased]: https://github.com/anpl1623/AgentOS/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/anpl1623/AgentOS/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/anpl1623/AgentOS/releases/tag/v0.2.0
 [0.1.0]: https://github.com/anpl1623/AgentOS/releases/tag/v0.1.0
