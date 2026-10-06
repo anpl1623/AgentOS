@@ -287,6 +287,21 @@ button.row:last-child {
 [role="listitem"]:not(:last-child) > .row {
   border-bottom: 1px solid var(--border-subtle);
 }
+/* A real <ol> or <ul> of rows, so a screen reader counts the items. The
+ * separator belongs to the item rather than its row, because an item can hold
+ * more than its row (a call's details open beneath it) and the line between
+ * two items must stay where the items meet. */
+.plain-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.plain-list > li + li {
+  border-top: 1px solid var(--border-subtle);
+}
+.plain-list > li > .row {
+  border-bottom: none;
+}
 .row.clickable {
   cursor: pointer;
 }

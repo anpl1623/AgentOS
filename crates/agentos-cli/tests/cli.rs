@@ -401,3 +401,47 @@ fn standing_instructions_and_the_scheduler_are_on_the_security_record() {
         before
     );
 }
+
+#[test]
+fn a_credential_is_never_taken_from_the_command_line() {
+    // An argument is in the shell's history and in `ps` for every user on the
+    // machine. There is no position for a secret, so one typed there is a
+    // usage error and nothing is stored or recorded. None of these reaches the
+    // keychain: each is refused before a secret would be read.
+    let guard = TempDir::new().unwrap();
+    let home = guard.path();
+
+    let in_argv = agentos(
+        home,
+        &[
+            "credential",
+            "set",
+            "https://api.example.com",
+            "default",
+            "sk-live-EXAMPLESECRET",
+        ],
+    );
+    assert!(!in_argv.status.success());
+    let message = String::from_utf8_lossy(&in_argv.stderr);
+    assert!(message.contains("unexpected argument"), "{message}");
+
+    let not_an_origin = agentos(home, &["credential", "set", "file:///etc", "default"]);
+    assert!(!not_an_origin.status.success());
+    let message = String::from_utf8_lossy(&not_an_origin.stderr);
+    assert!(message.contains("is not an origin"), "{message}");
+
+    // A dot in a name would let it carry part of a host into the key.
+    let dotted = agentos(home, &["credential", "set", "https://a.example", "b.token"]);
+    assert!(!dotted.status.success());
+    let message = String::from_utf8_lossy(&dotted.stderr);
+    assert!(message.contains("credential name"), "{message}");
+
+    let listing = run_ok(home, &["credential", "list"]);
+    assert!(
+        listing.contains("No network credentials stored"),
+        "{listing}"
+    );
+    let security = run_ok(home, &["audit", "tail", "--limit", "1000"]);
+    assert!(!security.contains("operator.credential"), "{security}");
+    assert!(!security.contains("EXAMPLESECRET"), "{security}");
+}

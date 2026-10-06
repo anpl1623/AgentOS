@@ -11,6 +11,7 @@
 
 pub mod agent_loop;
 pub mod config;
+pub mod credentials;
 pub mod error;
 pub mod gate;
 pub mod grants;
@@ -42,6 +43,7 @@ pub use config::{
     FixedProviderFactory, ProviderFactory, RuntimeConfig, SecretBackedProviderFactory,
     build_provider,
 };
+pub use credentials::SecretStoreResolver;
 pub use error::RuntimeError;
 pub use gate::RunApprovalGate;
 pub use grants::{CapabilityGrant, ToolGrant};
@@ -354,7 +356,11 @@ impl Runtime {
 
         let pipeline = ToolPipeline::new(self.registry.clone(), engine, gate, self.audit.clone());
 
-        let context = ToolContext::new(agent.id, task.id, run.id, workspace);
+        // The store's own resolver. The pipeline narrows it, call by call, to
+        // the credentials each authorised plan named, and keeps the ledger
+        // that redaction and the audit record are made from.
+        let context = ToolContext::new(agent.id, task.id, run.id, workspace)
+            .with_credentials(Arc::new(SecretStoreResolver::new(self.secrets.clone())));
 
         Ok(PreparedRun {
             objective: task.objective.clone(),
@@ -688,8 +694,8 @@ fn engine_from(policy: Option<Policy>) -> Arc<dyn PermissionEngine> {
     }
 }
 
-/// Build the registry every client gets: the built-in tools, the browser, and
-/// computer control.
+/// Build the registry every client gets: the built-in tools, the browser,
+/// computer control, and the network.
 ///
 /// The composition root owns this so that the CLI and the desktop application
 /// cannot end up offering different tools for the same installation — and so
@@ -720,6 +726,12 @@ pub fn build_registry_with(browser: agentos_browser::BrowserOptions) -> Arc<Tool
 /// Only a test needs this: to assert that a run released its browser it has to
 /// be looking at the same pool the tools are using, and a second pool would make
 /// the assertion pass by being empty.
+///
+/// This is where every tool is registered, the network among them, and the
+/// only place: a tool added anywhere else is how the CLI and the desktop end up
+/// offering different catalogues. `network.request` is built here with the
+/// strict address policy, public addresses only, and nothing a caller passes
+/// can loosen it.
 #[must_use]
 pub fn build_registry_sharing(pool: &Arc<agentos_browser::BrowserPool>) -> Arc<ToolRegistry> {
     let mut registry = agentos_tools::standard_registry();
@@ -727,6 +739,9 @@ pub fn build_registry_sharing(pool: &Arc<agentos_browser::BrowserPool>) -> Arc<T
         registry.register(tool);
     }
     for tool in agentos_computer::build() {
+        registry.register(tool);
+    }
+    for tool in agentos_tools::network::all() {
         registry.register(tool);
     }
     Arc::new(registry)

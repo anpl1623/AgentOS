@@ -383,6 +383,12 @@ pub fn quote_scalar(value: &str) -> String {
 /// Read-only inside one workspace directory, browsing allowed on localhost,
 /// everything else denied. Deliberately close to useless until an operator
 /// widens it — the default must never be the permissive one.
+///
+/// The `network` block is there to be read, not obeyed: it ships commented
+/// out, so a new agent reaches no server through `network.request`. What it
+/// shows is the vocabulary, and the one interaction an operator would
+/// otherwise learn by trial — the starter ceiling of `medium` refuses every
+/// high-risk request, which is every write and every credentialed call.
 #[must_use]
 pub fn starter_policy_yaml(workspace: &Path) -> String {
     let workspace = quote_scalar(&workspace.display().to_string());
@@ -416,7 +422,19 @@ pub fn starter_policy_yaml(workspace: &Path) -> String {
          \x20     origins: [\"http://localhost:*\", \"http://127.0.0.1:*\"]\n\
          \x20   read:\n\
          \x20     effect: allow\n\
-         \x20     origins: [\"http://localhost:*\", \"http://127.0.0.1:*\"]\n"
+         \x20     origins: [\"http://localhost:*\", \"http://127.0.0.1:*\"]\n\
+         \x20 # Reach a server directly. Spending a stored credential is a grant of its own.\n\
+         \x20 # With max_risk: medium, network.send is denied outright, and so is any request\n\
+         \x20 # that spends a credential: writing to a remote service, or acting there as you,\n\
+         \x20 # is high risk. Raise the ceiling deliberately, not to make a refusal go away.\n\
+         \x20 # network:\n\
+         \x20 #   fetch: [\"https://api.example.com\"]\n\
+         \x20 #   send:\n\
+         \x20 #     effect: ask\n\
+         \x20 #     origins: [\"https://api.example.com\"]\n\
+         \x20 #   credential:\n\
+         \x20 #     effect: ask\n\
+         \x20 #     names: [\"https://api.example.com/*\"]\n"
     )
 }
 
@@ -837,6 +855,12 @@ permissions:
         assert_eq!(policy.default_effect, Effect::Deny);
         assert_eq!(policy.max_risk, Some(RiskLevel::Medium));
         assert_eq!(policy.approvals.max_per_run, Some(10));
+        assert!(
+            !policy
+                .rules
+                .iter()
+                .any(|rule| rule.id.starts_with("network."))
+        );
 
         let engine = PolicyEngine::new(policy);
         let exec = PermissionRequest::new(
@@ -847,6 +871,97 @@ permissions:
             RiskLevel::High,
         );
         assert_eq!(engine.evaluate(&exec).effect, Effect::Deny);
+
+        // The network block is an example, not a grant.
+        let fetch = network_request("fetch", STARTER_NETWORK_ORIGIN, RiskLevel::Medium);
+        assert_eq!(engine.evaluate(&fetch).effect, Effect::Deny);
+    }
+
+    const STARTER_NETWORK_ORIGIN: &str = "https://api.example.com";
+
+    fn network_request(action: &str, origin: &str, risk: RiskLevel) -> PermissionRequest {
+        PermissionRequest::new(
+            "network.request",
+            Capability::new("network", action).with_resource(ResourceRef::Origin {
+                origin: origin.to_owned(),
+            }),
+            risk,
+        )
+    }
+
+    /// The starter policy with its `network` block uncommented, as an operator
+    /// would: the `# network:` line and every line indented beneath it.
+    fn with_network_uncommented(starter: &str) -> String {
+        let mut inside = false;
+        starter
+            .lines()
+            .map(|line| {
+                if line == "  # network:" {
+                    inside = true;
+                } else if inside && !line.starts_with("  #   ") {
+                    inside = false;
+                }
+                if inside {
+                    line.replacen("  # ", "  ", 1)
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_starter_network_block_shows_the_ceiling_refusing_a_send() {
+        let (_guard, root) = canonical_temp();
+        let yaml = with_network_uncommented(&starter_policy_yaml(&root));
+        assert!(yaml.contains("\n  network:\n"), "nothing was uncommented");
+        let policy = PolicyDocument::from_yaml(&yaml).unwrap().compile().unwrap();
+        let engine = PolicyEngine::new(policy);
+
+        // A read of the listed origin is what the block grants.
+        let fetch = network_request("fetch", STARTER_NETWORK_ORIGIN, RiskLevel::Medium);
+        assert_eq!(engine.evaluate(&fetch).effect, Effect::Allow);
+
+        // Another origin is not listed.
+        let elsewhere = network_request("fetch", "https://evil.example", RiskLevel::Medium);
+        assert_eq!(engine.evaluate(&elsewhere).effect, Effect::Deny);
+
+        // A write to the listed origin is refused by the ceiling before the
+        // rule that would have asked is consulted. This is the interaction
+        // the block's comment documents; if it changes, the comment is wrong.
+        let send = network_request("send", STARTER_NETWORK_ORIGIN, RiskLevel::High);
+        let decision = engine.evaluate(&send);
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("policy:max_risk"));
+
+        // As is a fetch that spends a credential, which `network.request`
+        // prices one level up.
+        let credential = PermissionRequest::new(
+            "network.request",
+            Capability::new("network", "credential").with_resource(ResourceRef::Named {
+                name: format!("{STARTER_NETWORK_ORIGIN}/default"),
+            }),
+            RiskLevel::High,
+        );
+        let decision = engine.evaluate(&credential);
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("policy:max_risk"));
+
+        // Below the ceiling, the credential grant is scoped to its origin.
+        let mut raised = PolicyDocument::from_yaml(&yaml).unwrap();
+        raised.max_risk = Some(RiskLevel::High);
+        let engine = PolicyEngine::new(raised.compile().unwrap());
+        let decision = engine.evaluate(&credential);
+        assert_eq!(decision.effect, Effect::Ask);
+        let foreign = PermissionRequest::new(
+            "network.request",
+            Capability::new("network", "credential").with_resource(ResourceRef::Named {
+                name: "https://evil.example/default".to_owned(),
+            }),
+            RiskLevel::High,
+        );
+        assert_eq!(engine.evaluate(&foreign).effect, Effect::Deny);
     }
 
     #[test]

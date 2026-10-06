@@ -17,7 +17,10 @@
 //! ask         → put an approval to a human, wait
 //! allow       → proceed
 //!         ↓
-//! execute with a timeout, a cancellation token and a policy probe
+//! execute with a timeout, a cancellation token, a policy probe and only
+//! the credentials the plan named
+//!         ↓
+//! redact any credential the run released from what came back
 //!         ↓
 //! capture output as untrusted, raise taint from its provenance
 //!         ↓
@@ -41,6 +44,13 @@
 //! even if the tool labels its output as the runtime's own. What counts as
 //! reading fails closed: a capability is presumed to read unless it is one of
 //! the actions known only to change something.
+//!
+//! Credentials follow the same rule. A tool is never handed the run's
+//! credential store, only one that releases what the authorised plan named and
+//! writes down every value it releases. The pipeline reads that ledger, not the
+//! tool's account of itself, to record each credential spent and to strip each
+//! one from whatever the call hands back, success or failure, before the model
+//! or the audit log sees it.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -49,9 +59,9 @@ use agentos_audit::AuditLog;
 use agentos_core::Timestamp;
 use agentos_core::approval::{ApprovalRequest, ApprovalStatus};
 use agentos_core::event::{AgentEvent, Event};
-use agentos_core::ids::{ApprovalId, ToolExecutionId};
+use agentos_core::ids::{AgentId, ApprovalId, TaskId, TaskRunId, ToolExecutionId};
 use agentos_core::permission::{
-    Capability, Effect, PermissionDecision, PermissionRequest, permission_domains,
+    Capability, Effect, PermissionDecision, PermissionRequest, ResourceRef, permission_domains,
 };
 use agentos_core::risk::RiskLevel;
 use agentos_core::tool::{ToolCall, ToolOutcome, ToolResult};
@@ -62,7 +72,10 @@ use tokio_util::sync::CancellationToken;
 use crate::approval::{ApprovalGate, ApprovalOutcome};
 use crate::error::ToolError;
 use crate::taint::TaintTracker;
-use crate::tool::{PolicyProbe, ToolContext, ToolPlan, ToolRegistry, plan_exceeds_manifest};
+use crate::tool::{
+    CredentialLedger, CredentialResolver, PolicyProbe, Secret, ToolContext, ToolOutput, ToolPlan,
+    ToolRegistry, plan_exceeds_manifest,
+};
 
 /// Everything that happened during one tool invocation.
 #[derive(Debug, Clone)]
@@ -218,8 +231,9 @@ impl ToolPipeline {
         // 3. Plan. Free of side effects — nothing has happened yet. Planning
         //    does look at the world, though, so a tool that may read can put
         //    what it saw into its error text, and that text is observed. There
-        //    is no plan yet, so the manifest stands in for it.
-        let plan = match tool.plan(&arguments, context).await {
+        //    is no plan yet, so the manifest stands in for it. Nothing has
+        //    been authorised either, so the tool plans without credentials.
+        let plan = match tool.plan(&arguments, &context.without_credentials()).await {
             Ok(plan) => plan,
             Err(error) => {
                 if call_may_read(&call.tool, &tool.metadata().required_capabilities) {
@@ -343,12 +357,29 @@ impl ToolPipeline {
         //    the same request shape that authorised the call, so a narrower
         //    deny inside an allowed root binds the walk as it would bind a
         //    direct call.
-        let context = &context.clone().with_policy(Arc::new(CallProbe {
+        //
+        //    The credential store is swapped for one that answers only for the
+        //    credentials this plan named, and records what it gives out. And
+        //    the call is told what it was authorised against, for a tool whose
+        //    plan named something the world can change before it acts.
+        let mut executing = context.clone().with_policy(Arc::new(CallProbe {
             engine: Arc::clone(&self.engine),
             tool: call.tool.clone(),
             risk: plan.risk,
             tainted,
         }));
+        executing.credentials = context.credentials.as_ref().map(|store| {
+            Arc::new(CallCredentials {
+                store: Arc::clone(store),
+                authorised: credentials_named(&plan),
+                audit: Arc::clone(&self.audit),
+                spender: (context.agent_id, context.task_id, context.run_id),
+                tool: call.tool.clone(),
+                released: context.issued_handle(),
+            }) as Arc<dyn CredentialResolver>
+        });
+        executing.authorised = authorised_capabilities(&call.tool, &plan);
+        let context = &executing;
         self.emit(
             context,
             AgentEvent::ToolExecutionStarted {
@@ -384,6 +415,9 @@ impl ToolPipeline {
                 return builder.failure(error);
             }
             Ok(Err(error)) => {
+                // The text is hashed into the chain below, so it is redacted
+                // before it is recorded, not after.
+                let error = redact_error(context.issued(), error);
                 self.emit(
                     context,
                     AgentEvent::ToolExecutionFailed {
@@ -405,7 +439,7 @@ impl ToolPipeline {
                 }
                 return builder.failure(error);
             }
-            Ok(Ok(output)) => output,
+            Ok(Ok(output)) => redact_output(context.issued(), output),
         };
 
         // 7. Everything a tool returns is untrusted. If it came from outside,
@@ -726,6 +760,139 @@ fn model_facing_reason(reason: &str, capabilities: &[Capability]) -> String {
         })
 }
 
+/// The `{origin}/{name}` of every credential a plan asks to spend.
+fn credentials_named(plan: &ToolPlan) -> Vec<String> {
+    plan.capabilities
+        .iter()
+        .filter(|capability| {
+            capability.domain == permission_domains::NETWORK
+                && capability.action == crate::network::CREDENTIAL
+        })
+        .filter_map(|capability| match &capability.resource {
+            Some(ResourceRef::Named { name }) => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The run's credential store as one executing call sees it.
+///
+/// Answers only for the credentials the authorised plan named, so a tool that
+/// planned an anonymous request, or a credential for one origin, cannot ask for
+/// another once it is running: the engine was never asked about that one.
+///
+/// Every value it releases is recorded twice before the tool sees it: as
+/// `network.credential.used` in the audit chain, and in the run's ledger, which
+/// is what output is redacted against. Both are written here, at the moment of
+/// release, rather than after the call returns, so that neither depends on the
+/// tool's cooperation nor on the call returning at all. A request still in
+/// flight when the process exits has already left its record.
+#[derive(Debug)]
+struct CallCredentials {
+    store: Arc<dyn CredentialResolver>,
+    authorised: Vec<String>,
+    audit: Arc<AuditLog>,
+    /// The agent, task and run the spend is recorded against.
+    spender: (AgentId, TaskId, TaskRunId),
+    tool: String,
+    released: Arc<CredentialLedger>,
+}
+
+#[async_trait::async_trait]
+impl CredentialResolver for CallCredentials {
+    async fn resolve(&self, origin: &str, name: &str) -> Option<Secret> {
+        let resource = format!("{origin}/{name}");
+        if !self.authorised.contains(&resource) {
+            tracing::error!(
+                credential = %resource,
+                "a tool asked for a credential its plan did not name"
+            );
+            return None;
+        }
+        let secret = self.store.resolve(origin, name).await?;
+        let (agent_id, task_id, run_id) = self.spender;
+        let event = Event::new(AgentEvent::CredentialUsed {
+            origin: origin.to_owned(),
+            name: name.to_owned(),
+            tool: self.tool.clone(),
+        })
+        .for_agent(agent_id)
+        .for_task(task_id)
+        .for_run(run_id);
+        // Unlike every other record, this one is a condition rather than a
+        // report: a spend the chain cannot show is the one thing it exists to
+        // rule out, so a credential whose use cannot be recorded is not
+        // released, and the call goes on without it.
+        if let Err(error) = self.audit.record(event).await {
+            tracing::error!(
+                %error,
+                credential = %resource,
+                "refused to release a credential whose use could not be recorded"
+            );
+            return None;
+        }
+        self.released.record(secret.clone());
+        Some(secret)
+    }
+}
+
+/// A failure's text with every credential the run released replaced.
+fn redact_error(issued: &CredentialLedger, error: ToolError) -> ToolError {
+    match issued.redact(&error.to_string()) {
+        None => error,
+        Some(message) => ToolError::Redacted {
+            outcome: error.outcome(),
+            message,
+        },
+    }
+}
+
+/// A result with every credential the run released replaced, wherever in it
+/// the text could reach the model, a client or the log: the body, the URL it
+/// is labelled with, and the structured data beside it.
+///
+/// Scoped to what this run released rather than the whole store: it runs on
+/// every call, and a run can echo only what it was given.
+fn redact_output(issued: &CredentialLedger, mut output: ToolOutput) -> ToolOutput {
+    if issued.is_empty() {
+        return output;
+    }
+    if let Some(body) = issued.redact(&output.content.body) {
+        output.content.body = body;
+    }
+    if let DataSource::Web { url } = &mut output.content.source
+        && let Some(redacted) = issued.redact(url)
+    {
+        *url = redacted;
+    }
+    if let Some(structured) = &mut output.structured {
+        redact_value(issued, structured);
+    }
+    output
+}
+
+fn redact_value(issued: &CredentialLedger, value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            if let Some(redacted) = issued.redact(text) {
+                *text = redacted;
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_value(issued, item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (key, mut item) in std::mem::take(map) {
+                redact_value(issued, &mut item);
+                map.insert(issued.redact(&key).unwrap_or(key), item);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
 fn build_approval_request(
     context: &ToolContext,
     agent_name: &str,
@@ -890,8 +1057,6 @@ impl ReportBuilder<'_> {
 
 #[cfg(test)]
 mod tests {
-    use agentos_core::permission::ResourceRef;
-
     use super::*;
 
     fn capability(qualified: &str) -> Capability {
@@ -1025,5 +1190,383 @@ mod tests {
             redacted,
             "no rule matched `filesystem.read`; policy default is `deny`"
         );
+    }
+
+    /// A live token, as distinctive as a real one.
+    const TOKEN: &str = "ghp_7Xq2LmN9pR4sT6vW8yZ0aB1cD3eF5gH7";
+
+    /// A store that would hand any credential to anyone.
+    ///
+    /// The binding under test is the pipeline's, so the store is made as
+    /// careless as possible.
+    #[derive(Debug)]
+    struct Careless;
+
+    #[async_trait::async_trait]
+    impl CredentialResolver for Careless {
+        async fn resolve(&self, _origin: &str, _name: &str) -> Option<Secret> {
+            Some(Secret::new(TOKEN))
+        }
+    }
+
+    /// Plans to spend `https://a.example/deploy`, and then does what its
+    /// arguments say: spend it or not, fail or not, or hold the request open
+    /// once it has the secret. Whatever it returns quotes the token, as a
+    /// service that echoes credentials would.
+    #[derive(Debug)]
+    struct Spender(agentos_core::tool::ToolMetadata, Arc<tokio::sync::Notify>);
+
+    impl Spender {
+        fn new() -> Self {
+            Self(
+                crate::tool::metadata_for::<serde_json::Value>(
+                    "network.spend",
+                    "spends a credential",
+                    RiskLevel::Low,
+                    vec![Capability::new("network", "credential")],
+                    true,
+                ),
+                Arc::new(tokio::sync::Notify::new()),
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::Tool for Spender {
+        fn metadata(&self) -> &agentos_core::tool::ToolMetadata {
+            &self.0
+        }
+
+        fn validate(&self, arguments: &serde_json::Value) -> Result<serde_json::Value, ToolError> {
+            Ok(arguments.clone())
+        }
+
+        async fn plan(
+            &self,
+            _arguments: &serde_json::Value,
+            context: &ToolContext,
+        ) -> Result<ToolPlan, ToolError> {
+            if context.credentials.is_some() {
+                return Err(ToolError::Failed("planned with credentials".into()));
+            }
+            Ok(ToolPlan::new(RiskLevel::Low, "spend").requiring(
+                Capability::new("network", "credential").with_resource(ResourceRef::Named {
+                    name: "https://a.example/deploy".into(),
+                }),
+            ))
+        }
+
+        async fn execute(
+            &self,
+            arguments: serde_json::Value,
+            context: &ToolContext,
+            _cancel: CancellationToken,
+        ) -> Result<ToolOutput, ToolError> {
+            if arguments["spend"] == true {
+                let store = context.credentials.as_ref().expect("a store");
+                // The plan named this credential at a.example and no other.
+                if store.resolve("https://b.example", "deploy").await.is_some()
+                    || store.resolve("https://a.example", "admin").await.is_some()
+                {
+                    return Err(ToolError::Failed("released an unplanned credential".into()));
+                }
+                let released = store.resolve("https://a.example", "deploy").await;
+                if arguments["stall"] == true {
+                    // Holding the secret, the request in flight: as far as a
+                    // call gets before the process exits under it.
+                    self.1.notify_one();
+                    std::future::pending::<()>().await;
+                }
+                if released.is_none() {
+                    return Err(ToolError::Failed(
+                        "the planned credential was refused".into(),
+                    ));
+                }
+            }
+            if arguments["fail"] == true {
+                return Err(ToolError::Failed(format!(
+                    "401: token {TOKEN} was rejected"
+                )));
+            }
+            Ok(ToolOutput::text(
+                DataSource::Web {
+                    url: format!("https://a.example/?echo={TOKEN}"),
+                },
+                format!("you sent {TOKEN}"),
+            )
+            .with_structured(serde_json::json!({
+                "received": [TOKEN],
+                TOKEN: true,
+                "authorised": context
+                    .authorised
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
+            })))
+        }
+    }
+
+    async fn spending_pipeline() -> (ToolPipeline, Arc<agentos_audit::InMemorySink>, ToolContext) {
+        let (pipeline, sink, context, _) = spending_pipeline_with(Spender::new()).await;
+        (pipeline, sink, context)
+    }
+
+    async fn spending_pipeline_with(
+        spender: Spender,
+    ) -> (
+        ToolPipeline,
+        Arc<agentos_audit::InMemorySink>,
+        ToolContext,
+        Arc<tokio::sync::Notify>,
+    ) {
+        let (audit, sink) = AuditLog::in_memory().await.unwrap();
+        let mut registry = ToolRegistry::new();
+        let stalled = Arc::clone(&spender.1);
+        registry.register(Arc::new(spender));
+        let policy = agentos_permissions::Policy::deny_all("t").with_rule(
+            agentos_permissions::policy::PolicyRule::new(
+                "spend",
+                "network",
+                "credential",
+                Effect::Allow,
+            ),
+        );
+        let pipeline = ToolPipeline::new(
+            Arc::new(registry),
+            Arc::new(agentos_permissions::PolicyEngine::new(policy)),
+            Arc::new(crate::DenyAllGate),
+            Arc::new(audit),
+        );
+        let context = ToolContext::new(
+            agentos_core::ids::AgentId::new(),
+            agentos_core::ids::TaskId::new(),
+            agentos_core::ids::TaskRunId::new(),
+            std::env::temp_dir(),
+        )
+        .with_credentials(Arc::new(Careless));
+        (pipeline, sink, context, stalled)
+    }
+
+    async fn spend(
+        pipeline: &ToolPipeline,
+        context: &ToolContext,
+        taint: &TaintTracker,
+        arguments: serde_json::Value,
+    ) -> ExecutionReport {
+        pipeline
+            .execute(
+                &ToolCall::new("1", "network.spend", arguments),
+                context,
+                taint,
+                "agent",
+                &["network.spend".to_owned()],
+                &CancellationToken::new(),
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_failure_quoting_a_credential_is_redacted_before_it_is_recorded() {
+        let (pipeline, sink, context) = spending_pipeline().await;
+        let taint = TaintTracker::new();
+
+        let report = spend(
+            &pipeline,
+            &context,
+            &taint,
+            serde_json::json!({"spend": true, "fail": true}),
+        )
+        .await;
+
+        assert_eq!(report.outcome, ToolOutcome::Failed);
+        let error = report.error.clone().unwrap();
+        assert!(!error.contains(TOKEN), "{error}");
+        assert!(error.contains(crate::REDACTED_CREDENTIAL), "{error}");
+        assert!(!report.result.content.body.contains(TOKEN));
+
+        let records = sink.records().await;
+        let chain = serde_json::to_string(&records).unwrap();
+        assert!(!chain.contains(TOKEN), "the token reached the chain");
+        let failed = sink.records_of_kind("tool.execution.failed").await;
+        assert_eq!(failed.len(), 1);
+        assert!(
+            failed[0].payload["error"]
+                .as_str()
+                .unwrap()
+                .contains(crate::REDACTED_CREDENTIAL)
+        );
+
+        // The tool reported nothing about what it spent; the record comes from
+        // what the store released, once, for the credential the plan named.
+        let used = sink.records_of_kind("network.credential.used").await;
+        assert_eq!(used.len(), 1);
+        assert_eq!(used[0].payload["origin"], "https://a.example");
+        assert_eq!(used[0].payload["name"], "deploy");
+        assert_eq!(used[0].payload["tool"], "network.spend");
+
+        // A failure that may have read is observed like a success.
+        assert!(taint.is_tainted());
+    }
+
+    #[tokio::test]
+    async fn a_credential_spent_earlier_in_the_run_is_redacted_from_later_calls() {
+        let (pipeline, sink, context) = spending_pipeline().await;
+        let taint = TaintTracker::new();
+
+        // Before anything is spent there is nothing to redact against: the
+        // scan covers what this run released, not the whole store.
+        let before = spend(&pipeline, &context, &taint, serde_json::json!({})).await;
+        assert!(before.result.content.body.contains(TOKEN));
+
+        spend(
+            &pipeline,
+            &context,
+            &taint,
+            serde_json::json!({"spend": true}),
+        )
+        .await;
+
+        // A later call that spends nothing but is handed the token back, by a
+        // service that kept it, is redacted all the same: body, label and
+        // structured data, keys included.
+        let later = spend(&pipeline, &context, &taint, serde_json::json!({})).await;
+        assert_eq!(later.outcome, ToolOutcome::Success);
+        assert_eq!(
+            later.result.content.body,
+            format!("you sent {}", crate::REDACTED_CREDENTIAL)
+        );
+        assert!(!later.result.content.source.label().contains(TOKEN));
+        let structured = later.result.structured.clone().unwrap().to_string();
+        assert!(!structured.contains(TOKEN), "{structured}");
+        assert_eq!(
+            sink.records_of_kind("network.credential.used").await.len(),
+            1,
+            "only the call that spent it is recorded as spending it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_call_is_told_what_it_was_authorised_against() {
+        let (pipeline, _sink, context) = spending_pipeline().await;
+        assert!(context.authorised.is_empty());
+        let report = spend(
+            &pipeline,
+            &context,
+            &TaintTracker::new(),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(report.outcome, ToolOutcome::Success, "{:?}", report.error);
+        assert_eq!(
+            report.result.structured.unwrap()["authorised"],
+            serde_json::json!(["network.credential on name:https://a.example/deploy"])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spend_is_on_the_chain_before_the_call_returns() {
+        let (pipeline, sink, context, stalled) = spending_pipeline_with(Spender::new()).await;
+        let pipeline = Arc::new(pipeline);
+        let call = {
+            let (pipeline, context) = (Arc::clone(&pipeline), context.clone());
+            tokio::spawn(async move {
+                spend(
+                    &pipeline,
+                    &context,
+                    &TaintTracker::new(),
+                    serde_json::json!({"spend": true, "stall": true}),
+                )
+                .await
+            })
+        };
+        stalled.notified().await;
+
+        // The tool holds the secret and has not returned. Whatever happens to
+        // the process now, the spend is already recorded, by name.
+        let used = sink.records_of_kind("network.credential.used").await;
+        assert_eq!(used.len(), 1, "the spend waited for the call to return");
+        assert_eq!(used[0].payload["origin"], "https://a.example");
+        assert_eq!(used[0].payload["name"], "deploy");
+        assert_eq!(used[0].payload["tool"], "network.spend");
+        assert_eq!(used[0].run_id, Some(context.run_id));
+        assert!(!sink.contains_kind("tool.execution.completed").await);
+        call.abort();
+    }
+
+    #[tokio::test]
+    async fn a_credential_whose_spend_cannot_be_recorded_is_not_released() {
+        let audit = Arc::new(AuditLog::open(Arc::new(FullDisk)).await.unwrap());
+        let plan = ToolPlan::new(RiskLevel::High, "spend").requiring(
+            Capability::new("network", "credential").with_resource(ResourceRef::Named {
+                name: "https://a.example/deploy".into(),
+            }),
+        );
+        let released = Arc::new(CredentialLedger::default());
+        let credentials = CallCredentials {
+            store: Arc::new(Careless),
+            authorised: credentials_named(&plan),
+            audit,
+            spender: (AgentId::new(), TaskId::new(), TaskRunId::new()),
+            tool: "network.spend".into(),
+            released: Arc::clone(&released),
+        };
+        assert!(
+            credentials
+                .resolve("https://a.example", "deploy")
+                .await
+                .is_none()
+        );
+        assert!(released.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_call_is_given_only_the_credentials_its_plan_named() {
+        let (audit, sink) = AuditLog::in_memory().await.unwrap();
+        let released = Arc::new(CredentialLedger::default());
+        let plan = ToolPlan::new(RiskLevel::High, "spend")
+            .requiring(
+                Capability::new("network", "fetch").with_resource(ResourceRef::Origin {
+                    origin: "https://b.example".into(),
+                }),
+            )
+            .requiring(Capability::new("network", "credential").with_resource(
+                ResourceRef::Named {
+                    name: "https://a.example/deploy".into(),
+                },
+            ));
+        let credentials = CallCredentials {
+            store: Arc::new(Careless),
+            authorised: credentials_named(&plan),
+            audit: Arc::new(audit),
+            spender: (AgentId::new(), TaskId::new(), TaskRunId::new()),
+            tool: "network.spend".into(),
+            released: Arc::clone(&released),
+        };
+        assert!(
+            credentials
+                .resolve("https://b.example", "deploy")
+                .await
+                .is_none()
+        );
+        assert!(
+            credentials
+                .resolve("https://a.example", "admin")
+                .await
+                .is_none()
+        );
+        assert!(released.is_empty(), "a refusal releases nothing");
+        assert!(!sink.contains_kind("network.credential.used").await);
+        assert!(
+            credentials
+                .resolve("https://a.example", "deploy")
+                .await
+                .is_some()
+        );
+        assert_eq!(
+            sink.records_of_kind("network.credential.used").await.len(),
+            1
+        );
+        assert_eq!(released.len(), 1);
+        assert!(!format!("{credentials:?}").contains(TOKEN));
     }
 }

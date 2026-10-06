@@ -156,7 +156,7 @@ export function CommandPalette({
                     <span className="faint">{entry.hint}</span>
                     <span className="spacer" />
                     {entry.badge !== null ? (
-                      <span className="badge neutral">{entry.badge}</span>
+                      <span className="verdict neutral">{entry.badge}</span>
                     ) : null}
                     {shortcut(entry) !== null ? (
                       <kbd aria-hidden="true">{shortcut(entry)}</kbd>

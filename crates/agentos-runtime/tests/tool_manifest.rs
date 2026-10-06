@@ -49,6 +49,12 @@ const EXPECTED: &[(&str, &[&str])] = &[
     // `filesystem.search` names what it finds and, given `contains`, reads it.
     ("filesystem.search", &["filesystem.list", "filesystem.read"]),
     ("filesystem.write", &["filesystem.write"]),
+    // Reading an origin, writing to one and spending a stored credential are
+    // three grants; the plan names the one or two a call needs.
+    (
+        "network.request",
+        &["network.credential", "network.fetch", "network.send"],
+    ),
     // `terminal.exec` authorises where a program runs as well as which one, so
     // its working directory is a `filesystem.read` it must declare.
     ("terminal.exec", &["filesystem.read", "terminal.exec"]),
@@ -138,6 +144,20 @@ async fn tools_that_can_plan_offline_plan_within_their_manifest() {
         (
             "terminal.exec",
             serde_json::json!({"program": "git", "args": ["status"]}),
+        ),
+        // Planning a request resolves no name and opens no socket.
+        (
+            "network.request",
+            serde_json::json!({"url": "https://api.example.com/v1/items"}),
+        ),
+        (
+            "network.request",
+            serde_json::json!({
+                "url": "https://api.example.com/v1/items",
+                "method": "POST",
+                "body": "{}",
+                "credential": "default",
+            }),
         ),
     ];
 

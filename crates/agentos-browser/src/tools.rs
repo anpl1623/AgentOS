@@ -12,6 +12,22 @@
 //! For navigation the origin comes from the target URL; for everything else it
 //! comes from the page the browser is currently on.
 //!
+//! A navigation is authorised for one origin and ends on that origin or
+//! nowhere. An HTTP or script redirect elsewhere is a second origin, and so a
+//! second decision that cannot be taken from inside `execute`, where the engine
+//! has already spoken: the browser leaves the page and the agent is told to
+//! navigate there itself. The page is watched for a moment after it loads,
+//! since a meta refresh or a script run on load moves it only then. A page that
+//! moves itself later, on a timer, is caught by whichever tool acts on it next:
+//! every tool that acts on the current page reads its origin again when it
+//! runs and refuses if it is no longer the origin the call was authorised for.
+//!
+//! And a URL is something leaving, whatever the verb. A navigation whose URL
+//! carries a query or a fragment, or a path, query and fragment longer than
+//! [`MAX_FETCH_TARGET_BYTES`], is priced as a send rather than a read. That is
+//! stricter than `network.request`, which lets a short query through as a
+//! fetch: a page's scripts can send on whatever the URL carries.
+//!
 //! Everything read from a page is [`DataSource::Web`] — untrusted, tagged with
 //! the URL it came from, and taint-raising for the rest of the run. A CRM record
 //! whose notes field contains "ignore your instructions" is data about what
@@ -24,6 +40,7 @@ use agentos_core::risk::RiskLevel;
 use agentos_core::tool::ToolMetadata;
 use agentos_core::trust::{DataSource, UntrustedImage};
 use agentos_permissions::normalise_origin;
+use agentos_tools::network::MAX_FETCH_TARGET_BYTES;
 use agentos_tools::{
     Tool, ToolContext, ToolError, ToolOutput, ToolPlan, metadata_for, parse_arguments,
 };
@@ -49,6 +66,18 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150)
 /// it are different acts, and a policy that allowed the first before this
 /// existed must not silently acquire the second.
 const VISION_ACTION: &str = "vision";
+
+/// How long a page that has loaded is watched for a navigation of its own.
+///
+/// A meta refresh with no delay and a script run from the load event both move
+/// the page after the load `browser.navigate` waits for. Waiting this long
+/// catches them in the navigation that caused them, so its result names where
+/// the page really is. A redirect on a longer timer is caught by the next tool
+/// to act on the page instead (see [`authorised_page`]).
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How often the page's address is read while it settles.
+const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Cap on extracted text, before the pipeline's own cap.
 const MAX_EXTRACT_BYTES: usize = 200 * 1024;
@@ -85,6 +114,41 @@ async fn session_page(
         .current_url()
         .await
         .ok_or_else(|| ToolError::from(BrowserError::NoPage))?;
+    Ok((session, page, url))
+}
+
+/// The current page, provided it is still on the origin this call was
+/// authorised for.
+///
+/// A plan reads the origin of the page the browser is on, and the engine
+/// answers about that origin. The page can move itself between the two, by a
+/// timer or a redirect nothing waited for, and text approved for one site
+/// would then be typed into another. So the origin is read again here and the
+/// call refused if it changed. What remains is the moment between this check
+/// and the action itself, which nothing outside the page can close.
+async fn authorised_page(
+    pool: &BrowserPool,
+    context: &ToolContext,
+    action: &str,
+) -> Result<(Arc<BrowserSession>, Page, String), ToolError> {
+    let authorised = context
+        .authorised
+        .iter()
+        .find_map(|capability| match &capability.resource {
+            Some(ResourceRef::Origin { origin })
+                if capability.domain == permission_domains::BROWSER
+                    && capability.action == action =>
+            {
+                Some(origin.clone())
+            }
+            _ => None,
+        })
+        .ok_or_else(|| ToolError::from(BrowserError::NotAuthorised))?;
+    let (session, page, url) = session_page(pool, context).await?;
+    let now = normalise_origin(&url).unwrap_or_else(|_| url.clone());
+    if now != authorised {
+        return Err(BrowserError::OriginChanged { authorised, now }.into());
+    }
     Ok((session, page, url))
 }
 
@@ -149,10 +213,37 @@ impl Tool for Navigate {
         let args: NavigateArgs = parse_arguments(&self.metadata.name, arguments)?;
         let origin = normalise_origin(&args.url)
             .map_err(|error| ToolError::from(BrowserError::from(error)))?;
-        Ok(
-            ToolPlan::new(RiskLevel::Medium, format!("Open {}", args.url))
-                .requiring(origin_capability("navigate", &origin)),
-        )
+        // The origin binds where the browser goes and says nothing about what
+        // goes with it. A query is sent to the server, and a fragment is read
+        // by the page's scripts, which can send it on; either can carry
+        // kilobytes, so a URL with one is an upload to an allowlisted origin
+        // and is priced like one. The decoded text is shown, so a person
+        // approving it reads what leaves rather than a wall of escapes.
+        // A path is the same channel as a query when it is long enough: a
+        // server reads every byte of it.
+        let (query, fragment) = query_and_fragment(&args.url);
+        let path = path_of(&args.url);
+        let long = path.len()
+            + query.map_or(0, |query| query.len() + 1)
+            + fragment.map_or(0, |fragment| fragment.len() + 1)
+            > MAX_FETCH_TARGET_BYTES;
+        let risk = if query.is_some() || fragment.is_some() || long {
+            RiskLevel::High
+        } else {
+            RiskLevel::Medium
+        };
+        let mut plan = ToolPlan::new(risk, format!("Open {}", args.url))
+            .requiring(origin_capability("navigate", &origin));
+        if long {
+            plan = plan.affecting(format!("path: {}", percent_decode(path)));
+        }
+        if let Some(query) = query {
+            plan = plan.affecting(format!("query: {}", percent_decode(query)));
+        }
+        if let Some(fragment) = fragment {
+            plan = plan.affecting(format!("fragment: {}", percent_decode(fragment)));
+        }
+        Ok(plan)
     }
 
     async fn execute(
@@ -162,6 +253,8 @@ impl Tool for Navigate {
         _cancel: CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
         let args: NavigateArgs = parse_arguments(&self.metadata.name, &arguments)?;
+        let authorised = normalise_origin(&args.url)
+            .map_err(|error| ToolError::from(BrowserError::from(error)))?;
         let session = self
             .pool
             .session(context.run_id)
@@ -176,7 +269,32 @@ impl Tool for Navigate {
             .await
             .map_err(|error| command_error("waiting for navigation", &error))?;
 
-        let url = page.url().await.ok().flatten().unwrap_or(args.url.clone());
+        // Where the page ended, not where it was sent, read until it has had
+        // a moment to move itself. A URL that cannot be read is treated as a
+        // page somewhere else: falling back to the URL asked for would be
+        // assuming the answer this check exists to find.
+        let settled = tokio::time::Instant::now() + SETTLE;
+        let landed = loop {
+            let landed = page.url().await.ok().flatten();
+            match landed.as_deref().map(normalise_origin) {
+                Some(Ok(origin)) if origin == authorised => {}
+                elsewhere => {
+                    let landed = match (elsewhere, &landed) {
+                        (Some(Ok(origin)), _) => origin,
+                        (_, Some(url)) => url.clone(),
+                        (_, None) => "a page whose address could not be read".to_owned(),
+                    };
+                    leave(&self.pool, context, &page).await;
+                    return Err(BrowserError::LeftOrigin { authorised, landed }.into());
+                }
+            }
+            if tokio::time::Instant::now() >= settled {
+                break landed;
+            }
+            tokio::time::sleep(SETTLE_POLL).await;
+        };
+
+        let url = landed.unwrap_or_default();
         let title = page.get_title().await.ok().flatten().unwrap_or_default();
 
         Ok(ToolOutput::text(
@@ -264,7 +382,7 @@ impl Tool for Click {
         _cancel: CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
         let args: ClickArgs = parse_arguments(&self.metadata.name, &arguments)?;
-        let (_session, page, url) = session_page(&self.pool, context).await?;
+        let (_session, page, url) = authorised_page(&self.pool, context, "interact").await?;
 
         let element = page.find_element(&args.selector).await.map_err(|_| {
             ToolError::from(BrowserError::NoSuchElement {
@@ -390,7 +508,7 @@ impl Tool for TypeText {
         _cancel: CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
         let args: TypeArgs = parse_arguments(&self.metadata.name, &arguments)?;
-        let (_session, page, url) = session_page(&self.pool, context).await?;
+        let (_session, page, url) = authorised_page(&self.pool, context, "interact").await?;
 
         let element = page.find_element(&args.selector).await.map_err(|_| {
             ToolError::from(BrowserError::NoSuchElement {
@@ -500,7 +618,7 @@ impl Tool for Extract {
         _cancel: CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
         let args: ExtractArgs = parse_arguments(&self.metadata.name, &arguments)?;
-        let (_session, page, url) = session_page(&self.pool, context).await?;
+        let (_session, page, url) = authorised_page(&self.pool, context, "read").await?;
 
         let text = match &args.selector {
             Some(selector) => {
@@ -641,7 +759,7 @@ impl Tool for Inspect {
         _cancel: CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
         let args: InspectArgs = parse_arguments(&self.metadata.name, &arguments)?;
-        let (_session, page, url) = session_page(&self.pool, context).await?;
+        let (_session, page, url) = authorised_page(&self.pool, context, "read").await?;
 
         // Scoping is done by setting a root the script reads, rather than by
         // interpolating the selector into JavaScript.
@@ -775,7 +893,7 @@ impl Tool for Wait {
         cancel: CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
         let args: WaitArgs = parse_arguments(&self.metadata.name, &arguments)?;
-        let (_session, page, url) = session_page(&self.pool, context).await?;
+        let (_session, page, url) = authorised_page(&self.pool, context, "read").await?;
 
         let seconds = args.timeout_secs.unwrap_or(10).min(MAX_WAIT_SECS);
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(seconds);
@@ -905,7 +1023,7 @@ impl Tool for History {
         context: &ToolContext,
         _cancel: CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
-        let (_session, page, _url) = session_page(&self.pool, context).await?;
+        let (_session, page, _url) = authorised_page(&self.pool, context, "navigate").await?;
         page.evaluate(self.direction.script())
             .await
             .map_err(|error| command_error("moving through history", &error))?;
@@ -1065,7 +1183,7 @@ impl Tool for Screenshot {
         _cancel: CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
         let args: ScreenshotArgs = parse_arguments(&self.metadata.name, &arguments)?;
-        let (_session, page, url) = session_page(&self.pool, context).await?;
+        let (_session, page, url) = authorised_page(&self.pool, context, "read").await?;
         let destination = self.destination(args.filename.as_ref(), context)?;
 
         // A full-page capture of a long document is worth having on disk, but it
@@ -1146,6 +1264,86 @@ impl Tool for Screenshot {
     async fn end_run(&self, run_id: agentos_core::ids::TaskRunId) {
         self.pool.close_run(run_id).await;
     }
+}
+
+/// Take the browser off a page it was not authorised to be on.
+///
+/// The request that reached the page has been made by now; what this prevents
+/// is the agent reading, typing into or screenshotting a page whose origin no
+/// decision covered. If the browser will not even go to `about:blank`, the
+/// run's session is closed, which leaves no page at all.
+async fn leave(pool: &BrowserPool, context: &ToolContext, page: &Page) {
+    let left = tokio::time::timeout(LEAVE_TIMEOUT, page.goto("about:blank"))
+        .await
+        .is_ok_and(|result| result.is_ok());
+    if !left {
+        tracing::warn!("could not leave an unauthorised page; closing the run's browser");
+        pool.close_run(context.run_id).await;
+    }
+}
+
+/// How long leaving an unauthorised page may take before the session is closed
+/// instead.
+const LEAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The path of an absolute URL, still percent-encoded: everything after the
+/// authority and before any query or fragment.
+fn path_of(url: &str) -> &str {
+    let before_fragment = url.split_once('#').map_or(url, |(before, _)| before);
+    let before_query = before_fragment
+        .split_once('?')
+        .map_or(before_fragment, |(before, _)| before);
+    let after_scheme = before_query
+        .split_once("://")
+        .map_or(before_query, |(_, rest)| rest);
+    after_scheme
+        .find('/')
+        .map_or("", |slash| &after_scheme[slash..])
+}
+
+/// The non-empty query and fragment of a URL, still percent-encoded.
+///
+/// A bare `?` or `#` carries nothing and is not counted.
+fn query_and_fragment(url: &str) -> (Option<&str>, Option<&str>) {
+    let (before_fragment, fragment) = match url.split_once('#') {
+        Some((before, fragment)) => (before, Some(fragment)),
+        None => (url, None),
+    };
+    let query = before_fragment.split_once('?').map(|(_, query)| query);
+    (
+        query.filter(|query| !query.is_empty()),
+        fragment.filter(|fragment| !fragment.is_empty()),
+    )
+}
+
+/// Decode `%XX` escapes, replacing any invalid UTF-8 that results.
+///
+/// `+` is left alone: it means a space only to a server reading a form, and a
+/// person approving the request should see what was written.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        // Two hex digits exactly: `from_str_radix` would also take a sign.
+        let escape = (bytes[index] == b'%')
+            .then(|| bytes.get(index + 1..index + 3))
+            .flatten()
+            .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match escape {
+            Some(byte) => {
+                decoded.push(byte);
+                index += 3;
+            }
+            None => {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 /// Every browser tool, sharing one pool.
@@ -1276,6 +1474,124 @@ mod tests {
                 origin: "https://crm.example.com".to_owned()
             })]
         );
+    }
+
+    fn plan_for(url: &str) -> ToolPlan {
+        let context = ToolContext::new(
+            agentos_core::ids::AgentId::new(),
+            agentos_core::ids::TaskId::new(),
+            agentos_core::ids::TaskRunId::new(),
+            std::env::temp_dir(),
+        );
+        futures::executor::block_on(
+            navigate_tool().plan(&serde_json::json!({ "url": url }), &context),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_navigation_carrying_a_query_is_priced_as_a_send() {
+        // An allowlisted origin with four kilobytes in the query is an upload
+        // to that origin, and the approval card must say what is leaving.
+        let plain = plan_for("https://crm.example.com/customers/7");
+        assert_eq!(plain.risk, RiskLevel::Medium);
+        assert_eq!(
+            plain.affected_resources,
+            vec!["origin:https://crm.example.com"]
+        );
+
+        let query = plan_for("https://crm.example.com/search?q=quarterly%20figures&x=%E2%9C%93");
+        assert_eq!(query.risk, RiskLevel::High);
+        assert!(
+            query
+                .affected_resources
+                .contains(&"query: q=quarterly figures&x=\u{2713}".to_owned()),
+            "{:?}",
+            query.affected_resources
+        );
+
+        let fragment = plan_for("https://crm.example.com/#token=abc");
+        assert_eq!(fragment.risk, RiskLevel::High);
+        assert!(
+            fragment
+                .affected_resources
+                .contains(&"fragment: token=abc".to_owned())
+        );
+
+        // A bare `?` or `#` carries nothing.
+        assert_eq!(
+            plan_for("https://crm.example.com/?").risk,
+            RiskLevel::Medium
+        );
+        assert_eq!(
+            plan_for("https://crm.example.com/#").risk,
+            RiskLevel::Medium
+        );
+    }
+
+    #[test]
+    fn a_navigation_carrying_a_long_path_is_priced_as_a_send() {
+        // Four kilobytes in a path reach the server as surely as in a query.
+        let payload = "QUJD".repeat(1024);
+        let long = plan_for(&format!("https://crm.example.com/{payload}"));
+        assert_eq!(long.risk, RiskLevel::High);
+        assert!(
+            long.affected_resources
+                .contains(&format!("path: /{payload}")),
+            "{:?}",
+            long.affected_resources
+        );
+
+        // The limit is network.request's, and inclusive.
+        let at_limit = format!("/{}", "p".repeat(MAX_FETCH_TARGET_BYTES - 1));
+        assert_eq!(
+            plan_for(&format!("https://crm.example.com{at_limit}")).risk,
+            RiskLevel::Medium
+        );
+        assert_eq!(
+            plan_for(&format!("https://crm.example.com{at_limit}p")).risk,
+            RiskLevel::High
+        );
+        assert_eq!(path_of("https://a.example:8443/x/y?q#f"), "/x/y");
+        assert_eq!(path_of("https://a.example?q"), "");
+    }
+
+    #[tokio::test]
+    async fn a_page_tool_refuses_without_an_origin_to_compare() {
+        // Outside the pipeline nothing says which origin the call was
+        // authorised for, and a tool that cannot compare does not act. The
+        // refusal comes before the browser is asked for anything.
+        let pool = Arc::new(BrowserPool::new(crate::session::BrowserOptions::new(
+            std::env::temp_dir(),
+        )));
+        let context = ToolContext::new(
+            agentos_core::ids::AgentId::new(),
+            agentos_core::ids::TaskId::new(),
+            agentos_core::ids::TaskRunId::new(),
+            std::env::temp_dir(),
+        );
+        let refused = Extract::new(pool)
+            .execute(serde_json::json!({}), &context, CancellationToken::new())
+            .await;
+        assert!(
+            matches!(&refused, Err(ToolError::Failed(message)) if message.contains("not authorised")),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn decoding_leaves_what_is_not_an_escape() {
+        assert_eq!(percent_decode("a%20b"), "a b");
+        assert_eq!(percent_decode("a+b"), "a+b");
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%zz%4"), "%zz%4");
+        assert_eq!(percent_decode("%+f"), "%+f");
+        assert_eq!(percent_decode("%FF"), "\u{FFFD}");
+        assert_eq!(
+            query_and_fragment("https://a/p?x#y"),
+            (Some("x"), Some("y"))
+        );
+        assert_eq!(query_and_fragment("https://a/p#y?x"), (None, Some("y?x")));
     }
 
     #[test]

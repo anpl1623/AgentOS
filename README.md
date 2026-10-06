@@ -67,7 +67,7 @@ You
 └─────────────────────────────────────┘
 ```
 
-![The AgentOS dashboard: running work, recent refusals, agents and audit state](docs/images/dashboard.png)
+![The AgentOS dashboard: work waiting on a decision, running work, recent failures and refusals, and tool use](docs/images/dashboard.png)
 
 The dashboard is the operator's view of the machine: what is running, what is waiting on a
 decision, and what was refused. The `audit chain` tile reports whether the hash chain
@@ -869,6 +869,7 @@ development-only and are removed from a production build.
 | `agentos schedule create \| list \| pause \| resume \| delete \| run` | Standing instructions, and the loop that acts on them |
 | `agentos audit tail \| verify` | Read the log and check its integrity |
 | `agentos provider list \| set-key \| remove-key` | Manage credentials |
+| `agentos credential set \| list \| remove` | Store network credentials, each bound to one origin |
 | `agentos demo` | Run the end-to-end demonstration against a local mock CRM |
 | `agentos tools` | See what the runtime can offer an agent |
 
@@ -924,6 +925,43 @@ permissions:
 
 Conflicts resolve by specificity, and ties go to the stricter effect, so a contradictory policy fails
 closed.
+
+### Network
+
+`network.request` reaches a server directly, and a policy grants it as three actions rather than one:
+
+| Action | What it covers | Risk |
+| --- | --- | --- |
+| `fetch` | `GET`, `HEAD` or `OPTIONS` with no body, and a short path, query and headers | medium |
+| `send` | Any other method, any body, or a path, query or headers over 256 bytes | high |
+| `credential` | Spending a stored credential, scoped to `{origin}/{name}` | one level above the request |
+
+An origin allowlist says where a request may go and nothing about what leaves with it, so reading an
+API and writing to one are separate grants, and a long query is priced as the upload it is. Origins
+are matched against the normalised `scheme://host[:port]`, as browser origins are: a pattern with no
+port means the scheme's default, and `:*` means any.
+
+```yaml
+permissions:
+  network:
+    fetch: ["https://api.example.com"]
+    send:
+      effect: ask
+      origins: ["https://api.example.com"]
+    credential:
+      effect: ask
+      names: ["https://api.example.com/*"]
+```
+
+Credentials are stored in the keychain under the origin they belong to, with
+`agentos credential set https://api.example.com default` or from the desktop's settings, and never
+read from the environment. A request names one; it gets the secret only at that origin, and anything
+echoed back is redacted before the model or the audit log sees it. With the starter policy's
+`max_risk: medium`, every `send` and every credentialed request is refused until the ceiling is
+raised.
+
+Redirects are not followed. The policy answered for one origin, and a `Location` pointing elsewhere is
+a second origin that needs its own decision, so the response goes back to the agent as it is.
 
 ## Tests
 

@@ -501,12 +501,24 @@ mod tests {
             .with_timezone(&chrono::Utc)
     }
 
-    /// Read a due schedule as a scheduler would, and fire it.
-    async fn fire_from(db: &Database, id: ScheduleId) -> (bool, Task) {
+    /// A due schedule as a scheduler reads it, with the firing it means to
+    /// record: the schedule advanced, the moment it was due, and the task.
+    async fn read_due(
+        db: &Database,
+        id: ScheduleId,
+    ) -> (Schedule, Option<agentos_core::Timestamp>, Task) {
         let mut schedule = db.schedules().get(id).await.unwrap();
         let due_at = schedule.next_run_at;
         let task = Task::new(schedule.agent_id, &schedule.objective).from_schedule(schedule.id);
         schedule.record_firing(agentos_core::now(), task.id);
+        (schedule, due_at, task)
+    }
+
+    /// Fire what [`read_due`] read.
+    async fn fire_read(
+        db: &Database,
+        (schedule, due_at, task): (Schedule, Option<agentos_core::Timestamp>, Task),
+    ) -> (bool, Task) {
         let fired = db.schedules().fire(&schedule, due_at, &task).await.unwrap();
         (fired, task)
     }
@@ -531,9 +543,14 @@ mod tests {
             .unwrap();
             first.schedules().insert(&schedule).await.unwrap();
 
+            // Both read before either writes. Were one scheduler's read to
+            // land after the other's firing, it would see the advanced time,
+            // which is a schedule not yet due rather than the race.
+            let read_first = read_due(&first, schedule.id).await;
+            let read_second = read_due(&second, schedule.id).await;
             let ((a, task_a), (b, task_b)) = tokio::join!(
-                fire_from(&first, schedule.id),
-                fire_from(&second, schedule.id)
+                fire_read(&first, read_first),
+                fire_read(&second, read_second)
             );
             assert!(a ^ b, "round {round}: both or neither fired");
 

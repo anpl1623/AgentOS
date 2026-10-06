@@ -12,6 +12,7 @@
 pub mod approval;
 pub mod error;
 pub mod filesystem;
+pub mod network;
 pub mod pipeline;
 pub mod taint;
 pub mod terminal;
@@ -22,11 +23,13 @@ use std::sync::Arc;
 
 pub use approval::{ApprovalGate, ApprovalOutcome, DenyAllGate, RecordingGate};
 pub use error::ToolError;
+pub use network::{AddressPolicy, NetworkRequest};
 pub use pipeline::{ExecutionReport, ToolPipeline};
 pub use taint::TaintTracker;
 pub use tool::{
-    DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT, PolicyProbe, Tool, ToolContext, ToolOutput,
-    ToolPlan, ToolRegistry, metadata_for, parse_arguments, plan_exceeds_manifest,
+    CredentialResolver, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT, MIN_REDACTED_FRAGMENT,
+    PolicyProbe, REDACTED_CREDENTIAL, Secret, Tool, ToolContext, ToolOutput, ToolPlan,
+    ToolRegistry, metadata_for, parse_arguments, plan_exceeds_manifest,
 };
 pub use vision::{
     DEFAULT_MAX_IMAGE_BYTES, DEFAULT_MAX_IMAGE_EDGE, PreparedImage, VisionError, prepare,

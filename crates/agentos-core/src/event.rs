@@ -380,6 +380,28 @@ pub enum AgentEvent {
         provider: String,
     },
 
+    /// An operator stored a credential for a network origin.
+    ///
+    /// Names the origin and the credential and nothing else, for the reason the
+    /// provider events give. The origin is canonical, as it is in the key the
+    /// credential is stored under.
+    #[serde(rename = "operator.credential.set")]
+    CredentialSet {
+        /// The canonical origin the credential is bound to.
+        origin: String,
+        /// Its name.
+        name: String,
+    },
+
+    /// An operator removed a stored network credential.
+    #[serde(rename = "operator.credential.removed")]
+    CredentialRemoved {
+        /// The canonical origin it was bound to.
+        origin: String,
+        /// Its name.
+        name: String,
+    },
+
     /// An operator wrote a memory for an agent.
     ///
     /// The content is carried whole, as a policy's document is. Memories are
@@ -473,6 +495,26 @@ pub enum AgentEvent {
         name: String,
     },
 
+    /// A tool was given a stored credential to send.
+    ///
+    /// Recorded by the pipeline from what the credential store released to the
+    /// call, not from what the tool reports, so a tool cannot spend a credential
+    /// without it appearing here. It is written at the moment of release,
+    /// before the tool holds the value, and the value is withheld if it cannot
+    /// be written: a request still in flight when the process exits has
+    /// already left this behind. It therefore says the value left the store,
+    /// not that a server received it. Like the operator events it names the
+    /// origin and the credential, never the value.
+    #[serde(rename = "network.credential.used")]
+    CredentialUsed {
+        /// The canonical origin the credential is bound to.
+        origin: String,
+        /// Its name.
+        name: String,
+        /// The tool that was given it.
+        tool: String,
+    },
+
     /// An operator created a task.
     ///
     /// Whether it runs at once or waits, the objective is trusted control-plane
@@ -562,6 +604,8 @@ impl AgentEvent {
             Self::AgentEnabledChanged { .. } => "operator.agent.enabled_changed",
             Self::ProviderKeySet { .. } => "operator.provider_key.set",
             Self::ProviderKeyRemoved { .. } => "operator.provider_key.removed",
+            Self::CredentialSet { .. } => "operator.credential.set",
+            Self::CredentialRemoved { .. } => "operator.credential.removed",
             Self::MemoryRemembered { .. } => "operator.memory.recorded",
             Self::MemoryRevised { .. } => "operator.memory.revised",
             Self::MemoryForgotten { .. } => "operator.memory.forgotten",
@@ -569,6 +613,7 @@ impl AgentEvent {
             Self::SchedulePaused { .. } => "operator.schedule.paused",
             Self::ScheduleResumed { .. } => "operator.schedule.resumed",
             Self::ScheduleDeleted { .. } => "operator.schedule.deleted",
+            Self::CredentialUsed { .. } => "network.credential.used",
             Self::TaskCreated { .. } => "operator.task.created",
             Self::TaskDependencyAdded { .. } => "operator.task.dependency_added",
             Self::SchedulerStarted { .. } => "operator.scheduler.started",
@@ -603,7 +648,13 @@ impl AgentEvent {
             | Self::AgentCreated { .. }
             | Self::AgentEnabledChanged { .. }
             | Self::ProviderKeySet { .. }
-            | Self::ProviderKeyRemoved { .. } => true,
+            | Self::ProviderKeyRemoved { .. }
+            | Self::CredentialSet { .. }
+            | Self::CredentialRemoved { .. } => true,
+            // The runtime acting as the operator, at a remote service. Whether
+            // the run was tainted is in the permission records beside it; the
+            // spend matters either way.
+            Self::CredentialUsed { .. } => true,
             // What an agent is told before it plans, and what starts work with
             // nobody present, shape what it does as much as its grants do.
             Self::MemoryRemembered { .. }
@@ -664,6 +715,12 @@ impl AgentEvent {
             }
             Self::ProviderKeySet { provider } => format!("{provider} key stored"),
             Self::ProviderKeyRemoved { provider } => format!("{provider} key removed"),
+            Self::CredentialSet { origin, name } => {
+                format!("credential {name} stored for {origin}")
+            }
+            Self::CredentialRemoved { origin, name } => {
+                format!("credential {name} removed for {origin}")
+            }
             Self::MemoryRemembered {
                 agent,
                 kind,
@@ -775,6 +832,9 @@ pub const SECURITY_KINDS: &[&str] = &[
     "operator.agent.enabled_changed",
     "operator.provider_key.set",
     "operator.provider_key.removed",
+    "operator.credential.set",
+    "operator.credential.removed",
+    "network.credential.used",
     "operator.memory.recorded",
     "operator.memory.revised",
     "operator.memory.forgotten",
@@ -855,7 +915,7 @@ mod tests {
     /// How many variants [`AgentEvent`] has.
     ///
     /// Kept beside [`variant_index`] because the two change together.
-    const VARIANT_COUNT: usize = 42;
+    const VARIANT_COUNT: usize = 45;
 
     /// A dense index per variant, in declaration order.
     ///
@@ -907,6 +967,9 @@ mod tests {
             AgentEvent::TaskDependencyAdded { .. } => 39,
             AgentEvent::SchedulerStarted { .. } => 40,
             AgentEvent::SchedulerStopped { .. } => 41,
+            AgentEvent::CredentialSet { .. } => 42,
+            AgentEvent::CredentialRemoved { .. } => 43,
+            AgentEvent::CredentialUsed { .. } => 44,
         }
     }
 
@@ -1117,6 +1180,19 @@ mod tests {
                 tick_seconds: 30,
                 max_concurrent_runs: 1,
             },
+            AgentEvent::CredentialSet {
+                origin: "https://api.example.com".into(),
+                name: "default".into(),
+            },
+            AgentEvent::CredentialRemoved {
+                origin: "https://api.example.com".into(),
+                name: "default".into(),
+            },
+            AgentEvent::CredentialUsed {
+                origin: "https://api.example.com".into(),
+                name: "default".into(),
+                tool: "network.request".into(),
+            },
         ]
     }
 
@@ -1293,6 +1369,47 @@ mod tests {
     }
 
     #[test]
+    fn credential_events_carry_no_secret_material() {
+        // A network credential passes near three events. Each is pinned to the
+        // fields that name the credential, so a value cannot be added to one
+        // without changing this list.
+        for (event, expected) in [
+            (
+                AgentEvent::CredentialSet {
+                    origin: "https://api.example.com".into(),
+                    name: "default".into(),
+                },
+                vec!["event", "name", "origin"],
+            ),
+            (
+                AgentEvent::CredentialRemoved {
+                    origin: "https://api.example.com".into(),
+                    name: "default".into(),
+                },
+                vec!["event", "name", "origin"],
+            ),
+            (
+                AgentEvent::CredentialUsed {
+                    origin: "https://api.example.com".into(),
+                    name: "default".into(),
+                    tool: "network.request".into(),
+                },
+                vec!["event", "name", "origin", "tool"],
+            ),
+        ] {
+            let json = serde_json::to_value(&event).unwrap();
+            let mut fields: Vec<&str> = json
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            fields.sort_unstable();
+            assert_eq!(fields, expected, "{}", event.kind());
+        }
+    }
+
+    #[test]
     fn operator_events_carry_no_key_material() {
         // The provider events are the only ones a credential passes near. Their
         // serialised form is pinned to the tag and the provider id, so a field
@@ -1347,8 +1464,11 @@ mod tests {
             vec![
                 "agent.taint.raised",
                 "approval.denied",
+                "network.credential.used",
                 "operator.agent.created",
                 "operator.agent.enabled_changed",
+                "operator.credential.removed",
+                "operator.credential.set",
                 "operator.memory.forgotten",
                 "operator.memory.recorded",
                 "operator.memory.revised",

@@ -25,6 +25,7 @@ import type { CreateTaskInput } from "../bindings/CreateTaskInput";
 import type { DashboardView } from "../bindings/DashboardView";
 import type { EventView } from "../bindings/EventView";
 import type { MemoryView } from "../bindings/MemoryView";
+import type { NetworkCredentialView } from "../bindings/NetworkCredentialView";
 import type { PolicyCheck } from "../bindings/PolicyCheck";
 import type { PolicyView } from "../bindings/PolicyView";
 import type { RememberInput } from "../bindings/RememberInput";
@@ -153,6 +154,18 @@ export const api = {
   setProviderKey: (provider: string, key: string) =>
     call<null>("set_provider_key", { provider, key }),
   removeProviderKey: (provider: string) => call<null>("remove_provider_key", { provider }),
+
+  /** Stored network credentials, by origin and name. No value ever crosses. */
+  listNetworkCredentials: () => call<NetworkCredentialView[]>("list_network_credentials"),
+  /**
+   * Store a credential bound to one origin, replacing any of the same name
+   * there. The answer names the origin as the runtime normalised it; the
+   * secret is not echoed, and a refusal does not quote it.
+   */
+  setNetworkCredential: (origin: string, name: string, secret: string) =>
+    call<NetworkCredentialView>("set_network_credential", { origin, name, secret }),
+  removeNetworkCredential: (origin: string, name: string) =>
+    call<null>("remove_network_credential", { origin, name }),
 
   /**
    * Tell the runtime a held close has reached the interface. A close nobody

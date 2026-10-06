@@ -223,15 +223,23 @@ export function Enabled({ status }: { status: string }) {
  * scanning a list should be able to see which work was influenced by something
  * the operator did not write. The explanation is text rather than a `title`,
  * which a keyboard never reaches and a screen reader may not read.
+ *
+ * The explanation names a run by default. Something other than a run that
+ * carries the mark, such as a memory, says what it is instead, so a screen
+ * reader is not told about a run that is not there.
  */
-export function Tainted({ label = "read untrusted data" }: { label?: string }) {
+export function Tainted({
+  label = "read untrusted data",
+  explanation = "This run has read data from outside the trust boundary.",
+}: {
+  label?: string;
+  explanation?: string;
+}) {
   return (
     <span className="taint">
       <span aria-hidden="true">⚠</span>
       {label}
-      <span className="visually-hidden">
-        . This run has read data from outside the trust boundary.
-      </span>
+      <span className="visually-hidden">. {explanation}</span>
     </span>
   );
 }

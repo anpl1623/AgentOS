@@ -1,4 +1,4 @@
-//! Tools, providers and the settings screen.
+//! Tools, providers, network credentials and the settings screen.
 
 use agentos_core::tool::ToolMetadata;
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,21 @@ pub struct ProviderView {
     pub source: Option<String>,
     /// Guidance when it is not configured.
     pub note: String,
+}
+
+/// A stored network credential, as the settings screen lists it.
+///
+/// An origin and a name, and nothing else: no value, no hint, no length. A
+/// provider key shows a redacted hint because a person choosing between keys
+/// needs to tell them apart; a credential is told apart by where it is bound,
+/// and every character of a secret shown is one fewer to guess.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct NetworkCredentialView {
+    /// The origin it is bound to, normalised to `scheme://host[:port]`.
+    pub origin: String,
+    /// The name a request uses to ask for it.
+    pub name: String,
 }
 
 /// The settings screen.

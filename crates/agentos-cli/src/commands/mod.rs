@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod audit;
+pub mod credential;
 pub mod demo;
 pub mod doctor;
 pub mod policy;

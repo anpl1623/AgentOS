@@ -24,6 +24,7 @@ mod activity;
 mod agents;
 mod approvals;
 mod audit;
+mod credentials;
 mod graph;
 mod insights;
 mod memories;
@@ -39,6 +40,7 @@ pub use activity::*;
 pub use agents::*;
 pub use approvals::*;
 pub use audit::*;
+pub use credentials::*;
 pub use graph::*;
 pub use insights::*;
 pub use memories::*;
@@ -1858,6 +1860,108 @@ mod tests {
         assert_eq!(read.capabilities[0].capability, "filesystem.read");
         assert_eq!(read.reach, "scoped");
         assert_eq!(read.capabilities[0].reach, "scoped");
+    }
+
+    /// A secret no other text in these tests contains, so finding it anywhere
+    /// means it leaked there.
+    const SECRET: &str = "tok_7f3c9e1a5b2d";
+
+    #[tokio::test]
+    async fn a_credential_is_bound_to_its_origin_and_its_value_comes_back_nowhere() {
+        use agentos_secrets::SecretStore;
+
+        let guard = tempfile::TempDir::new().unwrap();
+        let root = std::fs::canonicalize(guard.path()).unwrap();
+        let store = Arc::new(InMemorySecretStore::new());
+        let runtime = Runtime::in_memory(root, store.clone()).await.unwrap();
+
+        // Typed the way people type origins; stored the way runs are matched.
+        let view = credentials::store(
+            &runtime,
+            "HTTPS://CRM.Example.com:443",
+            "default",
+            format!("  {SECRET}\n"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            view,
+            crate::dto::NetworkCredentialView {
+                origin: "https://crm.example.com".to_owned(),
+                name: "default".to_owned(),
+            }
+        );
+        let key = agentos_secrets::network_key("https://crm.example.com", "default").unwrap();
+        assert!(
+            store.get(&key).unwrap().expose().contains(SECRET),
+            "the secret is stored under the normalised origin"
+        );
+
+        let listed = credentials::listed(&runtime).await.unwrap();
+        assert_eq!(listed, vec![view.clone()]);
+
+        // Neither answer, nor any record or summary the change wrote, carries it.
+        let answers = serde_json::to_string(&(&view, &listed)).unwrap();
+        assert!(!answers.contains(SECRET), "{answers}");
+        for record in runtime.database().audit_sink().all().await.unwrap() {
+            let payload = record.payload.to_string();
+            assert!(!payload.contains(SECRET), "{}: {payload}", record.kind);
+        }
+        let events = recent_events(&runtime, 100, false).await.unwrap();
+        let set = events
+            .iter()
+            .find(|event| event.kind == "operator.credential.set")
+            .expect("the change was recorded");
+        assert!(
+            set.summary.contains("https://crm.example.com"),
+            "{}",
+            set.summary
+        );
+        assert!(!set.summary.contains(SECRET));
+
+        runtime
+            .remove_network_credential("https://crm.example.com", "default")
+            .await
+            .unwrap();
+        assert!(credentials::listed(&runtime).await.unwrap().is_empty());
+        assert_eq!(records_of(&runtime, "operator.credential.removed").await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_refused_credential_is_not_quoted_back_or_recorded() {
+        let (_guard, runtime, _agent) = runtime_with_agent().await;
+        for (origin, name) in [
+            ("crm.example.com", "default"),
+            ("https://crm.example.com", "two.parts"),
+        ] {
+            let error = credentials::store(&runtime, origin, name, SECRET.to_owned())
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains(SECRET), "{error}");
+        }
+        assert!(credentials::listed(&runtime).await.unwrap().is_empty());
+        assert_eq!(records_of(&runtime, "operator.credential.set").await, 0);
+    }
+
+    #[test]
+    fn a_secret_is_scrubbed_from_text_in_every_spelling_and_only_once() {
+        let padded = format!(" {SECRET} ");
+        assert_eq!(
+            credentials::without_secret(&format!("refused {padded} and {SECRET}"), &padded),
+            "refused [redacted credential] and [redacted credential]"
+        );
+        // A secret that occurs inside the marker is not replaced inside it.
+        assert_eq!(
+            credentials::without_secret("bad credential", "credential"),
+            "bad [redacted credential]"
+        );
+        // Nothing to scrub is not an instruction to scrub everything.
+        assert_eq!(credentials::without_secret("no key", "  "), "no key");
+        assert_eq!(
+            credentials::without_secret("naïve", "ï"),
+            "na[redacted credential]ve"
+        );
     }
 
     #[tokio::test]

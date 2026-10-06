@@ -104,6 +104,48 @@ it is technically a breaking change.
   in the chain re-reads the tip and reseals after the winner. A record the process still fails to
   write is counted, and the desktop's chain health reports the count rather than calling an
   incomplete log intact.
+- **`network.request`: one audited way out, priced by what it carries.** Each call is scoped to the
+  canonical origin it goes to, and is a `fetch` (medium) only for `GET`, `HEAD` or `OPTIONS` with no
+  body, at most 256 bytes of path, query and fragment, and at most 256 bytes of custom headers.
+  Anything else is a `send` (high), so a policy can let an agent read an API without letting it write
+  to one, and a kilobyte in a query string or a header is priced as the upload it is. Headers that
+  override the method are refused outright, as are `Authorization`, cookies, `Host` and the framing
+  headers. Redirects are not followed: a 3xx comes back as the result with its `Location`, and going
+  there is a second request with its own decision. Nothing sets the tool's address policy but the
+  runtime, which builds it strict.
+- **`network.request` refuses every address that is not public, and connects only to what it
+  checked.** Every address a name resolves to is checked, not the first, after reducing IPv6 forms
+  that embed an IPv4 address (mapped, compatible, translated, NAT64, 6to4) to that address. Loopback,
+  private, link-local (the cloud metadata address among them), carrier-grade NAT, unique-local,
+  multicast, documentation and benchmarking addresses, and any IPv6 address outside `2000::/3`,
+  refuse the call whatever the policy allows. The connection is then pinned to the addresses that
+  were checked, so a second DNS answer cannot move it, and proxy variables in the environment are
+  ignored.
+- **Network credentials are bound to an origin and spent as a separate grant.** A request names a
+  stored credential and never carries one; the value is looked up for the URL's own origin, so a
+  credential stored for one origin cannot be sent to another, and a call is given only the
+  credentials its authorised plan named. Spending one needs `network.credential` on
+  `{origin}/{name}` as well as the request's own grant, and raises the call's risk a level. The value
+  never enters the arguments, the plan, the approval card or the audit chain. Anything a call
+  returns, on success or failure, that contains a credential the run has released, or a run of eight
+  or more of its bytes, reads `[redacted credential]` before the model or the audit log sees it; the
+  body is redacted before it is cut to the caller's `max_bytes`, and a credentialed request cannot
+  ask for a `Range` of the response. `Set-Cookie` is never shown.
+- **Credential use and credential changes are audited.** Each release of a credential to a call is
+  recorded as `network.credential.used`, naming the origin, the name and the tool, at the moment of
+  release and before the tool holds the value; a credential whose use cannot be recorded is not
+  released. Storing and removing one are `operator.credential.set` and `operator.credential.removed`.
+  All three are security-relevant and none carries the value.
+- **A browser navigation that carries something is priced as a send.** `browser.navigate` to a URL
+  with a query or a fragment, or with more than 256 bytes of path, query and fragment, is high risk
+  rather than medium, and the approval card shows the decoded query, fragment or path. **Some
+  navigations that ran without asking under a medium ceiling or an `ask` above medium will now be
+  refused or put to a person.**
+- **The browser does not stay on a page it was sent to from another origin.** A navigation that ends
+  on another origin, by an HTTP redirect, a meta refresh or a script run on load, now fails naming
+  where it landed, and the browser leaves the page; that origin needs a navigation of its own. A page
+  that moves itself to another origin later is not acted on: every browser tool that acts on the
+  current page checks, when it runs, that the page is still on the origin it was authorised for.
 
 ### Added
 
@@ -134,6 +176,28 @@ it is technically a breaking change.
   task graph, and a report of how far each granted tool's policy reaches, computed by the permission
   engine. The report errs towards saying a tool can do more than it can, never less, and its
   documentation lists where. Their screens follow.
+- `network.request`, for HTTP requests to a named origin, with a `network` block in the policy
+  vocabulary (`fetch`, `send`, `credential`) and a commented example in the starter policy. It is
+  registered for every runtime and granted to no agent until someone adds it.
+- `agentos credential set <origin> <name>`, `agentos credential list` and
+  `agentos credential remove <origin> <name>`. The secret is read from a prompt that does not echo,
+  or from standard input, never from the command line; the list shows origins and names only.
+- Desktop: a run has its own screen. It merges steps and tool calls into one timeline with times,
+  can be read by calls or by steps, anchors a failure to what produced it, shows where the time went
+  and the time spent waiting on you, lists the run's audit records with both hashes, switches between
+  attempts, and offers Retry, Stop this agent and Copy this run. It refreshes on the run's own
+  events, with a slow reload behind them.
+- Desktop: Tasks has a Queued panel saying what each waiting task is waiting for, and a queued task
+  or a new one can be made to wait for another; a refused edge shows the runtime's reason.
+- Desktop: an agent's page shows how far the policy reaches for each granted tool, as the permission
+  engine reads it, and marks a tool no rule allows. Its memory can be added to, edited and forgotten,
+  and a policy that does not check shows the engine's message as written.
+- Desktop: Schedules lists standing schedules with their next and last firing, creates one with the
+  cadence checked as it is typed, and pauses, resumes or deletes it.
+- Desktop: Settings stores and removes network credentials, listing each as origin and name and
+  never its value; runs and stops the scheduler, saying in plain words when another process holds
+  it; and lists the tool catalogue by domain with the agents each tool is granted to. Removing a
+  provider key asks first.
 
 ### Changed
 
@@ -160,6 +224,10 @@ it is technically a breaking change.
 - `Runtime::create_task` takes dependencies and a time, and replaces `create_task_after` and
   `create_task_at`; `add_task_dependency` and `set_schedule_paused` replace `add_dependency`,
   `pause_schedule` and `resume_schedule`. Each records its change.
+- `ToolContext` carries the capabilities a call was authorised against.
+- Browser tools that act on the current page refuse to run outside the tool pipeline, which is what
+  tells them the origin they were authorised for.
+- `browser.navigate` watches a page for half a second after it loads before it returns.
 
 ## [0.2.0]
 

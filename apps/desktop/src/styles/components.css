@@ -96,6 +96,11 @@
   width: auto;
   margin-top: var(--s-1);
 }
+/* Name above note: both are spans inside the label's text column. */
+.check-name,
+.check-note {
+  display: block;
+}
 .check-name {
   font-family: var(--font-mono);
   font-size: var(--fs-code);
@@ -157,6 +162,14 @@
   color: var(--text-dim);
 }
 .banner.flush {
+  margin-bottom: 0;
+}
+/* A banner that holds paragraphs is padded by the banner, not by the first
+ * and last paragraph's margins as well. */
+.banner > p:first-child {
+  margin-top: 0;
+}
+.banner > p:last-child {
   margin-bottom: 0;
 }
 .banner.error {
@@ -361,7 +374,8 @@ pre.code.wrap {
   border-bottom: 1px solid var(--border-subtle);
   align-items: flex-start;
 }
-.trace-step:last-child {
+.trace-step:last-child,
+.plain-list > li.trace-step {
   border-bottom: none;
 }
 .trace-ordinal {
@@ -403,6 +417,10 @@ pre.code.wrap {
 .row.event {
   flex-wrap: nowrap;
   border-bottom-color: var(--border-hairline);
+  /* Restated for the stored rows, which are buttons: `button.row` resets the
+   * font to the list's, and a row still being written, which is not a button,
+   * would otherwise sit in a smaller size with its columns a pixel off. */
+  font-size: var(--fs-small);
 }
 [role="listitem"]:not(:last-child) > .event {
   border-bottom-color: var(--border-hairline);

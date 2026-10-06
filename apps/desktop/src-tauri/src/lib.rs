@@ -113,6 +113,9 @@ pub fn run() {
             commands::settings,
             commands::set_provider_key,
             commands::remove_provider_key,
+            commands::list_network_credentials,
+            commands::set_network_credential,
+            commands::remove_network_credential,
             commands::acknowledge_close,
             commands::confirm_close,
         ])

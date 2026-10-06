@@ -10,7 +10,13 @@
  * script free of a browser-automation dependency and the hundred-odd megabytes
  * of bundled Chromium that would come with one.
  *
- * Usage: npm run screenshots -- [--out <dir>] [--routes dashboard,approvals]
+ * Usage: npm run screenshots -- [--out <dir>] [--routes dashboard,tasks/run/run-0001]
+ *                                [--size 1500x950]
+ *
+ * A route may go below a screen, as `tasks/run/run-0001` or `agents/sales`
+ * does; it is written to a file named after it with each `/` as a `-`. The
+ * size is the logical viewport, which the PNG doubles; the images in docs/ are
+ * 1500x950.
  *
  * Output is written to apps/desktop/screenshots/ by default, which is ignored
  * by git. Set CHROME_PATH to use a browser this script does not find itself.
@@ -31,8 +37,8 @@ import { createServer } from "vite";
  */
 const ROUTES = ["dashboard", "approvals", "tasks", "schedules", "agents", "activity", "settings"];
 
-/** Logical viewport; the device scale factor doubles it in the PNG. */
-const WINDOW_SIZE = "1280,860";
+/** Logical viewport by default; the device scale factor doubles it in the PNG. */
+const WINDOW_SIZE = "1280x860";
 
 /**
  * Milliseconds of virtual time Chrome grants the page before capturing. Virtual
@@ -40,6 +46,13 @@ const WINDOW_SIZE = "1280,860";
  * and fixture promises to settle, not a wall-clock wait on the dev server.
  */
 const VIRTUAL_TIME_BUDGET = 5000;
+
+/**
+ * Shorter budgets for screens that show the live feed. The fixtures replay an
+ * event every three seconds (src/sdk/fixtures.ts), and a capture taken after
+ * the first replay shows a live row the stored history does not have.
+ */
+const BUDGET_FOR = { activity: 2500 };
 
 /** Wall-clock ceiling on a single capture, so a wedged browser cannot hang the run. */
 const CAPTURE_TIMEOUT_MS = 60_000;
@@ -61,6 +74,7 @@ function parseOptions() {
       options: {
         out: { type: "string" },
         routes: { type: "string" },
+        size: { type: "string" },
       },
       strict: true,
       allowPositionals: false,
@@ -68,7 +82,11 @@ function parseOptions() {
   } catch (error) {
     fail(error.message);
   }
-  const { out, routes } = parsed.values;
+  const { out, routes, size = WINDOW_SIZE } = parsed.values;
+  const dimensions = /^(\d+)x(\d+)$/.exec(size);
+  if (dimensions === null) {
+    fail(`--size takes a width and height such as 1500x950, not ${size}`);
+  }
 
   let selected = ROUTES;
   if (routes !== undefined) {
@@ -78,7 +96,9 @@ function parseOptions() {
       .filter((route) => route.length > 0);
     // A mistyped route would otherwise produce a confident screenshot of the
     // dashboard under the wrong name.
-    const unknown = selected.filter((route) => !ROUTES.includes(route));
+    // A deeper route is checked by its screen; what follows is that screen's
+    // to interpret, and an unknown id shows the screen's own not-found state.
+    const unknown = selected.filter((route) => !ROUTES.includes(route.split("/")[0]));
     if (unknown.length > 0) {
       fail(`unknown route ${unknown.join(", ")}; known routes are ${ROUTES.join(", ")}`);
     }
@@ -90,6 +110,7 @@ function parseOptions() {
   return {
     outDir: out === undefined ? join(appDir, "screenshots") : resolve(out),
     routes: selected,
+    windowSize: `${dimensions[1]},${dimensions[2]}`,
   };
 }
 
@@ -180,14 +201,14 @@ function fileSize(path) {
  * taken as complete once its size holds steady across two polls, and Chrome is
  * then ended here rather than waited for.
  */
-function capture(chrome, url, file, profileDir) {
+function capture(chrome, url, file, profileDir, windowSize, budget) {
   const args = [
     "--headless=new",
     `--screenshot=${file}`,
-    `--window-size=${WINDOW_SIZE}`,
+    `--window-size=${windowSize}`,
     "--hide-scrollbars",
     "--force-device-scale-factor=2",
-    `--virtual-time-budget=${VIRTUAL_TIME_BUDGET}`,
+    `--virtual-time-budget=${budget}`,
     // A throwaway profile keeps the capture away from the user's own browser
     // state, and lets it run while their Chrome is open.
     `--user-data-dir=${profileDir}`,
@@ -253,7 +274,7 @@ function capture(chrome, url, file, profileDir) {
 }
 
 async function main() {
-  const { outDir, routes } = parseOptions();
+  const { outDir, routes, windowSize } = parseOptions();
   // Look for the browser before starting anything that would need tearing down.
   const chrome = findChrome();
   mkdirSync(outDir, { recursive: true });
@@ -293,11 +314,13 @@ async function main() {
     }
 
     for (const route of routes) {
-      const file = join(outDir, `${route}.png`);
+      const name = route.replaceAll("/", "-");
+      const file = join(outDir, `${name}.png`);
       rmSync(file, { force: true });
       // A profile per capture: a browser that is slow to release its profile
       // lock must not turn the next launch into a hand-off to itself.
-      await capture(chrome, `${base}#/${route}`, file, join(profileRoot, route));
+      const budget = BUDGET_FOR[route.split("/")[0]] ?? VIRTUAL_TIME_BUDGET;
+      await capture(chrome, `${base}#/${route}`, file, join(profileRoot, name), windowSize, budget);
       console.log(file);
     }
   } finally {
