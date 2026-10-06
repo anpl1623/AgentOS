@@ -10,6 +10,35 @@ it is technically a breaking change.
 
 ## [Unreleased]
 
+### Security
+
+- **Taint follows provenance, not a flag.** A tool used to decide for itself whether its output
+  tainted the run, through `returns_untrusted_data`. That field is now catalogue metadata with no
+  effect on authorisation. A call taints the run when the bytes it returned came from outside the
+  trust boundary, or when its plan holds a capability that reads — whatever the tool says about its
+  own output. A failed read taints the run too, because its error text reaches the model.
+- **Taint survives the run boundary.** A retry starts from every source an earlier attempt at the
+  same task recorded, and a memory written from an external source taints the next run before its
+  first tool call. Both used to start clean. When taint is why a person is being asked, the approval
+  reason now names where the data came from.
+- **Origin rules bind every spelling, and a deny now covers every port.** Requests and policy
+  patterns are both reduced to a canonical origin: lower-case scheme and host, no default port. A
+  pattern without a port now means the default port only; write `:*` for any port. Previously a host
+  wildcard ran on into the port, so `https://*` admitted `https://evil.example:8443` past a deny of
+  `https://evil.example`. **A policy that relied on a wildcard reaching a non-default port must now
+  say `:*`.** IPv4 addresses written as IPv6 (`[::ffff:127.0.0.1]`) and the unspecified addresses
+  (`0.0.0.0`, `[::]`) are refused, because each reaches this machine under a rule that names neither.
+- **Manifest drift is audited.** A tool that plans a capability its manifest does not declare is
+  recorded as `tool.manifest_exceeded`. The call is not failed — the policy engine evaluates the real
+  plan either way — but the drift is now in the audit chain rather than only in a log line.
+
+### Changed
+
+- The `schedule_fired` and `task_abandoned` event tags are now `schedule.fired` and
+  `agent.task.abandoned`, matching every other event and their own `kind`. Records written under the
+  old tags are still read.
+- The scheduler abandons a whole dead dependency chain in one tick, rather than one layer per tick.
+
 ## [0.2.0]
 
 ### Added

@@ -1,5 +1,6 @@
 //! `agentos audit` — read and verify the audit log.
 
+use agentos_core::event::is_security_kind;
 use agentos_runtime::RuntimeConfig;
 use anyhow::Result;
 use clap::Subcommand;
@@ -24,16 +25,6 @@ pub enum AuditCommand {
     Verify,
 }
 
-/// Event kinds that indicate something was refused, escalated or rejected.
-const SECURITY_KINDS: &[&str] = &[
-    "permission.denied",
-    "permission.escalated_by_taint",
-    "approval.denied",
-    "tool.arguments.rejected",
-    "tool.unknown",
-    "agent.taint.raised",
-];
-
 /// Dispatch.
 pub async fn run(command: AuditCommand, config: &RuntimeConfig) -> Result<()> {
     let runtime = super::open(config).await?;
@@ -43,7 +34,7 @@ pub async fn run(command: AuditCommand, config: &RuntimeConfig) -> Result<()> {
         AuditCommand::Tail { limit, security } => {
             let mut records = runtime.database().audit_sink().tail(limit).await?;
             if security {
-                records.retain(|record| SECURITY_KINDS.contains(&record.kind.as_str()));
+                records.retain(|record| is_security_kind(&record.kind));
             }
             if records.is_empty() {
                 println!("{}", style.dim("Nothing recorded yet."));
@@ -52,7 +43,7 @@ pub async fn run(command: AuditCommand, config: &RuntimeConfig) -> Result<()> {
 
             records.reverse();
             for record in records {
-                let kind = if SECURITY_KINDS.contains(&record.kind.as_str()) {
+                let kind = if is_security_kind(&record.kind) {
                     style.yellow(&record.kind)
                 } else {
                     record.kind.clone()
@@ -113,6 +104,21 @@ fn summarise(payload: &serde_json::Value) -> String {
         payload.get("to").and_then(serde_json::Value::as_str),
     ) {
         return format!("{from} → {to}");
+    }
+
+    // A manifest drift names what the tool planned beyond its manifest.
+    if let Some(undeclared) = payload
+        .get("undeclared")
+        .and_then(serde_json::Value::as_array)
+    {
+        let names: Vec<&str> = undeclared
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        if !names.is_empty() {
+            let line = format!("{} planned undeclared {}", field("tool"), names.join(", "));
+            return truncate(&line, 60);
+        }
     }
 
     for name in ["tool", "objective", "reason", "error", "summary"] {

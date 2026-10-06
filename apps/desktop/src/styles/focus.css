@@ -1,0 +1,31 @@
+/* Focus.
+ *
+ * One ring for everything, drawn only when the platform says focus arrived by
+ * keyboard. It is loaded after the components so no component rule can quietly
+ * remove it; a component that needs the ring placed differently changes its
+ * offset here or beside its own rule, never its presence.
+ */
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-md);
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* A row spans its panel edge to edge. Inset the ring so it sits inside the
+ * panel rather than over the neighbouring row's separator. */
+.row.clickable:focus-visible,
+.palette-entry:focus-visible {
+  outline-offset: -2px;
+  border-radius: 0;
+}
+
+/* Chart spans are SVG; the ring follows the shape rather than a box. */
+.chart-span:focus-visible {
+  outline: none;
+  stroke: var(--focus);
+  stroke-width: 2px;
+}

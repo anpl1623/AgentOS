@@ -23,8 +23,10 @@ pub async fn run(config: &RuntimeConfig) -> Result<()> {
     );
 
     for metadata in registry.all_metadata() {
-        // "untrusted" means results from this tool taint the run, which is the
-        // single most useful thing to know when choosing what to grant.
+        // Whether a tool reads the outside world is the single most useful thing
+        // to know when choosing what to grant. The column is the tool's own
+        // description of itself; the pipeline taints from what a call actually
+        // returned, so a wrong entry here misleads the reader and nothing else.
         let data = if metadata.returns_untrusted_data {
             style.yellow("external")
         } else {
@@ -43,8 +45,9 @@ pub async fn run(config: &RuntimeConfig) -> Result<()> {
     println!(
         "{}",
         style.dim(
-            "`external` marks tools whose output can be attacker-controlled. Once an agent \
-             uses one,\nlater consequential actions require approval."
+            "`external` marks tools that read the outside world, so their output can be \
+             attacker-controlled.\nOnce an agent reads such output, later consequential \
+             actions require approval."
         )
     );
     Ok(())

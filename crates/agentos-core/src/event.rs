@@ -255,6 +255,21 @@ pub enum AgentEvent {
         tool: String,
     },
 
+    /// A tool planned a capability its manifest does not declare.
+    ///
+    /// The call was not failed for it: the policy engine evaluated the plan the
+    /// tool actually produced, so the decision stands on what would really
+    /// happen rather than on what the tool said it would do. The discrepancy is
+    /// recorded because a manifest that understates a tool's reach is exactly
+    /// how an operator comes to grant more than they meant to.
+    #[serde(rename = "tool.manifest_exceeded")]
+    ToolManifestExceeded {
+        /// The tool.
+        tool: String,
+        /// The planned capabilities absent from its manifest.
+        undeclared: Vec<String>,
+    },
+
     /// A memory was written.
     #[serde(rename = "agent.memory.recorded")]
     MemoryRecorded {
@@ -265,6 +280,11 @@ pub enum AgentEvent {
     },
 
     /// A schedule came due and produced a task.
+    ///
+    /// The alias reads records written before the tag was brought into line
+    /// with [`AgentEvent::kind`]; the log is append-only, so those records are
+    /// never rewritten and must go on deserialising.
+    #[serde(rename = "schedule.fired", alias = "schedule_fired")]
     ScheduleFired {
         /// The schedule.
         schedule_id: crate::ids::ScheduleId,
@@ -278,7 +298,9 @@ pub enum AgentEvent {
     /// succeed.
     ///
     /// Recorded rather than left implicit: a task that silently waits forever is
-    /// indistinguishable from one nobody has got to yet.
+    /// indistinguishable from one nobody has got to yet. The alias reads records
+    /// written under the tag this variant carried before it matched its kind.
+    #[serde(rename = "agent.task.abandoned", alias = "task_abandoned")]
     TaskAbandoned {
         /// The task.
         task_id: TaskId,
@@ -319,6 +341,7 @@ impl AgentEvent {
             Self::ToolExecutionFailed { .. } => "tool.execution.failed",
             Self::ToolArgumentsRejected { .. } => "tool.arguments.rejected",
             Self::UnknownToolRequested { .. } => "tool.unknown",
+            Self::ToolManifestExceeded { .. } => "tool.manifest_exceeded",
             Self::MemoryRecorded { .. } => "agent.memory.recorded",
             Self::ScheduleFired { .. } => "schedule.fired",
             Self::TaskAbandoned { .. } => "agent.task.abandoned",
@@ -328,18 +351,72 @@ impl AgentEvent {
     /// Whether this event records a security-relevant refusal or escalation.
     ///
     /// The dashboard surfaces these separately from routine activity.
+    ///
+    /// A `match` rather than a `matches!` so that an arm can compute its answer
+    /// from the event rather than return a constant: an egress event, for one,
+    /// matters only when the run was tainted. It is exhaustive so that a new
+    /// variant cannot be added without somebody deciding which side it is on.
+    /// A stored record is classified by [`is_security_kind`] instead, which must
+    /// agree with this for every variant whose answer does not depend on its
+    /// fields.
     #[must_use]
-    pub const fn is_security_relevant(&self) -> bool {
-        matches!(
-            self,
-            Self::PermissionDenied { .. }
-                | Self::PermissionEscalatedByTaint { .. }
-                | Self::ApprovalDenied { .. }
-                | Self::ToolArgumentsRejected { .. }
-                | Self::UnknownToolRequested { .. }
-                | Self::TaintRaised { .. }
-        )
+    pub fn is_security_relevant(&self) -> bool {
+        match self {
+            Self::PermissionDenied { .. } => true,
+            Self::PermissionEscalatedByTaint { .. } => true,
+            Self::ApprovalDenied { .. } => true,
+            Self::ToolArgumentsRejected { .. } => true,
+            Self::UnknownToolRequested { .. } => true,
+            Self::TaintRaised { .. } => true,
+            Self::ToolManifestExceeded { .. } => true,
+            Self::TaskStarted { .. }
+            | Self::TaskCompleted { .. }
+            | Self::TaskFailed { .. }
+            | Self::TaskCancelled { .. }
+            | Self::StateTransitioned { .. }
+            | Self::ModelRequestStarted { .. }
+            | Self::ModelRequestCompleted { .. }
+            | Self::ModelRequestFailed { .. }
+            | Self::ReasoningCompleted { .. }
+            | Self::PermissionRequested { .. }
+            | Self::PermissionGranted { .. }
+            | Self::ApprovalRequested { .. }
+            | Self::ApprovalGranted { .. }
+            | Self::ToolExecutionStarted { .. }
+            | Self::ToolExecutionCompleted { .. }
+            | Self::ToolExecutionFailed { .. }
+            | Self::MemoryRecorded { .. }
+            | Self::ScheduleFired { .. }
+            | Self::TaskAbandoned { .. } => false,
+        }
     }
+}
+
+/// Whether a stored record of this kind is security-relevant.
+///
+/// The historical classification: what a reader of the audit table has when it
+/// holds only the `kind` column and not a live [`AgentEvent`]. For every variant
+/// it agrees with [`AgentEvent::is_security_relevant`], and a test holds it to
+/// that.
+///
+/// It can only do so while the answer depends on the kind alone. An event that
+/// is security-relevant only conditionally — egress, say, which matters when the
+/// run was tainted and not otherwise — cannot be classified from its name after
+/// the fact, and must be classified by the writer at record time and the answer
+/// stored beside it. Adding such a variant means extending the record, not this
+/// list.
+#[must_use]
+pub fn is_security_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "permission.denied"
+            | "permission.escalated_by_taint"
+            | "approval.denied"
+            | "tool.arguments.rejected"
+            | "tool.unknown"
+            | "agent.taint.raised"
+            | "tool.manifest_exceeded"
+    )
 }
 
 /// An event with its context.
@@ -404,7 +481,55 @@ impl Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::ScheduleId;
 
+    /// How many variants [`AgentEvent`] has.
+    ///
+    /// Kept beside [`variant_index`] because the two change together.
+    const VARIANT_COUNT: usize = 26;
+
+    /// A dense index per variant, in declaration order.
+    ///
+    /// Exhaustive with no wildcard, so a new variant does not compile until it
+    /// is given an index here — and once it has one, the sampling test below
+    /// fails until it is also in [`sample_events`]. Rust offers no way to count
+    /// an enum's variants directly; this is the next best thing.
+    const fn variant_index(event: &AgentEvent) -> usize {
+        match event {
+            AgentEvent::TaskStarted { .. } => 0,
+            AgentEvent::TaskCompleted { .. } => 1,
+            AgentEvent::TaskFailed { .. } => 2,
+            AgentEvent::TaskCancelled { .. } => 3,
+            AgentEvent::StateTransitioned { .. } => 4,
+            AgentEvent::ModelRequestStarted { .. } => 5,
+            AgentEvent::ModelRequestCompleted { .. } => 6,
+            AgentEvent::ModelRequestFailed { .. } => 7,
+            AgentEvent::ReasoningCompleted { .. } => 8,
+            AgentEvent::PermissionRequested { .. } => 9,
+            AgentEvent::PermissionGranted { .. } => 10,
+            AgentEvent::PermissionDenied { .. } => 11,
+            AgentEvent::PermissionEscalatedByTaint { .. } => 12,
+            AgentEvent::TaintRaised { .. } => 13,
+            AgentEvent::ApprovalRequested { .. } => 14,
+            AgentEvent::ApprovalGranted { .. } => 15,
+            AgentEvent::ApprovalDenied { .. } => 16,
+            AgentEvent::ToolExecutionStarted { .. } => 17,
+            AgentEvent::ToolExecutionCompleted { .. } => 18,
+            AgentEvent::ToolExecutionFailed { .. } => 19,
+            AgentEvent::ToolArgumentsRejected { .. } => 20,
+            AgentEvent::UnknownToolRequested { .. } => 21,
+            AgentEvent::ToolManifestExceeded { .. } => 22,
+            AgentEvent::MemoryRecorded { .. } => 23,
+            AgentEvent::ScheduleFired { .. } => 24,
+            AgentEvent::TaskAbandoned { .. } => 25,
+        }
+    }
+
+    /// One of every variant.
+    ///
+    /// Every test that claims to cover "every event" iterates this, so an
+    /// omission here is an omission from all of them; the sampling test is what
+    /// stops that happening quietly.
     fn sample_events() -> Vec<AgentEvent> {
         vec![
             AgentEvent::TaskStarted {
@@ -511,11 +636,45 @@ mod tests {
                 error: "e".into(),
             },
             AgentEvent::UnknownToolRequested { tool: "t".into() },
+            AgentEvent::ToolManifestExceeded {
+                tool: "t".into(),
+                undeclared: vec!["filesystem.write".into()],
+            },
             AgentEvent::MemoryRecorded {
                 kind: "fact".into(),
                 source: DataSource::User,
             },
+            AgentEvent::ScheduleFired {
+                schedule_id: ScheduleId::new(),
+                name: "n".into(),
+                task_id: TaskId::new(),
+            },
+            AgentEvent::TaskAbandoned {
+                task_id: TaskId::new(),
+                blocked_by: TaskId::new(),
+                reason: "failed".into(),
+            },
         ]
+    }
+
+    #[test]
+    fn every_variant_is_sampled() {
+        // Sorted indices equal to 0..VARIANT_COUNT means every variant appears
+        // exactly once: a missing one leaves a gap, a duplicate repeats an
+        // index, and a variant added without bumping the count overshoots.
+        let mut indices: Vec<usize> = sample_events().iter().map(variant_index).collect();
+        indices.sort_unstable();
+        assert_eq!(indices, (0..VARIANT_COUNT).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn every_kind_is_distinct() {
+        // The `kind` column is the audit table's filter; two variants sharing a
+        // name would make one of them unfindable.
+        let mut kinds: Vec<&str> = sample_events().iter().map(AgentEvent::kind).collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        assert_eq!(kinds.len(), VARIANT_COUNT);
     }
 
     #[test]
@@ -539,6 +698,89 @@ mod tests {
             let back: AgentEvent = serde_json::from_str(&json).unwrap();
             assert_eq!(back, event);
         }
+    }
+
+    #[test]
+    fn records_written_under_the_old_tags_still_deserialise() {
+        // These two once serialised under snake_case tags that disagreed with
+        // their kind. The log is append-only, so those records are still there.
+        let schedule_id = ScheduleId::new();
+        let task_id = TaskId::new();
+        let fired: AgentEvent = serde_json::from_value(serde_json::json!({
+            "event": "schedule_fired",
+            "schedule_id": schedule_id,
+            "name": "hourly",
+            "task_id": task_id,
+        }))
+        .unwrap();
+        assert_eq!(
+            fired,
+            AgentEvent::ScheduleFired {
+                schedule_id,
+                name: "hourly".into(),
+                task_id,
+            }
+        );
+
+        let blocked_by = TaskId::new();
+        let abandoned: AgentEvent = serde_json::from_value(serde_json::json!({
+            "event": "task_abandoned",
+            "task_id": task_id,
+            "blocked_by": blocked_by,
+            "reason": "failed",
+        }))
+        .unwrap();
+        assert_eq!(
+            abandoned,
+            AgentEvent::TaskAbandoned {
+                task_id,
+                blocked_by,
+                reason: "failed".into(),
+            }
+        );
+
+        // And they are written back under the tag that matches the kind.
+        let tag = serde_json::to_value(&abandoned).unwrap()["event"].clone();
+        assert_eq!(tag, "agent.task.abandoned");
+    }
+
+    #[test]
+    fn the_stored_classification_agrees_with_the_live_one() {
+        // The desktop classifies stored records by kind and live events by
+        // variant. If the two disagree, the same event is flagged in one view
+        // and not the other.
+        for event in sample_events() {
+            assert_eq!(
+                is_security_kind(event.kind()),
+                event.is_security_relevant(),
+                "classification mismatch for {}",
+                event.kind()
+            );
+        }
+    }
+
+    #[test]
+    fn the_security_relevant_set_is_exactly_this() {
+        // Pinned, so that moving an event across the line is a decision that
+        // shows up in review rather than a side effect.
+        let mut flagged: Vec<&str> = sample_events()
+            .iter()
+            .filter(|event| event.is_security_relevant())
+            .map(AgentEvent::kind)
+            .collect();
+        flagged.sort_unstable();
+        assert_eq!(
+            flagged,
+            vec![
+                "agent.taint.raised",
+                "approval.denied",
+                "permission.denied",
+                "permission.escalated_by_taint",
+                "tool.arguments.rejected",
+                "tool.manifest_exceeded",
+                "tool.unknown",
+            ]
+        );
     }
 
     #[test]

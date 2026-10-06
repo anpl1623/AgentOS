@@ -6,7 +6,8 @@
 //!    keeps its own runs, traces, approvals and audit trail.
 //! 2. **Abandon what can no longer happen.** A task whose dependency failed is
 //!    cancelled and recorded, because a task that waits forever looks exactly
-//!    like one nobody has got to yet.
+//!    like one nobody has got to yet. So is everything downstream of it, in the
+//!    same tick: a dead chain resolves at once rather than one layer per tick.
 //! 3. **Start what is runnable.** Tasks whose clock has arrived and whose
 //!    dependencies have all succeeded, up to a concurrency limit.
 //!
@@ -22,8 +23,17 @@
 //!
 //! [`Scheduler::with_approvals`] exists for tests and for a client that genuinely
 //! does have somebody attached. It is not a way around the paragraph above.
+//!
+//! # What the concurrency limit counts
+//!
+//! [`SchedulerOptions::max_concurrent_runs`] is enforced against the runs this
+//! scheduler started, not against every run that is live. Today those are the
+//! same thing, because a run cannot start another run. The day delegation lands
+//! they stop being the same thing — a scheduled run that spawns three more would
+//! occupy one slot and consume four — and this calculation has to count live
+//! runs instead. It is left as it is deliberately, and this note is the reminder.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -276,6 +286,13 @@ impl Scheduler {
         Ok(fired)
     }
 
+    /// Cancel every task that can no longer run, and everything waiting on it.
+    ///
+    /// The query finds only the first layer — tasks with a failed or cancelled
+    /// dependency — so each one found is the root of a walk down its dependents.
+    /// Without the walk, a dependent would become visible only on the next tick,
+    /// once its own dependency had been cancelled, and a three-deep chain would
+    /// spend two ticks looking merely unstarted.
     async fn abandon_unreachable(&self) -> Result<Vec<TaskId>, RuntimeError> {
         let stuck = self
             .runtime
@@ -284,8 +301,26 @@ impl Scheduler {
             .list_unreachable(self.options.batch)
             .await?;
 
+        // The cap is a fairness bound, not a correctness one: it stops one tick
+        // on a vast dead graph from starving the start step behind it. Whatever
+        // it leaves is found next tick, because every task cancelled here is
+        // itself now a cancelled dependency for the query above.
+        let budget = usize::try_from(self.options.batch).unwrap_or(0);
+
+        // A task can be met more than once in a pass: a join node down several
+        // branches, or a task the query listed that an earlier walk has since
+        // reached — the list was read before any walk ran and is stale after
+        // one. Either way it is abandoned, and recorded, once.
         let mut abandoned = Vec::new();
+        let mut seen = HashSet::new();
         for task in stuck {
+            if abandoned.len() >= budget {
+                break;
+            }
+            if seen.contains(&task.id) {
+                continue;
+            }
+
             let blockers = self
                 .runtime
                 .database()
@@ -309,29 +344,74 @@ impl Scheduler {
                 continue;
             };
 
-            self.runtime
-                .database()
-                .tasks()
-                .set_status(task.id, TaskStatus::Cancelled)
-                .await?;
-
-            let _ = self
-                .runtime
-                .audit()
-                .record(
-                    agentos_core::Event::new(AgentEvent::TaskAbandoned {
-                        task_id: task.id,
-                        blocked_by,
-                        reason: reason.as_str().to_owned(),
-                    })
-                    .for_agent(task.agent_id)
-                    .for_task(task.id),
-                )
-                .await;
-
+            self.abandon(&task, blocked_by, reason).await?;
+            seen.insert(task.id);
             abandoned.push(task.id);
+
+            // Each dependent names the task it was waiting on, not the root
+            // failure: the chain reads by following the events, and naming the
+            // root would have every event down the chain claim one culprit.
+            let mut frontier = VecDeque::from([task.id]);
+            while let Some(cancelled) = frontier.pop_front() {
+                let dependents = self
+                    .runtime
+                    .database()
+                    .dependencies()
+                    .dependents_of(cancelled)
+                    .await?;
+                for dependent in dependents {
+                    if abandoned.len() >= budget {
+                        return Ok(abandoned);
+                    }
+                    if seen.contains(&dependent) {
+                        continue;
+                    }
+                    let dependent = self.runtime.database().tasks().get(dependent).await?;
+                    // The same statuses the query considers: a dependent that
+                    // has somehow already run, or already ended, is history and
+                    // is left alone.
+                    if !matches!(dependent.status, TaskStatus::Pending | TaskStatus::Blocked) {
+                        continue;
+                    }
+
+                    self.abandon(&dependent, cancelled, TaskStatus::Cancelled)
+                        .await?;
+                    seen.insert(dependent.id);
+                    abandoned.push(dependent.id);
+                    frontier.push_back(dependent.id);
+                }
+            }
         }
         Ok(abandoned)
+    }
+
+    /// Cancel one task and record why.
+    async fn abandon(
+        &self,
+        task: &Task,
+        blocked_by: TaskId,
+        reason: TaskStatus,
+    ) -> Result<(), RuntimeError> {
+        self.runtime
+            .database()
+            .tasks()
+            .set_status(task.id, TaskStatus::Cancelled)
+            .await?;
+
+        let _ = self
+            .runtime
+            .audit()
+            .record(
+                agentos_core::Event::new(AgentEvent::TaskAbandoned {
+                    task_id: task.id,
+                    blocked_by,
+                    reason: reason.as_str().to_owned(),
+                })
+                .for_agent(task.agent_id)
+                .for_task(task.id),
+            )
+            .await;
+        Ok(())
     }
 
     async fn start_runnable(&self) -> Result<Vec<TaskId>, RuntimeError> {

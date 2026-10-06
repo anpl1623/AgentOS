@@ -20,8 +20,9 @@ as detecting instructions in prose.
 
 Track *provenance* instead of intent.
 
-Every tool declares whether its results can be externally influenced. Once a run receives data from
-such a tool it is **tainted**. From that point, the policy engine escalates `allow` to `ask` for any
+Every tool result carries its provenance, and a reading capability in the authorised plan is itself
+treated as provenance (see ADR 0002). Once a run receives externally influenced data it is
+**tainted**. From that point, the policy engine escalates `allow` to `ask` for any
 action at or above a configured risk level, `medium` by default.
 
 Escalation only ever tightens. `deny` stays `deny`; a tainted run can never do more than a clean one.

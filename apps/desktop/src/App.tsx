@@ -78,9 +78,7 @@ export function App() {
 
         <div className="sidebar-foot">
           {usingFixtures() ? (
-            <span style={{ color: "var(--warn)" }}>
-              Fixture data — not connected to a runtime
-            </span>
+            <span className="fixture-warning">Fixture data — not connected to a runtime</span>
           ) : (
             <span>Local runtime</span>
           )}
@@ -105,12 +103,19 @@ function Mark() {
     <svg className="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
       <path
         d="M4.5 3.5h15v9.2c0 4.6-3.4 7.8-7.5 7.8s-7.5-3.2-7.5-7.8V3.5z"
+        className="brand-mark-outer"
         fill="none"
-        stroke="#2f6de0"
         strokeWidth="2.4"
       />
-      <circle cx="12" cy="10.6" r="2.9" fill="none" stroke="#e8f0ff" strokeWidth="1.7" />
-      <circle cx="12" cy="10.6" r="0.9" fill="#e8f0ff" />
+      <circle
+        className="brand-mark-inner"
+        cx="12"
+        cy="10.6"
+        r="2.9"
+        fill="none"
+        strokeWidth="1.7"
+      />
+      <circle className="brand-mark-dot" cx="12" cy="10.6" r="0.9" />
     </svg>
   );
 }

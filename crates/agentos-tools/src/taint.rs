@@ -34,11 +34,28 @@ impl TaintTracker {
         Self::default()
     }
 
-    /// A tracker that starts tainted, for a run resumed after ingesting data.
+    /// A tracker that inherits what an earlier run of the same task recorded.
+    ///
+    /// Taint is a property of the data a task has touched, not of one attempt
+    /// at it: a retry re-reads the same conversation history, the same memory
+    /// and the same workspace, so starting it clean would launder whatever the
+    /// earlier attempt ingested. Each source is observed rather than copied in,
+    /// which keeps the rule for what counts as external in one place and means
+    /// the approval card can still say where the data came from.
+    ///
+    /// `tainted` covers runs recorded before their sources were persisted:
+    /// such a run knows that it was tainted but not by what. An approval card
+    /// that cannot name its reason is worse than one that can, and much better
+    /// than an action that runs silently.
     #[must_use]
-    pub fn already_tainted() -> Self {
+    pub fn seeded(tainted: bool, sources: Vec<DataSource>) -> Self {
         let tracker = Self::new();
-        tracker.tainted.store(true, Ordering::SeqCst);
+        for source in &sources {
+            tracker.observe(source);
+        }
+        if tainted {
+            tracker.tainted.store(true, Ordering::SeqCst);
+        }
         tracker
     }
 
@@ -144,6 +161,39 @@ mod tests {
             tracker.is_tainted(),
             "clean input must not launder a tainted run"
         );
+    }
+
+    #[test]
+    fn a_seeded_tracker_starts_tainted_and_names_its_sources() {
+        let web = DataSource::Web {
+            url: "https://evil.example".into(),
+        };
+        let tracker = TaintTracker::seeded(false, vec![DataSource::User, web.clone(), web.clone()]);
+
+        assert!(tracker.is_tainted());
+        assert_eq!(
+            tracker.sources(),
+            vec![web.clone()],
+            "operator input is not a taint source and duplicates are not repeated"
+        );
+        assert!(
+            !tracker.observe(&web),
+            "a seeded run was already tainted, so nothing later can claim the flip"
+        );
+    }
+
+    #[test]
+    fn seeding_with_only_trusted_sources_leaves_the_tracker_clean() {
+        let tracker = TaintTracker::seeded(false, vec![DataSource::User, DataSource::Runtime]);
+        assert!(!tracker.is_tainted());
+        assert!(tracker.sources().is_empty());
+    }
+
+    #[test]
+    fn a_recorded_taint_flag_survives_without_its_sources() {
+        let tracker = TaintTracker::seeded(true, vec![]);
+        assert!(tracker.is_tainted());
+        assert!(tracker.sources().is_empty());
     }
 
     #[test]

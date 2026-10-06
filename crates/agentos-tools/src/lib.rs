@@ -26,7 +26,7 @@ pub use pipeline::{ExecutionReport, ToolPipeline};
 pub use taint::TaintTracker;
 pub use tool::{
     DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT, Tool, ToolContext, ToolOutput, ToolPlan,
-    ToolRegistry, metadata_for, parse_arguments,
+    ToolRegistry, metadata_for, parse_arguments, plan_exceeds_manifest,
 };
 pub use vision::{
     DEFAULT_MAX_IMAGE_BYTES, DEFAULT_MAX_IMAGE_EDGE, PreparedImage, VisionError, prepare,
@@ -94,14 +94,19 @@ mod tests {
         }
     }
 
+    /// A documentation check, not a control.
+    ///
+    /// The flag drives only what `agentos tools` prints; the pipeline taints
+    /// from provenance whatever it says. This keeps the catalogue honest for the
+    /// operator reading it.
     #[test]
-    fn tools_that_read_the_outside_world_are_marked_untrusted() {
+    fn tools_that_read_the_outside_world_are_catalogued_as_such() {
         let registry = standard_registry();
         for name in ["filesystem.read", "filesystem.list", "terminal.exec"] {
             let tool = registry.get(name).unwrap();
             assert!(
                 tool.metadata().returns_untrusted_data,
-                "`{name}` returns external data and must raise taint"
+                "`{name}` reads the outside world and should be listed as external"
             );
         }
     }

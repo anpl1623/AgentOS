@@ -515,7 +515,8 @@ impl Runtime {
         let engine = self.engine_for(agent.id).await?;
 
         let attempt = self.database.runs().next_attempt(task.id).await?;
-        let run = TaskRun::new(task.id, attempt);
+        let mut run = TaskRun::new(task.id, attempt);
+        self.inherit_taint(&mut run).await?;
         self.database.runs().insert(&run).await?;
 
         self.running.lock().await.insert(run.id, cancel.clone());
@@ -556,9 +557,33 @@ impl Runtime {
         })
     }
 
+    /// Carry the taint of every earlier attempt at a task into a new one.
+    ///
+    /// A retry is the same task over the same conversation, memory and
+    /// workspace. Whatever an earlier attempt read from outside is still in
+    /// reach, so a new attempt starting clean would let a single failure
+    /// launder it. Every earlier attempt is consulted rather than only the
+    /// latest, so that one attempt recorded without its sources cannot break
+    /// the chain for all the attempts after it.
+    async fn inherit_taint(&self, run: &mut TaskRun) -> Result<(), RuntimeError> {
+        for earlier in self.database.runs().list_for_task(run.task_id).await? {
+            run.tainted |= earlier.tainted;
+            for source in earlier.taint_sources {
+                if !run.taint_sources.contains(&source) {
+                    run.taint_sources.push(source);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Drive a prepared run to a terminal state.
     async fn drive(&self, prepared: PreparedRun) -> Result<RunOutcome, RuntimeError> {
         let objective = prepared.objective;
+        let taint = Arc::new(TaintTracker::seeded(
+            prepared.run.tainted,
+            prepared.run.taint_sources.clone(),
+        ));
         let agent_loop = AgentLoop::new(
             prepared.agent,
             prepared.run,
@@ -567,7 +592,7 @@ impl Runtime {
             prepared.pipeline,
             prepared.machine,
             prepared.context,
-            Arc::new(TaintTracker::new()),
+            taint,
             prepared.cancel,
         );
 

@@ -1,0 +1,685 @@
+/* Components: the approval card, the trace and the feed, banners and alerts,
+ * the palette and dialogs, and the small controls they share.
+ *
+ * Inline styles. A screen never sets a colour, a size or a spacing inline; if
+ * it needs one that is not here, this file has a gap and the gap is closed
+ * here. The one exception is geometry that only the data knows — a skeleton
+ * line's width, a tooltip's position — and that is passed as a CSS custom
+ * property which a class here reads, never as the property itself:
+ *
+ *   <div className="skeleton-line" style={{ "--w": "62%" }} />
+ *
+ * so the rule still owns how the value is used, and a theme can still reach it.
+ */
+
+/* --- stats --------------------------------------------------------------- */
+
+.stat {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--s-6) var(--s-7);
+}
+.stat-value {
+  font-size: var(--fs-display);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-tight);
+}
+.stat-value.tone-ok {
+  color: var(--ok-fg);
+}
+.stat-value.tone-warn {
+  color: var(--warn-fg);
+}
+.stat-value.tone-danger {
+  color: var(--danger-text);
+}
+.stat-label {
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  margin-top: var(--s-1);
+}
+
+/* --- small marks --------------------------------------------------------- */
+
+.tag {
+  font-size: var(--fs-meta);
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--s-1) var(--s-3);
+}
+
+.taint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  font-size: var(--fs-meta);
+  color: var(--warn-fg);
+}
+
+/* --- fields -------------------------------------------------------------- */
+
+.field {
+  margin-bottom: var(--s-7);
+}
+
+/* A select that sizes to its options rather than the row, beside a button. */
+.select-compact {
+  width: auto;
+  min-width: 11rem;
+}
+
+.checks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(230px, 100%), 1fr));
+  gap: var(--s-3);
+}
+.check {
+  display: flex;
+  gap: var(--s-4);
+  align-items: flex-start;
+  padding: var(--s-3) var(--s-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  cursor: pointer;
+}
+.check.on {
+  border-color: var(--accent);
+  background: var(--accent-wash);
+}
+.check input {
+  width: auto;
+  margin-top: var(--s-1);
+}
+.check-name {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+.check-note {
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+}
+/* Faint text does not clear 4.5:1 on the accent wash; see tokens.css. */
+.check.on .check-note {
+  color: var(--text-dim);
+}
+
+/* A two-to-four way choice shown as one control: Fields or Raw, Timeline or
+ * Steps, seven days or thirty. The chosen segment is the pressed button, so
+ * the state is announced as well as drawn. */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  overflow: hidden;
+}
+.segmented > button {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-dim);
+  padding: var(--s-2) var(--s-5);
+  font-size: var(--fs-small);
+}
+.segmented > button + button {
+  border-left: 1px solid var(--border-strong);
+}
+.segmented > button:hover:not(:disabled) {
+  background: var(--surface-raised);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.segmented > button[aria-pressed="true"],
+.segmented > button[aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--accent-wash);
+  color: var(--text-accent);
+}
+/* Inside a clipped container an outside ring would be cut off. */
+.segmented > button:focus-visible {
+  outline-offset: -2px;
+  border-radius: 0;
+}
+
+/* --- banners ------------------------------------------------------------- */
+
+.banner {
+  border-radius: var(--radius-lg);
+  padding: var(--s-5) var(--s-7);
+  margin-bottom: var(--s-7);
+  font-size: var(--fs-small);
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+}
+.banner.flush {
+  margin-bottom: 0;
+}
+.banner.error {
+  color: var(--danger-text);
+  border-color: var(--danger-line);
+  background: var(--danger-wash);
+}
+.banner.info {
+  color: var(--info-text);
+  border-color: var(--info-line);
+  background: var(--info-wash);
+}
+.banner.warn {
+  color: var(--warn-text);
+  border-color: var(--warn-line);
+  background: var(--warn-wash);
+}
+
+/* --- approval card ------------------------------------------------------- */
+
+/* The card is bounded to the window and its footer is sticky, so however large
+ * the proposed arguments are, Approve and Deny stay on screen beside them.
+ * clip rather than hidden: hidden would make the card the footer's scroll
+ * container, and the footer could then sit below the fold when the page header
+ * pushes the card down. With clip it sticks to the bottom of the main column.
+ * hidden stays as the fallback for a webview without clip. */
+.approval {
+  border: 1px solid var(--border-emphasis);
+  border-radius: var(--radius-lg);
+  background: var(--surface-panel);
+  overflow: hidden;
+  overflow: clip;
+  max-height: calc(100vh - var(--s-11) * 2);
+  display: flex;
+  flex-direction: column;
+}
+.approval + .approval {
+  margin-top: var(--s-7);
+}
+/* Selected is the card the keyboard is acting on; focused is the same card
+ * when focus is inside it. Both are drawn on the edge, never the fill, so the
+ * risk and taint colours inside keep their meaning. */
+.approval.selected {
+  border-color: var(--accent-line);
+}
+.approval.focused {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.approval.decided {
+  border-color: var(--border-subtle);
+}
+.decided {
+  color: var(--text-dim);
+  font-size: var(--fs-small);
+}
+.approval-head {
+  flex: none;
+  padding: var(--s-6) var(--s-8);
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-6);
+}
+.approval-title {
+  font-weight: var(--fw-semibold);
+}
+.approval-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--s-7) var(--s-8);
+  overflow-y: auto;
+  overflow-x: visible;
+}
+.approval-explanation {
+  white-space: pre-wrap;
+  margin: 0 0 var(--s-7);
+}
+.approval-warning {
+  border-left: 3px solid var(--warn-fg);
+  background: var(--warn-wash);
+  padding: var(--s-4) var(--s-6);
+  margin: 0 0 var(--s-7);
+  font-size: var(--fs-small);
+  color: var(--warn-text);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.approval-foot {
+  flex: none;
+  position: sticky;
+  bottom: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  gap: var(--s-4);
+  align-items: center;
+  padding: var(--s-6) var(--s-8);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-recessed);
+}
+.approval-foot .spacer {
+  flex: 1;
+}
+
+/* --- fact lists and code ------------------------------------------------- */
+
+dl.facts {
+  display: grid;
+  grid-template-columns: minmax(9ch, 132px) 1fr;
+  gap: var(--s-3) var(--s-7);
+  margin: 0 0 var(--s-7);
+  font-size: var(--fs-small);
+}
+dl.facts.flush {
+  margin-bottom: 0;
+}
+dl.facts dt {
+  color: var(--text-dim);
+}
+dl.facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A tool call's arguments, one per line. The Fields view may fold a long value
+ * behind .arg-fold; the Raw view beside it is pre.code and is never folded. */
+dl.args {
+  display: grid;
+  grid-template-columns: minmax(9ch, max-content) 1fr;
+  gap: var(--s-2) var(--s-7);
+  margin: 0 0 var(--s-7);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+dl.args dt {
+  color: var(--text-dim);
+}
+dl.args dd {
+  margin: 0;
+  min-width: 0;
+}
+.arg-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.arg-fold {
+  font: inherit;
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  padding: 0;
+  margin-top: var(--s-1);
+  text-decoration: underline;
+}
+.arg-fold:hover:not(:disabled) {
+  background: none;
+  color: var(--text);
+}
+
+/* Exact bytes. white-space stays pre so arguments are never rewrapped into
+ * something that reads differently from what will execute; long payloads
+ * scroll inside the block instead of pushing the card's buttons away. */
+pre.code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--s-5) var(--s-6);
+  margin: 0;
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre;
+}
+
+/* --- trace --------------------------------------------------------------- */
+
+.trace-step {
+  display: flex;
+  gap: var(--s-6);
+  padding: var(--s-4) var(--s-8);
+  border-bottom: 1px solid var(--border-subtle);
+  align-items: flex-start;
+}
+.trace-step:last-child {
+  border-bottom: none;
+}
+.trace-ordinal {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-meta);
+  width: 22px;
+  text-align: right;
+  flex: none;
+  padding-top: var(--s-1);
+}
+.trace-marker {
+  flex: none;
+  width: 16px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+/* --- activity feed ------------------------------------------------------- */
+
+/* Rows off screen skip layout and paint; the intrinsic size keeps the
+ * scrollbar honest about a long feed. */
+.event {
+  display: flex;
+  gap: var(--s-6);
+  padding: var(--s-2) var(--s-8);
+  font-size: var(--fs-small);
+  align-items: baseline;
+  border-bottom: 1px solid var(--border-hairline);
+  content-visibility: auto;
+  contain-intrinsic-size: 0 26px;
+}
+.event:last-child {
+  border-bottom: none;
+}
+.event-time {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  flex: none;
+}
+/* Fixed width whether or not the marker is present, so a security-relevant
+ * event does not shift the columns of the rows around it. */
+.event-flag {
+  flex: none;
+  width: 1.25em;
+  text-align: center;
+  color: var(--warn-fg);
+}
+.event-kind {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  width: clamp(12ch, 236px, 40%);
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.event.security .event-kind {
+  color: var(--warn-fg);
+}
+.event-summary {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The day a run of events belongs to, pinned while its events scroll past. */
+.event-date {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  padding: var(--s-2) var(--s-8);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  background: var(--surface-panel);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* --- loading ------------------------------------------------------------- */
+
+/* Placeholders shaped like the rows they stand in for. Line widths come from
+ * --w when the component sets one. */
+.skeleton,
+.skeleton-line {
+  display: block;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+      90deg,
+      var(--surface-raised) 0%,
+      var(--surface-hover) 50%,
+      var(--surface-raised) 100%
+    )
+    0 0 / 200% 100%;
+  animation: skeleton-sweep 1.4s linear infinite;
+}
+.skeleton-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-5) var(--s-8);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.skeleton-row:last-child {
+  border-bottom: none;
+}
+.skeleton-line {
+  height: 0.8em;
+  width: var(--w, 55%);
+}
+.skeleton-line + .skeleton-line {
+  height: 0.65em;
+  width: var(--w, 30%);
+}
+@keyframes skeleton-sweep {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton,
+  .skeleton-line {
+    animation: none;
+  }
+}
+
+/* --- overlays ------------------------------------------------------------ */
+
+/* One backdrop shape serves the command palette, the shortcut sheet and the
+ * in-app confirm; the webview cannot be relied on to show window.confirm. */
+.dialog-backdrop,
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  background: var(--scrim);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--s-11) var(--s-8);
+  overflow-y: auto;
+}
+
+.dialog {
+  width: min(32rem, 100%);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-emphasis);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay);
+  padding: var(--s-8);
+}
+.dialog-title {
+  margin: 0 0 var(--s-4);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-4);
+  margin-top: var(--s-8);
+}
+/* The shortcut sheet: key on the left, what it does on the right. */
+.dialog dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--s-3) var(--s-7);
+  margin: 0;
+  font-size: var(--fs-small);
+}
+.dialog dd {
+  margin: 0;
+  color: var(--text-dim);
+}
+
+.palette {
+  width: min(36rem, 100%);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-emphasis);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - var(--s-11) * 2);
+}
+.palette-input {
+  flex: none;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: transparent;
+  padding: var(--s-6) var(--s-8);
+  font-size: var(--fs-body);
+}
+/* The palette's own input sits inside a clipped box; draw its ring inside. */
+.palette-input:focus-visible {
+  outline-offset: -2px;
+  border-radius: 0;
+}
+.palette-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--s-2) 0;
+  list-style: none;
+}
+.palette-group {
+  padding: var(--s-4) var(--s-8) var(--s-2);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.palette-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--s-6);
+  width: 100%;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: var(--s-3) var(--s-8);
+}
+.palette-entry:hover:not(:disabled) {
+  background: var(--surface-raised);
+}
+.palette-entry.active,
+.palette-entry.active:hover:not(:disabled) {
+  background: var(--accent-wash);
+  color: var(--text-accent);
+}
+.palette-hint {
+  flex: none;
+  display: flex;
+  gap: var(--s-6);
+  padding: var(--s-4) var(--s-8);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+}
+
+/* Transient notices, stacked in a corner and below any overlay. */
+.alerts {
+  position: fixed;
+  right: var(--s-8);
+  bottom: var(--s-8);
+  z-index: var(--z-alerts);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  width: min(24rem, 100% - var(--s-8) * 2);
+}
+.alert {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-strong);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-overlay);
+  padding: var(--s-5) var(--s-6);
+  font-size: var(--fs-small);
+}
+.alert.info {
+  border-color: var(--info-line);
+  border-left-color: var(--info-fg);
+}
+.alert.warn {
+  border-color: var(--warn-line);
+  border-left-color: var(--warn-fg);
+}
+.alert.error {
+  border-color: var(--danger-line);
+  border-left-color: var(--danger-fg);
+}
+.alert-title {
+  font-weight: var(--fw-semibold);
+}
+.alert.info .alert-title {
+  color: var(--info-text);
+}
+.alert.warn .alert-title {
+  color: var(--warn-text);
+}
+.alert.error .alert-title {
+  color: var(--danger-text);
+}
+.alert-detail {
+  margin-top: var(--s-1);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.alert-actions {
+  display: flex;
+  gap: var(--s-4);
+  margin-top: var(--s-4);
+}
+
+/* --- failure ------------------------------------------------------------- */
+
+/* What the error boundary shows in place of a screen that threw. */
+.crash {
+  margin: var(--s-10) 0;
+  padding: var(--s-8);
+  border: 1px solid var(--danger-line);
+  border-radius: var(--radius-lg);
+  background: var(--danger-wash);
+  color: var(--danger-text);
+}
+.crash h1,
+.crash h2 {
+  color: var(--danger-text);
+}
+.crash-detail {
+  margin-top: var(--s-6);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  color: var(--text-dim);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--s-5) var(--s-6);
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

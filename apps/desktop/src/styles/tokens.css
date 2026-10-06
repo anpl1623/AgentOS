@@ -1,0 +1,209 @@
+/* AgentOS desktop.
+ *
+ * Dense and quiet. The screens are mostly lists of facts about what an agent did
+ * and what it was allowed to do, so the styling stays out of the way — with two
+ * exceptions that are deliberately loud: risk levels, and anything marking a run
+ * that has read untrusted data. Those are the things a person is here to notice.
+ *
+ * This file is the only place a colour literal may appear. Every other sheet
+ * reads these tokens, so a light theme is a second block that redefines them
+ * and touches no component rule. The application ships dark only for now.
+ *
+ * Contrast, computed rather than judged: WCAG 2 relative luminance, with each
+ * translucent wash composited over its ground before measuring. Every text
+ * token is measured on all seven grounds below; the table gives the worst of
+ * the seven, which is the binding figure. Text needs 4.5:1; a control's edge
+ * and the focus ring need 3:1. Rerun the measurement when any value changes —
+ * a number here that no longer matches its token is worse than no number.
+ *
+ *   token                   worst ground                         ratio  need
+ *   --text                  --surface-hover                      10.29   4.5
+ *   --text-dim              --surface-hover                       5.27   4.5
+ *   --text-faint            --surface-raised (a hovered row)      4.74   4.5
+ *   --text-accent           --accent-wash over --surface-hover    8.43   4.5
+ *   --text-dim              --accent-wash over --surface-panel    5.81   4.5
+ *   --on-accent             --accent                              4.79   4.5
+ *   --on-accent             --accent-hover                        5.82   4.5
+ *   --on-warn               --warn-fg (the nav count)             7.94   4.5
+ *   --ok-fg                 --ok-wash over --surface-hover        4.58   4.5
+ *   --ok-text               --ok-wash over --surface-hover        7.03   4.5
+ *   --warn-fg               --warn-wash over --surface-hover      5.09   4.5
+ *   --warn-text             --warn-wash over --surface-hover      7.42   4.5
+ *   --danger-text           --danger-wash over --surface-hover    4.86   4.5
+ *   --critical-fg           --critical-wash over --surface-hover  4.75   4.5
+ *   --critical-text         --critical-wash over --surface-hover  5.88   4.5
+ *   --info-fg               --info-wash over --surface-hover      5.20   4.5
+ *   --info-text             --info-wash over --surface-hover      6.31   4.5
+ *   --blocked-fg            --blocked-wash over --surface-hover   6.74   4.5
+ *   --chart-ink             --surface-raised                      6.23   4.5
+ *   --border-control        --surface-raised                      3.18   3.0
+ *   --border-control        --surface-panel                       3.49   3.0
+ *   --border-control        --surface-sunken                      3.84   3.0
+ *   --border-control-hover  --surface-hover                       4.00   3.0
+ *   --focus                 --accent (a focused primary button)   3.19   3.0
+ *   --focus                 --surface-hover                       8.72   3.0
+ *
+ * Three pairings are deliberately left out of that promise. --text-faint on
+ * --surface-hover measures 4.01, so faint text is never set on a hovered
+ * control; hovered rows use --surface-raised. --text-faint on a wash is no
+ * better — 4.42 on --accent-wash over --surface-panel, the ground of a chosen
+ * checkbox — so quiet text inside a washed control is set in --text-dim, as
+ * the table's row for that ground records. --danger-fg on --surface-raised
+ * measures 4.50 with no headroom, so it is used for edges and marks only and
+ * --danger-text carries every word set in the danger hue.
+ *
+ * stylesheets.test.ts recomputes every row of the table from the tokens.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Grounds, from the darkest to the lightest. The sidebar and the sunken
+   * wells (inputs, code, tags) sit below the page; panels, raised headers and
+   * hovered controls sit above it. Every text token is measured against all of
+   * them, because a row can be hovered and a chip can land on any of them. */
+  --surface-nav: #0b121b;
+  --surface-sunken: #0b131d;
+  --surface-base: #0e1620;
+  --surface-recessed: #101825;
+  --surface-panel: #141d29;
+  --surface-raised: #1a2534;
+  --surface-hover: #22314a;
+
+  /* Subtle separates rows; strong outlines chips; emphasis frames the one card
+   * that asks a person for a decision. Control is the resting edge of anything
+   * interactive and is the only border held to 3:1, so a field or a button is
+   * visibly a field or a button without relying on its fill. */
+  --border-hairline: rgba(34, 48, 68, 0.5);
+  --border-subtle: #223044;
+  --border-strong: #2e4159;
+  --border-emphasis: #3a4a63;
+  --border-control: #5d7390;
+  --border-control-hover: #7a90ad;
+
+  /* Three text tones. Faint is the quiet tone of every screen, so it is set at
+   * the lowest value that still reads on a hovered row and no brighter; dim is
+   * kept a clear step above it so the hierarchy survives the repair. */
+  --text: #dde5ef;
+  --text-dim: #97a6b8;
+  --text-faint: #8090a4;
+  --text-accent: #cfe0ff;
+  --on-accent: #ffffff;
+  --on-warn: #1f1606;
+
+  /* Hover darkens rather than lightens: a lighter blue under white text loses
+   * contrast at exactly the moment the button is being aimed at. */
+  --accent: #2f6de0;
+  --accent-hover: #2a60c8;
+  --accent-wash: rgba(47, 109, 224, 0.16);
+  --accent-line: rgba(47, 109, 224, 0.35);
+
+  /* Light enough to clear 3:1 against the accent itself, since the ring of a
+   * focused primary button sits directly beside its own fill. */
+  --focus: #bcd4ff;
+
+  /* Status ramps. Each hue has four roles: fg for icons, outlines' text and
+   * small loud marks; line for borders; wash for the one background tint the
+   * hue uses everywhere; text for sentences set in that hue, desaturated so a
+   * paragraph of it is readable. Danger's fg is too dark for text on its own
+   * wash, which is why --danger-text exists separately. */
+  --ok-fg: #46b877;
+  --ok-line: #245b3c;
+  --ok-wash: rgba(70, 184, 119, 0.08);
+  --ok-text: #9bd8b3;
+
+  --warn-fg: #d9a441;
+  --warn-line: #5a4519;
+  --warn-wash: rgba(217, 164, 65, 0.08);
+  --warn-text: #e8cd97;
+
+  --danger-fg: #e0644f;
+  --danger-line: #6b2f2a;
+  --danger-wash: rgba(224, 100, 79, 0.08);
+  --danger-text: #ef8878;
+
+  --critical-fg: #ff7a91;
+  --critical-line: #7a2a3c;
+  --critical-wash: rgba(255, 84, 112, 0.1);
+  --critical-text: #ff9aab;
+
+  --info-fg: #7fb2ff;
+  --info-line: #2b4a7c;
+  --info-wash: rgba(47, 109, 224, 0.16);
+  --info-text: #a8c4ee;
+
+  /* A policy that refuses a call has done its job, so a refusal is drawn on
+   * the accent hue rather than in red. It shares the hue with live runs and is
+   * told apart from them by its opaque edge and the bar on its leading side. */
+  --blocked-fg: #b9cffa;
+  --blocked-line: #2f6de0;
+  --blocked-wash: rgba(47, 109, 224, 0.22);
+
+  --brand-outer: #2f6de0;
+  --brand-inner: #e8f0ff;
+
+  --scrim: rgba(4, 8, 13, 0.62);
+  --shadow-overlay: 0 12px 32px rgba(0, 0, 0, 0.45);
+
+  /* Charts draw with the same ink as the text they sit beside. Row and gap are
+   * geometry the chart component reads, so a density change reaches it too. */
+  --chart-grid: #223044;
+  --chart-ink: var(--text-dim);
+  --chart-hatch: rgba(221, 229, 239, 0.35);
+  --chart-row: 22px;
+  --chart-gap: 6px;
+
+  /* Type. A system stack rather than a vendored face; see fonts.css. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+
+  /* The 12px step serves monospace text and the small uppercase labels, which
+   * were already the same size. */
+  --fs-micro: 10.5px;
+  --fs-meta: 11.5px;
+  --fs-code: 12px;
+  --fs-small: 12.5px;
+  --fs-body: 13.5px;
+  --fs-title: 19px;
+  --fs-display: 22px;
+
+  --lh-tight: 1.2;
+  --lh-code: 1.5;
+  --lh-body: 1.55;
+
+  --fw-normal: 400;
+  --fw-medium: 550;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* One spacing scale. Every padding, margin and gap in the application reads
+   * a step from it, so a density layer later remaps these and nothing else. */
+  --s-1: 2px;
+  --s-2: 4px;
+  --s-3: 6px;
+  --s-4: 8px;
+  --s-5: 10px;
+  --s-6: 12px;
+  --s-7: 14px;
+  --s-8: 16px;
+  --s-9: 20px;
+  --s-10: 24px;
+  --s-11: 40px;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-pill: 999px;
+
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-ease: ease;
+
+  /* The alert stack sits one step below overlays, so an open palette or dialog
+   * covers it rather than the other way round. */
+  --z-base: 0;
+  --z-sticky: 10;
+  --z-alerts: 99;
+  --z-overlay: 100;
+  --z-skip: 101;
+}

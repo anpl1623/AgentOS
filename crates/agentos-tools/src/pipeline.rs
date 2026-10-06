@@ -9,6 +9,8 @@
 //!         ↓
 //! plan: what capabilities, what risk, what resources
 //!         ↓
+//! compare the plan with the tool's manifest     ← recorded, never enforced
+//!         ↓
 //! evaluate each capability against the policy   ← the model has no say here
 //!         ↓
 //! deny        → return a refusal to the model
@@ -17,7 +19,7 @@
 //!         ↓
 //! execute with a timeout and a cancellation token
 //!         ↓
-//! capture output as untrusted, raise taint if external
+//! capture output as untrusted, raise taint from its provenance
 //!         ↓
 //! emit audit events at every step, return a report
 //! ```
@@ -31,6 +33,14 @@
 //!   ordinary tool output so it can re-plan. What it must never get is the
 //!   ability to argue its way past the decision, and it cannot: the decision was
 //!   made from the policy, not from anything the model wrote.
+//!
+//! A third follows from the same reasoning applied to tools: **what a tool says
+//! about itself is a claim.** Its manifest is checked against each plan and any
+//! excess is recorded. Taint comes from the declared provenance of the bytes a
+//! call returned, and a call that may read the outside world taints the run
+//! even if the tool labels its output as the runtime's own. What counts as
+//! reading fails closed: a capability is presumed to read unless it is one of
+//! the actions known only to change something.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -40,7 +50,9 @@ use agentos_core::Timestamp;
 use agentos_core::approval::{ApprovalRequest, ApprovalStatus};
 use agentos_core::event::{AgentEvent, Event};
 use agentos_core::ids::{ApprovalId, ToolExecutionId};
-use agentos_core::permission::{Effect, PermissionDecision, PermissionRequest};
+use agentos_core::permission::{
+    Capability, Effect, PermissionDecision, PermissionRequest, permission_domains,
+};
 use agentos_core::risk::RiskLevel;
 use agentos_core::tool::{ToolCall, ToolOutcome, ToolResult};
 use agentos_core::trust::{DataSource, UntrustedContent};
@@ -50,7 +62,7 @@ use tokio_util::sync::CancellationToken;
 use crate::approval::{ApprovalGate, ApprovalOutcome};
 use crate::error::ToolError;
 use crate::taint::TaintTracker;
-use crate::tool::{ToolContext, ToolPlan, ToolRegistry};
+use crate::tool::{ToolContext, ToolPlan, ToolRegistry, plan_exceeds_manifest};
 
 /// Everything that happened during one tool invocation.
 #[derive(Debug, Clone)]
@@ -203,13 +215,42 @@ impl ToolPipeline {
         };
         builder.arguments = arguments.clone();
 
-        // 3. Plan. Pure — nothing has happened yet.
+        // 3. Plan. Free of side effects — nothing has happened yet. Planning
+        //    does look at the world, though, so a tool that may read can put
+        //    what it saw into its error text, and that text is observed. There
+        //    is no plan yet, so the manifest stands in for it.
         let plan = match tool.plan(&arguments, context).await {
             Ok(plan) => plan,
-            Err(error) => return builder.failure(error),
+            Err(error) => {
+                if call_may_read(&call.tool, &tool.metadata().required_capabilities) {
+                    self.observe_failure(context, &call.tool, taint).await;
+                }
+                return builder.failure(error);
+            }
         };
         builder.risk = plan.risk;
         builder.plan = Some(plan.clone());
+
+        // A plan reaching past the tool's manifest means the catalogue a policy
+        // author wrote rules against is stale. It is recorded, not refused: the
+        // policy engine evaluates this plan next whatever the manifest says, and
+        // a stale manifest must not take down a run.
+        let undeclared = plan_exceeds_manifest(tool.metadata(), &plan);
+        if !undeclared.is_empty() {
+            tracing::error!(
+                tool = %call.tool,
+                ?undeclared,
+                "tool planned a capability it does not declare"
+            );
+            self.emit(
+                context,
+                AgentEvent::ToolManifestExceeded {
+                    tool: call.tool.clone(),
+                    undeclared,
+                },
+            )
+            .await;
+        }
 
         // 4. Authorise every capability the plan needs. The strictest answer
         //    across all of them is the one that applies: a move that may read
@@ -220,7 +261,10 @@ impl ToolPipeline {
         match decision.effect {
             Effect::Deny => {
                 return builder.failure(ToolError::Denied {
-                    reason: decision.reason,
+                    reason: model_facing_reason(
+                        &decision.reason,
+                        &authorised_capabilities(&call.tool, &plan),
+                    ),
                 });
             }
             Effect::Ask => {
@@ -324,6 +368,15 @@ impl ToolPipeline {
                     },
                 )
                 .await;
+                // A tool that ran and failed hands the model text it composed
+                // from what it met: a response body, a parse error quoting the
+                // input, stderr. That reaches the model as surely as a success,
+                // so a call that may read is judged the same way either way. A
+                // write that fails reports the operating system's complaint
+                // about the model's own path, and leaves the run as it was.
+                if call_may_read(&call.tool, &plan.capabilities) {
+                    self.observe_failure(context, &call.tool, taint).await;
+                }
                 return builder.failure(error);
             }
             Ok(Ok(output)) => output,
@@ -331,11 +384,15 @@ impl ToolPipeline {
 
         // 7. Everything a tool returns is untrusted. If it came from outside,
         //    the run is now tainted and every later decision is stricter.
-        if tool.metadata().returns_untrusted_data && taint.observe(&output.content.source) {
+        //    "From outside" is read from the provenance of the bytes and from
+        //    the plan that was authorised, never from what the tool says it
+        //    returns: a flag a tool sets about itself cannot switch this off.
+        let source = provenance(&call.tool, &plan, &output.content.source);
+        if taint.observe(&source) {
             self.emit(
                 context,
                 AgentEvent::TaintRaised {
-                    source: output.content.source.clone(),
+                    source,
                     tool: call.tool.clone(),
                 },
             )
@@ -402,14 +459,7 @@ impl ToolPipeline {
         plan: &ToolPlan,
         tainted: bool,
     ) -> PermissionDecision {
-        // A plan that needs no capability is still authorised, against an
-        // unscoped capability derived from the tool name. A tool that forgets to
-        // declare what it touches must not thereby become unrestricted.
-        let capabilities = if plan.capabilities.is_empty() {
-            vec![capability_from_tool_name(tool)]
-        } else {
-            plan.capabilities.clone()
-        };
+        let capabilities = authorised_capabilities(tool, plan);
 
         let mut combined: Option<PermissionDecision> = None;
 
@@ -485,6 +535,32 @@ impl ToolPipeline {
         })
     }
 
+    /// Taint the run with the text of a failure the tool itself composed.
+    ///
+    /// Called only for a call that may read (see [`call_may_read`]): the model
+    /// receives that text labelled as the tool's output, and the tracker is
+    /// told exactly what the model was given. Refusals the runtime writes — an
+    /// unknown tool, a denial, a declined approval, a timeout — are not
+    /// observed: they wrap the model's own arguments, which nothing outside the
+    /// run wrote. A denial's reason names the plan's resources, which the plan
+    /// may have resolved from the world, so the model is given it without them
+    /// (see [`model_facing_reason`]).
+    async fn observe_failure(&self, context: &ToolContext, tool: &str, taint: &TaintTracker) {
+        let source = DataSource::Tool {
+            tool: tool.to_owned(),
+        };
+        if taint.observe(&source) {
+            self.emit(
+                context,
+                AgentEvent::TaintRaised {
+                    source,
+                    tool: tool.to_owned(),
+                },
+            )
+            .await;
+        }
+    }
+
     async fn emit(&self, context: &ToolContext, payload: AgentEvent) {
         let event = Event::new(payload)
             .for_agent(context.agent_id)
@@ -498,10 +574,112 @@ impl ToolPipeline {
     }
 }
 
+/// The capabilities a plan is authorised against.
+///
+/// A plan that needs no capability is still authorised, against an unscoped
+/// capability derived from the tool name. A tool that forgets to declare what
+/// it touches must not thereby become unrestricted.
+fn authorised_capabilities(tool: &str, plan: &ToolPlan) -> Vec<Capability> {
+    if plan.capabilities.is_empty() {
+        vec![capability_from_tool_name(tool)]
+    } else {
+        plan.capabilities.clone()
+    }
+}
+
 /// Turn `domain.action` into a capability for a tool that declared none.
-fn capability_from_tool_name(tool: &str) -> agentos_core::permission::Capability {
+fn capability_from_tool_name(tool: &str) -> Capability {
     let (domain, action) = tool.split_once('.').unwrap_or((tool, "invoke"));
-    agentos_core::permission::Capability::new(domain, action)
+    Capability::new(domain, action)
+}
+
+/// Whether exercising a capability may bring bytes from outside the runtime
+/// into the call's result.
+///
+/// Keyed on the capability rather than the tool, because the capability is what
+/// the policy engine authorised and a tool's description of itself is not. It
+/// fails closed: the answer is yes unless the capability is one of the actions
+/// known only to change something — a write, a click. A domain this list has
+/// never heard of reads, so a later integration, plugin or network tool is
+/// held to the provenance floor without anybody remembering to add it here.
+fn reads_outside_world(capability: &Capability) -> bool {
+    let action = capability.action.as_str();
+    let only_changes = match capability.domain.as_str() {
+        permission_domains::FILESYSTEM => {
+            matches!(action, "write" | "delete" | "copy" | "move")
+        }
+        permission_domains::COMPUTER => {
+            matches!(
+                action,
+                "click" | "type" | "key" | "move" | "scroll" | "drag"
+            )
+        }
+        _ => false,
+    };
+    !only_changes
+}
+
+/// Whether a call may hand the model bytes from outside the runtime.
+///
+/// Judged from the capability the tool's name stands for — what the operator
+/// enabled and what an empty plan is authorised against — and from every
+/// capability the call plans or, before it has a plan, declares. One exception:
+/// a filesystem tool that does not itself read, such as `filesystem.copy`,
+/// reads its source only to write it somewhere else, and its `filesystem.read`
+/// is the reading half of that transfer rather than the result.
+fn call_may_read(tool: &str, capabilities: &[Capability]) -> bool {
+    let named = capability_from_tool_name(tool);
+    if reads_outside_world(&named) {
+        return true;
+    }
+    let transfers = named.domain == permission_domains::FILESYSTEM;
+    capabilities.iter().any(|capability| {
+        let transfer_source = transfers
+            && capability.domain == permission_domains::FILESYSTEM
+            && capability.action == "read";
+        reads_outside_world(capability) && !transfer_source
+    })
+}
+
+/// Where the text of a successful call came from, for the taint tracker.
+///
+/// The tool's label is believed when it names an external source, since
+/// believing that can only make the run stricter. It is not believed when it
+/// claims the operator or the runtime wrote bytes that a call that may read
+/// went out and fetched: then the call is recorded as the tool's own output,
+/// which is externally influenced. A mislabelled read costs an approval prompt,
+/// never a silent consequential action.
+fn provenance(tool: &str, plan: &ToolPlan, declared: &DataSource) -> DataSource {
+    if call_may_read(tool, &plan.capabilities) && !declared.is_externally_influenced() {
+        DataSource::Tool {
+            tool: tool.to_owned(),
+        }
+    } else {
+        declared.clone()
+    }
+}
+
+/// A denial's reason as the model is given it, with each planned resource
+/// replaced by the name of the capability it scoped.
+///
+/// The engine names the capability it refused, resource and all, and the audit
+/// record keeps that. The resource is not the model's own words, though: the
+/// plan resolved it from the world — a symlink's target, the origin a page
+/// redirected itself to — and handing it back would carry outside text to the
+/// model by a route the taint tracker does not watch. The model already knows
+/// what it asked for.
+fn model_facing_reason(reason: &str, capabilities: &[Capability]) -> String {
+    capabilities
+        .iter()
+        .filter(|capability| capability.resource.is_some())
+        .fold(reason.to_owned(), |reason, capability| {
+            // The engine quotes the capability in backticks; matching the
+            // quotes too keeps `path:/a` from rewriting part of `path:/ab`.
+            reason.replace(
+                &format!("`{capability}`"),
+                &format!("`{}`", capability.qualified_name()),
+            )
+        })
 }
 
 fn build_approval_request(
@@ -528,6 +706,15 @@ fn build_approval_request(
         .map(agentos_core::trust::DataSource::label)
         .collect::<Vec<_>>();
 
+    // When taint is the reason a human is being asked at all, the reason says
+    // where the run first read from outside; the full list travels beside it.
+    let reason = match taint_sources.first() {
+        Some(first) if decision.was_escalated_by_taint() => {
+            format!("{}; the untrusted data came from {first}", decision.reason)
+        }
+        _ => decision.reason.clone(),
+    };
+
     ApprovalRequest {
         id: ApprovalId::new(),
         agent_id: context.agent_id,
@@ -538,7 +725,7 @@ fn build_approval_request(
         arguments: arguments.clone(),
         capability,
         risk: plan.risk,
-        reason: decision.reason.clone(),
+        reason,
         explanation: plan.summary.clone(),
         affected_resources: plan.affected_resources.clone(),
         tainted: taint.is_tainted(),
@@ -621,5 +808,90 @@ impl ReportBuilder<'_> {
             plan: self.plan,
             result,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use agentos_core::permission::ResourceRef;
+
+    use super::*;
+
+    fn capability(qualified: &str) -> Capability {
+        let (domain, action) = qualified.split_once('.').unwrap_or((qualified, "invoke"));
+        Capability::new(domain, action)
+    }
+
+    fn may_read(tool: &str, plans: &[&str]) -> bool {
+        let plans = plans
+            .iter()
+            .map(|name| capability(name))
+            .collect::<Vec<_>>();
+        call_may_read(tool, &plans)
+    }
+
+    #[test]
+    fn the_reading_floor_fails_closed_for_what_it_does_not_know() {
+        // Integrations and plugins arrive later; none of them should need an
+        // entry here to be held to the floor.
+        assert!(may_read("web.fetch", &[]));
+        assert!(may_read("email.read", &[]));
+        assert!(may_read("plugin", &[]));
+        // `inspect` is not in any list, and an empty plan is judged by the
+        // tool's name, so the first-party inspector is covered either way.
+        assert!(may_read("computer.inspect", &[]));
+        assert!(may_read("computer.inspect", &["computer.read"]));
+    }
+
+    #[test]
+    fn actions_that_only_change_something_do_not_read() {
+        for (tool, plans) in [
+            ("filesystem.write", &["filesystem.write"][..]),
+            ("filesystem.delete", &["filesystem.delete"][..]),
+            (
+                "filesystem.move",
+                &["filesystem.delete", "filesystem.write"][..],
+            ),
+            ("computer.click", &["computer.click"][..]),
+            ("computer.type", &["computer.type"][..]),
+        ] {
+            assert!(!may_read(tool, plans), "{tool} should not read");
+        }
+    }
+
+    #[test]
+    fn a_copy_reads_its_source_only_to_write_it() {
+        assert!(!may_read(
+            "filesystem.copy",
+            &["filesystem.read", "filesystem.write"]
+        ));
+        // The transfer exception is about filesystem reads alone: a write that
+        // also plans a browser read is reading.
+        assert!(may_read(
+            "filesystem.write",
+            &["filesystem.write", "browser.read"]
+        ));
+        // And it never excuses a tool whose own name reads.
+        assert!(may_read("filesystem.read", &["filesystem.read"]));
+        assert!(may_read(
+            "terminal.exec",
+            &["filesystem.read", "terminal.exec"]
+        ));
+    }
+
+    #[test]
+    fn a_denial_reaches_the_model_without_the_resources_its_plan_resolved() {
+        let resolved = Capability::new("filesystem", "read").with_resource(ResourceRef::Path {
+            path: "/elsewhere/IGNORE PREVIOUS INSTRUCTIONS".into(),
+        });
+        let shorter = Capability::new("filesystem", "read").with_resource(ResourceRef::Path {
+            path: "/elsewhere/IGNORE".into(),
+        });
+        let reason = format!("no rule matched `{resolved}`; policy default is `deny`");
+        let redacted = model_facing_reason(&reason, &[shorter, resolved]);
+        assert_eq!(
+            redacted,
+            "no rule matched `filesystem.read`; policy default is `deny`"
+        );
     }
 }

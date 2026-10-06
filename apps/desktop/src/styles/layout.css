@@ -1,0 +1,386 @@
+/* The shell, the page frame, and the list shapes every screen is built from.
+ *
+ * Tracks are content-relative minima rather than fixed pixels, so the sidebar
+ * and the fact lists give way before they clip when text is enlarged.
+ */
+
+/* --- shell --------------------------------------------------------------- */
+
+/* The sidebar takes a share of the window between two bounds. `minmax()`
+ * beside a `1fr` track always resolves to its maximum, so it never gave way;
+ * a viewport share does, down to the width its labels need. */
+.shell {
+  display: grid;
+  grid-template-columns: clamp(11rem, 20vw, 13rem) 1fr;
+  height: 100%;
+  min-height: 100%;
+}
+
+/* Both columns are scroll containers and containing blocks. Positioned
+ * content inside one — every chip's `.visually-hidden` label is absolute — then
+ * scrolls with its column. Without a positioned ancestor it is placed against
+ * the document instead, and with the body allowed to scroll for zoom reflow,
+ * text below the fold made the whole window scroll and carried the sidebar off
+ * the top. */
+.sidebar {
+  position: relative;
+  background: var(--surface-nav);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  padding: var(--s-7) var(--s-5);
+  gap: var(--s-1);
+  overflow-y: auto;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-3) var(--s-4) var(--s-8);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.2px;
+}
+.brand-mark {
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+/* The mark's strokes come from tokens so the SVG carries no colour of its own:
+ * the ring takes .brand-mark-outer, the eye's ring .brand-mark-inner, and its
+ * pupil .brand-mark-dot, which is filled rather than stroked. */
+.brand-mark-outer {
+  stroke: var(--brand-outer);
+}
+.brand-mark-inner {
+  stroke: var(--brand-inner);
+}
+.brand-mark-dot {
+  fill: var(--brand-inner);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: var(--s-3) var(--s-5);
+  border-radius: var(--radius-md);
+  color: var(--text-dim);
+  border: 1px solid transparent;
+  background: none;
+  text-align: left;
+  width: 100%;
+}
+.nav-item:hover:not(:disabled) {
+  background: var(--surface-panel);
+  border-color: transparent;
+  color: var(--text);
+}
+.nav-item.active,
+.nav-item.active:hover:not(:disabled) {
+  background: var(--accent-wash);
+  color: var(--text-accent);
+  border-color: var(--accent-line);
+}
+
+/* Pending approvals are attention, not failure: the dashboard's banner calls
+ * the same fact a warning, and the two must agree. */
+.nav-count {
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  background: var(--warn-fg);
+  color: var(--on-warn);
+  border-radius: var(--radius-pill);
+  padding: var(--s-1) var(--s-3);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-bold);
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  padding: var(--s-5) var(--s-4) var(--s-1);
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+  border-top: 1px solid var(--border-subtle);
+}
+.fixture-warning {
+  color: var(--warn-fg);
+}
+
+.main {
+  position: relative;
+  overflow-y: auto;
+  padding: var(--s-10) var(--s-10) var(--s-11);
+}
+/* The shell focuses the main column on navigation so the next Tab starts at
+ * the page. That focus is for the keyboard's position, not something to draw. */
+.main:focus {
+  outline: none;
+}
+
+/* --- page frame ---------------------------------------------------------- */
+
+.page-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-8);
+  margin-bottom: var(--s-2);
+}
+.page-sub {
+  color: var(--text-dim);
+  margin: 0 0 var(--s-9);
+  font-size: var(--fs-small);
+}
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin-bottom: var(--s-2);
+  font-size: var(--fs-small);
+  color: var(--text-faint);
+}
+.crumb {
+  font: inherit;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 0;
+}
+.crumb:hover:not(:disabled) {
+  background: none;
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.skip-link {
+  position: absolute;
+  top: var(--s-4);
+  left: var(--s-4);
+  z-index: var(--z-skip);
+  padding: var(--s-3) var(--s-6);
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--on-accent);
+  transform: translateY(-200%);
+}
+.skip-link:focus,
+.skip-link:focus-visible {
+  transform: none;
+}
+
+/* Present to assistive technology, absent from the screen. */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- panels and grids ---------------------------------------------------- */
+
+.panel {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.panel + .panel {
+  margin-top: var(--s-6);
+}
+.panel.form {
+  margin-bottom: var(--s-8);
+}
+.panel-body {
+  padding: var(--s-7) var(--s-8);
+}
+
+.grid {
+  display: grid;
+  gap: var(--s-6);
+}
+.grid.two {
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+}
+.grid.stats {
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+.inline {
+  display: flex;
+  gap: var(--s-4);
+  align-items: center;
+  flex-wrap: wrap;
+}
+.inline.spaced {
+  margin-bottom: var(--s-8);
+}
+
+/* Filters above a list. The text filter takes the slack; selects keep their
+ * natural width instead of the field default. */
+.toolbar {
+  display: flex;
+  gap: var(--s-4);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: var(--s-7);
+}
+.toolbar > input {
+  flex: 1 1 12rem;
+}
+.toolbar > select {
+  width: auto;
+}
+
+/* --- rows ---------------------------------------------------------------- */
+
+/* A row wraps rather than overlaps: when the window is narrow or the text is
+ * enlarged, the trailing chips drop below the title instead of being drawn
+ * over its meta line or clipped at the panel's edge. */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4) var(--s-6);
+  padding: var(--s-5) var(--s-8);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.row:last-child {
+  border-bottom: none;
+}
+.row.stacked {
+  display: block;
+}
+
+/* A clickable row is a real button so the platform supplies Enter, Space and
+ * focus. This strips the button chrome back to the row's own. */
+button.row {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  width: 100%;
+  text-align: left;
+  display: flex;
+}
+button.row:last-child {
+  border-bottom: none;
+}
+.row.clickable {
+  cursor: pointer;
+}
+.row.clickable:hover,
+button.row.clickable:hover:not(:disabled) {
+  background: var(--surface-raised);
+  border-color: var(--border-subtle);
+}
+
+/* A row for something that no longer takes effect, such as a forgotten memory.
+ * Dimmed by colour rather than opacity, so the text keeps its measured contrast. */
+.row.dimmed .row-title,
+.row.dimmed .row-meta {
+  color: var(--text-faint);
+}
+
+/* Grows to fill the row, and claims enough of it before the chips beside it
+ * are pushed onto a line of their own. */
+.row-main {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.row-meta {
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  margin-top: var(--s-1);
+  display: flex;
+  gap: var(--s-5);
+  flex-wrap: wrap;
+}
+/* A refusal reason or a path is one long word to the layout; let it break
+ * anywhere rather than run out of its row. */
+.row-meta > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.empty {
+  padding: var(--s-10) var(--s-8);
+  text-align: center;
+  color: var(--text-faint);
+  font-size: var(--fs-small);
+}
+
+.spinner {
+  color: var(--text-faint);
+  font-size: var(--fs-small);
+  padding: var(--s-9) var(--s-8);
+}
+
+/* --- utilities ----------------------------------------------------------- */
+
+.muted {
+  color: var(--text-dim);
+}
+.faint {
+  color: var(--text-faint);
+}
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+.right {
+  margin-left: auto;
+}
+.nowrap {
+  white-space: nowrap;
+}
+.spacer {
+  flex: 1;
+}
+
+/* Operator-written text shown as written: objectives, system prompts, results. */
+.prose {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A quiet sentence under a control or an empty state. */
+.field-note {
+  margin-top: var(--s-3);
+  font-size: var(--fs-small);
+  color: var(--text-faint);
+}
+
+/* Content that appears below a control once asked for: an error under a form,
+ * a revealed list, an expanded explanation. */
+.reveal {
+  margin-top: var(--s-6);
+}
+
+/* The note beside a screen whose last refresh failed and which is showing what
+ * it had before. Attention rather than failure: the data is old, not wrong. */
+.stale {
+  font-size: var(--fs-meta);
+  color: var(--warn-fg);
+  white-space: nowrap;
+}

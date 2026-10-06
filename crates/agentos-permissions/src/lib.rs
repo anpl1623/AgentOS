@@ -6,10 +6,13 @@
 //! runtime turns into a resource reference; everything else — the policy, the
 //! tool's declared requirements, the taint state — comes from outside the model.
 //!
-//! Three pieces:
+//! Four pieces:
 //!
 //! * [`path`] resolves filesystem paths safely, so that scoping survives `..`
 //!   and symlinks.
+//! * [`origin`] reduces a URL to the one spelling of its origin that policies
+//!   are written and matched in, so that network scoping survives case and
+//!   default ports.
 //! * [`policy`] holds the rules and the specificity ordering that resolves
 //!   conflicts between them.
 //! * [`engine`] evaluates a request against a policy and produces a decision.
@@ -17,13 +20,15 @@
 
 pub mod engine;
 pub mod error;
+pub mod origin;
 pub mod path;
 pub mod pattern;
 pub mod policy;
 pub mod yaml;
 
 pub use engine::{DenyAllEngine, PermissionEngine, PolicyEngine};
-pub use error::{PathError, PolicyError};
+pub use error::{OriginError, PathError, PatternError, PolicyError};
+pub use origin::normalise_origin;
 pub use pattern::{GlobKind, NamePattern, ResourcePattern};
 pub use policy::{IMMUTABLE_DENY, Policy, PolicyRule, TaintPolicy, is_immutably_denied};
 pub use yaml::{PolicyDocument, load_policy_file, quote_scalar, starter_policy_yaml};

@@ -295,6 +295,43 @@ mod tests {
     }
 
     #[test]
+    fn an_origin_carve_out_binds_however_it_was_spelled() {
+        // A deny written with upper case and an explicit default port must
+        // still beat the broader allow for the lower-case request a tool
+        // reports; before canonicalisation it silently did not.
+        use crate::pattern::GlobKind;
+
+        let origin = |raw: &str| ResourcePattern::glob(GlobKind::Origin, raw).unwrap();
+        let policy = Policy::deny_all("p")
+            .with_rule(
+                PolicyRule::new("site", "browser", "navigate", Effect::Allow)
+                    .with_resources(vec![origin("https://*.example.com")]),
+            )
+            .with_rule(
+                PolicyRule::new("admin", "browser", "navigate", Effect::Deny)
+                    .with_resources(vec![origin("https://Admin.Example.com:443")]),
+            );
+        let navigate = |origin: &str| {
+            Capability::new("browser", "navigate").with_resource(ResourceRef::Origin {
+                origin: origin.into(),
+            })
+        };
+
+        assert_eq!(
+            policy
+                .winning_rule(&navigate("https://admin.example.com"))
+                .map(|r| r.id.as_str()),
+            Some("admin")
+        );
+        assert_eq!(
+            policy
+                .winning_rule(&navigate("https://crm.example.com"))
+                .map(|r| r.id.as_str()),
+            Some("site")
+        );
+    }
+
+    #[test]
     fn self_modification_is_immutably_denied() {
         for (domain, action) in IMMUTABLE_DENY {
             assert!(is_immutably_denied(&Capability::new(*domain, *action)));

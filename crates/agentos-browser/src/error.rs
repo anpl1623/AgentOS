@@ -1,5 +1,6 @@
 //! Browser errors.
 
+use agentos_permissions::OriginError;
 use agentos_tools::ToolError;
 use thiserror::Error;
 
@@ -48,12 +49,14 @@ pub enum BrowserError {
     #[error("the browser has not navigated anywhere yet; call `browser.navigate` first")]
     NoPage,
 
-    /// A URL could not be parsed or is not a browsable scheme.
-    #[error("`{url}` is not a valid http(s) URL")]
-    InvalidUrl {
-        /// The offending value.
-        url: String,
-    },
+    /// A URL could not be reduced to an origin: not http(s), no host,
+    /// credentials, or a host or port outside the canonical form.
+    ///
+    /// Carries the permission crate's error rather than a URL string so the
+    /// agent is told which of those it was, and so there is one parser and one
+    /// set of reasons for every tool that scopes by origin.
+    #[error(transparent)]
+    InvalidUrl(#[from] OriginError),
 }
 
 impl From<BrowserError> for ToolError {

@@ -17,3 +17,6 @@ dist/
 
 # Tauri's generated schemas and build artefacts
 apps/desktop/src-tauri/gen/
+
+# Output of `npm run screenshots`, regenerated on demand from fixtures
+apps/desktop/screenshots/

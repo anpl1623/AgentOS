@@ -371,6 +371,28 @@ pub fn metadata_for<T: schemars::JsonSchema>(
     }
 }
 
+/// Capabilities a plan names that the tool's manifest does not declare.
+///
+/// Returned as sorted, deduplicated `domain.action` names, the same form as
+/// [`ToolMetadata::capability_names`]. A non-empty answer means the catalogue a
+/// policy author wrote rules against is out of date with what the tool really
+/// does. It is not a refusal: the policy engine evaluates the plan whatever the
+/// manifest says, so drift is a documentation fault to surface, not a hole to
+/// close here.
+#[must_use]
+pub fn plan_exceeds_manifest(metadata: &ToolMetadata, plan: &ToolPlan) -> Vec<String> {
+    let declared = metadata.capability_names();
+    let mut undeclared = plan
+        .capabilities
+        .iter()
+        .map(Capability::qualified_name)
+        .filter(|name| declared.binary_search(name).is_err())
+        .collect::<Vec<_>>();
+    undeclared.sort_unstable();
+    undeclared.dedup();
+    undeclared
+}
+
 #[cfg(test)]
 mod tests {
     use agentos_core::permission::ResourceRef;
@@ -491,6 +513,31 @@ mod tests {
         assert!(tool.validate(&serde_json::json!({"path": 42})).is_err());
         assert!(tool.validate(&serde_json::json!({})).is_err());
         assert!(tool.validate(&serde_json::json!({"path": "/ok"})).is_ok());
+    }
+
+    #[test]
+    fn a_plan_within_the_manifest_exceeds_nothing() {
+        let metadata = Dummy::new("filesystem.read").0;
+        let plan = ToolPlan::new(RiskLevel::Low, "read").requiring(
+            Capability::new("filesystem", "read").with_resource(ResourceRef::Path {
+                path: "/tmp/x".into(),
+            }),
+        );
+        assert!(plan_exceeds_manifest(&metadata, &plan).is_empty());
+    }
+
+    #[test]
+    fn a_plan_beyond_the_manifest_names_each_undeclared_capability_once() {
+        let metadata = Dummy::new("filesystem.read").0;
+        let plan = ToolPlan::new(RiskLevel::Low, "read, then quietly more")
+            .requiring(Capability::new("filesystem", "read"))
+            .requiring(Capability::new("terminal", "exec"))
+            .requiring(Capability::new("network", "request"))
+            .requiring(Capability::new("terminal", "exec"));
+        assert_eq!(
+            plan_exceeds_manifest(&metadata, &plan),
+            vec!["network.request", "terminal.exec"]
+        );
     }
 
     #[test]

@@ -23,6 +23,7 @@ use agentos_core::permission::{Capability, ResourceRef, permission_domains};
 use agentos_core::risk::RiskLevel;
 use agentos_core::tool::ToolMetadata;
 use agentos_core::trust::{DataSource, UntrustedImage};
+use agentos_permissions::normalise_origin;
 use agentos_tools::{
     Tool, ToolContext, ToolError, ToolOutput, ToolPlan, metadata_for, parse_arguments,
 };
@@ -52,42 +53,6 @@ const VISION_ACTION: &str = "vision";
 /// Cap on extracted text, before the pipeline's own cap.
 const MAX_EXTRACT_BYTES: usize = 200 * 1024;
 
-/// Reduce a URL to `scheme://host[:port]`.
-///
-/// The unit of policy is the origin, not the path: granting an agent one page of
-/// a site and not another is a distinction browsers do not enforce and neither
-/// should we pretend to.
-fn origin_of(url: &str) -> Result<String, BrowserError> {
-    let (scheme, rest) = url
-        .split_once("://")
-        .ok_or_else(|| BrowserError::InvalidUrl {
-            url: url.to_owned(),
-        })?;
-    if !matches!(scheme, "http" | "https") {
-        return Err(BrowserError::InvalidUrl {
-            url: url.to_owned(),
-        });
-    }
-    let authority = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .to_owned();
-    if authority.is_empty() {
-        return Err(BrowserError::InvalidUrl {
-            url: url.to_owned(),
-        });
-    }
-    // Credentials in a URL are not something an agent should be constructing,
-    // and they would make the origin ambiguous.
-    if authority.contains('@') {
-        return Err(BrowserError::InvalidUrl {
-            url: url.to_owned(),
-        });
-    }
-    Ok(format!("{scheme}://{authority}"))
-}
-
 fn origin_capability(action: &str, origin: &str) -> Capability {
     Capability::new(permission_domains::BROWSER, action).with_resource(ResourceRef::Origin {
         origin: origin.to_owned(),
@@ -104,7 +69,7 @@ async fn current_origin(pool: &BrowserPool, context: &ToolContext) -> Result<Str
         .await
         .ok_or(BrowserError::NoPage)?;
     let url = session.current_url().await.ok_or(BrowserError::NoPage)?;
-    origin_of(&url)
+    Ok(normalise_origin(&url)?)
 }
 
 async fn session_page(
@@ -172,7 +137,7 @@ impl Tool for Navigate {
 
     fn validate(&self, arguments: &serde_json::Value) -> Result<serde_json::Value, ToolError> {
         let args: NavigateArgs = parse_arguments(&self.metadata.name, arguments)?;
-        origin_of(&args.url).map_err(ToolError::from)?;
+        normalise_origin(&args.url).map_err(|error| ToolError::from(BrowserError::from(error)))?;
         Ok(arguments.clone())
     }
 
@@ -182,7 +147,8 @@ impl Tool for Navigate {
         _context: &ToolContext,
     ) -> Result<ToolPlan, ToolError> {
         let args: NavigateArgs = parse_arguments(&self.metadata.name, arguments)?;
-        let origin = origin_of(&args.url).map_err(ToolError::from)?;
+        let origin = normalise_origin(&args.url)
+            .map_err(|error| ToolError::from(BrowserError::from(error)))?;
         Ok(
             ToolPlan::new(RiskLevel::Medium, format!("Open {}", args.url))
                 .requiring(origin_capability("navigate", &origin)),
@@ -1275,26 +1241,49 @@ mod tests {
         );
     }
 
-    #[test]
-    fn origins_drop_the_path_and_query() {
-        assert_eq!(
-            origin_of("https://crm.example.com/customers/7?tab=notes#x").unwrap(),
-            "https://crm.example.com"
+    fn navigate_tool() -> Navigate {
+        Navigate::new(Arc::new(BrowserPool::new(
+            crate::session::BrowserOptions::new(std::env::temp_dir()),
+        )))
+    }
+
+    #[tokio::test]
+    async fn navigation_is_authorised_against_the_canonical_origin() {
+        // The policy sees one spelling of the server however the agent wrote
+        // the URL; otherwise `https://CRM.Example.com:443` would sidestep a
+        // rule about `https://crm.example.com`. Planning launches nothing.
+        let context = ToolContext::new(
+            agentos_core::ids::AgentId::new(),
+            agentos_core::ids::TaskId::new(),
+            agentos_core::ids::TaskRunId::new(),
+            std::env::temp_dir(),
         );
+        let plan = navigate_tool()
+            .plan(
+                &serde_json::json!({"url": "HTTPS://CRM.Example.com:443/customers/7?tab=notes#x"}),
+                &context,
+            )
+            .await
+            .unwrap();
+        let resources: Vec<_> = plan
+            .capabilities
+            .iter()
+            .map(|capability| capability.resource.clone())
+            .collect();
         assert_eq!(
-            origin_of("http://localhost:8420/index.html").unwrap(),
-            "http://localhost:8420"
-        );
-        assert_eq!(
-            origin_of("https://example.com").unwrap(),
-            "https://example.com"
+            resources,
+            vec![Some(ResourceRef::Origin {
+                origin: "https://crm.example.com".to_owned()
+            })]
         );
     }
 
     #[test]
-    fn non_web_schemes_are_rejected() {
-        // `file://` would let a policy scoped to a website read the disk, and
-        // `javascript:` is not navigation at all.
+    fn navigation_refuses_what_is_not_an_origin() {
+        // `file://` would let a policy scoped to a website read the disk,
+        // `javascript:` is not navigation at all, and credentials make the
+        // origin read one way to a human and another to the browser.
+        let tool = navigate_tool();
         for url in [
             "file:///etc/passwd",
             "javascript:alert(1)",
@@ -1302,24 +1291,16 @@ mod tests {
             "ftp://example.com",
             "not a url",
             "https://",
+            "https://user:pass@example.com/",
+            "https://example.com:0/",
+            "https://%65xample.com/",
         ] {
-            assert!(origin_of(url).is_err(), "`{url}` should be rejected");
+            let refusal = tool.validate(&serde_json::json!({ "url": url }));
+            assert!(
+                matches!(refusal, Err(ToolError::InvalidArguments { .. })),
+                "`{url}` should be refused as an invalid argument, got {refusal:?}"
+            );
         }
-    }
-
-    #[test]
-    fn credentials_in_a_url_are_rejected() {
-        // `https://evil.com@trusted.example` reads as trusted.example to a
-        // human and evil.com to nobody. Refuse the ambiguity.
-        assert!(origin_of("https://user:pass@example.com/").is_err());
-    }
-
-    #[test]
-    fn ports_are_part_of_the_origin() {
-        assert_ne!(
-            origin_of("http://localhost:8420/").unwrap(),
-            origin_of("http://localhost:9000/").unwrap()
-        );
     }
 
     #[test]

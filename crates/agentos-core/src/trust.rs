@@ -61,6 +61,11 @@ pub enum DataSource {
     /// Produced by the runtime itself (error text, notices).
     Runtime,
     /// The output of a tool that has no more specific source.
+    ///
+    /// Also the provenance the pipeline records when a tool planned to read the
+    /// outside world but labelled what it returned as [`Self::User`] or
+    /// [`Self::Runtime`]: the label is the tool's claim, and a reading plan is
+    /// enough to disbelieve it.
     Tool {
         /// Fully-qualified tool name, e.g. `filesystem.read`.
         tool: String,
@@ -109,7 +114,9 @@ impl DataSource {
     /// Whether content from this source could plausibly be attacker-controlled.
     ///
     /// Used by the taint tracker to decide whether a run has ingested content
-    /// that warrants raising the approval floor.
+    /// that warrants raising the approval floor. The tracker consults this and
+    /// nothing a tool says about itself, so a new variant belongs in the `true`
+    /// arm unless the runtime or the operator wrote every byte it can carry.
     #[must_use]
     pub const fn is_externally_influenced(&self) -> bool {
         match self {

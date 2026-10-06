@@ -82,6 +82,29 @@ impl Harness {
         self.runtime.task(id).await.unwrap().status
     }
 
+    /// Mark a task failed without running it.
+    async fn fail(&self, id: agentos_core::ids::TaskId) {
+        self.runtime
+            .database()
+            .tasks()
+            .set_status(id, TaskStatus::Failed)
+            .await
+            .unwrap();
+    }
+
+    /// Every `agent.task.abandoned` record, newest first.
+    async fn abandonments(&self) -> Vec<agentos_audit::AuditRecord> {
+        self.runtime
+            .database()
+            .audit_sink()
+            .tail(100)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|record| record.kind == "agent.task.abandoned")
+            .collect()
+    }
+
     /// Wait until `count` tasks have succeeded, without draining the
     /// scheduler's handles — the point being to let it reap them itself on the
     /// next tick.
@@ -454,6 +477,166 @@ async fn an_unreachable_task_is_abandoned_rather_than_left_waiting() {
     assert_eq!(abandoned.len(), 1);
     assert_eq!(abandoned[0].task_id, Some(summarise.id));
     assert_eq!(abandoned[0].payload["blocked_by"], gather.id.to_string());
+}
+
+#[tokio::test]
+async fn a_dead_chain_is_abandoned_whole_in_one_tick() {
+    let harness = Harness::new().await;
+    let gather = harness
+        .runtime
+        .create_task(harness.agent.id, "Gather.")
+        .await
+        .unwrap();
+    let summarise = harness
+        .runtime
+        .create_task_after(harness.agent.id, "Summarise.", &[gather.id])
+        .await
+        .unwrap();
+    let publish = harness
+        .runtime
+        .create_task_after(harness.agent.id, "Publish.", &[summarise.id])
+        .await
+        .unwrap();
+    harness.fail(gather.id).await;
+
+    // One tick, not one per layer: the last task must not spend a tick looking
+    // as though it were merely waiting its turn.
+    let scheduler = harness.scheduler(4);
+    let report = scheduler.tick().await.unwrap();
+    assert_eq!(report.abandoned.len(), 2);
+    assert_eq!(harness.status(summarise.id).await, TaskStatus::Cancelled);
+    assert_eq!(harness.status(publish.id).await, TaskStatus::Cancelled);
+
+    // Each names the task it was waiting on, so the chain reads link by link
+    // rather than every event blaming the root.
+    let records = harness.abandonments().await;
+    assert_eq!(records.len(), 2);
+    let blocker_of = |id: agentos_core::ids::TaskId| {
+        records
+            .iter()
+            .find(|record| record.task_id == Some(id))
+            .map(|record| record.payload["blocked_by"].clone())
+            .unwrap()
+    };
+    assert_eq!(blocker_of(summarise.id), gather.id.to_string());
+    assert_eq!(blocker_of(publish.id), summarise.id.to_string());
+
+    // Nothing is left for the next tick to find.
+    assert!(scheduler.tick().await.unwrap().abandoned.is_empty());
+}
+
+#[tokio::test]
+async fn a_dead_diamond_abandons_its_join_once() {
+    let harness = Harness::new().await;
+    let root = harness
+        .runtime
+        .create_task(harness.agent.id, "Root.")
+        .await
+        .unwrap();
+    let left = harness
+        .runtime
+        .create_task_after(harness.agent.id, "Left.", &[root.id])
+        .await
+        .unwrap();
+    let right = harness
+        .runtime
+        .create_task_after(harness.agent.id, "Right.", &[root.id])
+        .await
+        .unwrap();
+    let join = harness
+        .runtime
+        .create_task_after(harness.agent.id, "Join.", &[left.id, right.id])
+        .await
+        .unwrap();
+    harness.fail(root.id).await;
+
+    let scheduler = harness.scheduler(4);
+    let mut abandoned = scheduler.tick().await.unwrap().abandoned;
+    abandoned.sort_unstable();
+    let mut expected = vec![left.id, right.id, join.id];
+    expected.sort_unstable();
+    assert_eq!(abandoned, expected);
+
+    // The join is reachable down both sides, and is recorded once.
+    let records = harness.abandonments().await;
+    assert_eq!(records.len(), 3);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.task_id == Some(join.id))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_task_found_both_directly_and_downstream_is_abandoned_once() {
+    // `after` waits on the failed root and on `middle`, so the query lists it
+    // as stuck in its own right and the walk from `middle` reaches it too. The
+    // list was read before the walk ran, and must not be trusted after it.
+    let harness = Harness::new().await;
+    let root = harness
+        .runtime
+        .create_task(harness.agent.id, "Root.")
+        .await
+        .unwrap();
+    let middle = harness
+        .runtime
+        .create_task_after(harness.agent.id, "Middle.", &[root.id])
+        .await
+        .unwrap();
+    let after = harness
+        .runtime
+        .create_task_after(harness.agent.id, "After.", &[root.id, middle.id])
+        .await
+        .unwrap();
+    harness.fail(root.id).await;
+
+    let scheduler = harness.scheduler(4);
+    assert_eq!(
+        scheduler.tick().await.unwrap().abandoned,
+        vec![middle.id, after.id]
+    );
+    assert_eq!(harness.abandonments().await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_dead_chain_longer_than_a_batch_finishes_on_the_next_tick() {
+    // The cap on one tick's walk is a fairness bound. What it leaves behind
+    // must still be found, because the tasks it did cancel are themselves now
+    // cancelled dependencies.
+    let harness = Harness::new().await;
+    let root = harness
+        .runtime
+        .create_task(harness.agent.id, "Root.")
+        .await
+        .unwrap();
+    let mut chain = Vec::new();
+    let mut previous = root.id;
+    for index in 0..4 {
+        let task = harness
+            .runtime
+            .create_task_after(harness.agent.id, &format!("Step {index}."), &[previous])
+            .await
+            .unwrap();
+        previous = task.id;
+        chain.push(task.id);
+    }
+    harness.fail(root.id).await;
+
+    let scheduler = Scheduler::new(
+        harness.runtime.clone(),
+        SchedulerOptions {
+            batch: 2,
+            ..SchedulerOptions::default()
+        },
+    );
+    assert_eq!(scheduler.tick().await.unwrap().abandoned, chain[..2]);
+    assert_eq!(scheduler.tick().await.unwrap().abandoned, chain[2..]);
+    for id in chain {
+        assert_eq!(harness.status(id).await, TaskStatus::Cancelled);
+    }
+    assert_eq!(harness.abandonments().await.len(), 4);
 }
 
 #[tokio::test]

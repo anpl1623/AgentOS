@@ -50,6 +50,16 @@
 //! ever compares canonical paths. A path that does not exist yet is resolved
 //! against its nearest existing ancestor rather than rejected — an agent scoped
 //! to a directory it will create on first use is a normal configuration.
+//!
+//! Origins are canonicalised at load time in the same way — lower-case scheme
+//! and host, no default port — so that a rule binds the requests it names
+//! however either was spelled. An origin that is not `scheme://host[:port]` is
+//! a compile error rather than a rule that matches nothing.
+//!
+//! An origin with no port binds the scheme's default port only, whether its
+//! host is literal or a glob: `https://*.example.com` does not admit
+//! `https://a.example.com:8443`. Write `:*` for any port, as
+//! `http://localhost:*` above does.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -177,8 +187,8 @@ impl PolicyDocument {
     ///
     /// # Errors
     ///
-    /// Returns [`PolicyError`] if a glob is malformed, a path cannot be
-    /// resolved, or `~` cannot be expanded.
+    /// Returns [`PolicyError`] if a glob or origin is malformed, a path cannot
+    /// be resolved, or `~` cannot be expanded.
     pub fn compile(&self) -> Result<Policy, PolicyError> {
         let name = self.agent.clone().unwrap_or_else(|| "policy".to_owned());
         let mut policy = Policy {
@@ -516,6 +526,119 @@ permissions:
             RiskLevel::Medium,
         );
         assert_eq!(engine.evaluate(&remote).effect, Effect::Deny);
+    }
+
+    fn navigate_to(origin: &str) -> PermissionRequest {
+        PermissionRequest::new(
+            "browser.navigate",
+            Capability::new("browser", "navigate").with_resource(ResourceRef::Origin {
+                origin: origin.into(),
+            }),
+            RiskLevel::Medium,
+        )
+    }
+
+    #[test]
+    fn origin_rules_bind_however_they_were_spelled() {
+        // Before canonicalisation these three rules compiled and matched
+        // nothing a browser tool would ever report.
+        let yaml = "permissions:\n  browser:\n    navigate: [\"https://CRM.Example.com\"]\n    read: [\"https://docs.example.com:443\"]\n    interact: [\"https://*.Example.org\"]\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+
+        assert_eq!(
+            engine
+                .evaluate(&navigate_to("https://crm.example.com"))
+                .effect,
+            Effect::Allow
+        );
+        let read = PermissionRequest::new(
+            "browser.read",
+            Capability::new("browser", "read").with_resource(ResourceRef::Origin {
+                origin: "https://docs.example.com".into(),
+            }),
+            RiskLevel::Low,
+        );
+        assert_eq!(engine.evaluate(&read).effect, Effect::Allow);
+        let interact = PermissionRequest::new(
+            "browser.interact",
+            Capability::new("browser", "interact").with_resource(ResourceRef::Origin {
+                origin: "https://app.example.org".into(),
+            }),
+            RiskLevel::Medium,
+        );
+        assert_eq!(engine.evaluate(&interact).effect, Effect::Allow);
+
+        // Canonicalising widened nothing beyond what was written.
+        assert_eq!(
+            engine
+                .evaluate(&navigate_to("https://crm.example.com:8443"))
+                .effect,
+            Effect::Deny
+        );
+        assert_eq!(
+            engine
+                .evaluate(&navigate_to("http://crm.example.com"))
+                .effect,
+            Effect::Deny
+        );
+    }
+
+    #[test]
+    fn a_literal_deny_is_not_undercut_on_another_port_by_a_glob_allow() {
+        // `https://*` used to admit every port while the deny stopped at 443,
+        // so `https://evil.example:8443` fell through to the allow.
+        let yaml = "permissions:\n  browser:\n    \"*\": {effect: allow, origins: [\"https://*\"]}\n    navigate: {effect: deny, origins: [\"https://evil.example\"]}\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+        for origin in ["https://evil.example", "https://evil.example:8443"] {
+            assert_eq!(
+                engine.evaluate(&navigate_to(origin)).effect,
+                Effect::Deny,
+                "{origin}"
+            );
+        }
+        assert_eq!(
+            engine.evaluate(&navigate_to("https://good.example")).effect,
+            Effect::Allow
+        );
+    }
+
+    #[test]
+    fn a_loopback_deny_is_not_undercut_by_another_spelling_of_loopback() {
+        let yaml = "permissions:\n  browser:\n    \"*\": {effect: allow, origins: [\"http://*:*\"]}\n    navigate: {effect: deny, origins: [\"http://127.0.0.1:*\", \"http://localhost:*\", \"http://[::1]:*\"]}\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+        for origin in [
+            "http://127.0.0.1",
+            "http://[::ffff:127.0.0.1]",
+            "http://[::ffff:7f00:1]:8420",
+            "http://0.0.0.0:8420",
+            "http://[::]:8420",
+        ] {
+            assert_eq!(
+                engine.evaluate(&navigate_to(origin)).effect,
+                Effect::Deny,
+                "{origin}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_origin_fails_compilation_with_the_expected_form() {
+        for origin in [
+            "crm.example.com",
+            "https://crm.example.com/app",
+            "file:///etc",
+        ] {
+            let yaml = format!("permissions:\n  browser:\n    navigate: [\"{origin}\"]\n");
+            let error = PolicyDocument::from_yaml(&yaml)
+                .unwrap()
+                .compile()
+                .unwrap_err();
+            let message = error.to_string();
+            assert!(matches!(error, PolicyError::Pattern { .. }), "{message}");
+            assert!(message.contains(origin), "{message}");
+            assert!(message.contains("browser.navigate"), "{message}");
+            assert!(message.contains("scheme://host[:port]"), "{message}");
+        }
     }
 
     #[test]
