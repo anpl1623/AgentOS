@@ -259,7 +259,10 @@ async fn requests_left_by_runs_that_died_are_closed_at_startup() {
         )
         .await
         .unwrap();
-    let task = runtime.create_task(agent.id, "interrupted").await.unwrap();
+    let task = runtime
+        .create_task(agent.id, "interrupted", &[], None)
+        .await
+        .unwrap();
     let database = runtime.database();
 
     // A run that was waiting on a person when the process died.
@@ -480,7 +483,10 @@ async fn a_second_process_does_not_reap_a_run_that_is_waiting_on_a_person() {
 
     // Once the terminal is gone, however it went, its leftovers are reaped.
     drop(terminal);
-    let task = desktop.create_task(agent.id, "interrupted").await.unwrap();
+    let task = desktop
+        .create_task(agent.id, "interrupted", &[], None)
+        .await
+        .unwrap();
     let mut left = TaskRun::new(task.id, 1);
     left.state = TaskState::WaitingForApproval;
     desktop.database().runs().insert(&left).await.unwrap();

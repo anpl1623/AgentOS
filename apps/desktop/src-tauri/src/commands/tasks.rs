@@ -3,6 +3,8 @@
 use std::sync::Arc;
 
 use agentos_core::ids::{AgentId, TaskId, TaskRunId};
+use agentos_core::task::Task;
+use agentos_runtime::Runtime;
 use agentos_tools::ApprovalGate;
 use tauri::{AppHandle, State};
 use tokio_util::sync::CancellationToken;
@@ -45,21 +47,48 @@ pub async fn start_task(
     agent_id: String,
     objective: String,
 ) -> Answer<StartedTask> {
-    let id: AgentId = parse_id("agent", &agent_id)?;
+    let approvals = state.approvals.clone();
+    start_new(&state.runtime, &agent_id, &objective, |objective| {
+        desktop_gate(app, approvals, objective)
+    })
+    .await
+}
+
+/// Create a task and start it, behind the gate `gate` builds for its
+/// objective.
+pub(crate) async fn start_new(
+    runtime: &Runtime,
+    agent_id: &str,
+    objective: &str,
+    gate: impl FnOnce(String) -> Arc<dyn ApprovalGate>,
+) -> Answer<StartedTask> {
+    let id: AgentId = parse_id("agent", agent_id)?;
     if objective.trim().is_empty() {
         return Err(DesktopError::Rejected(
             "an objective is required".to_owned(),
         ));
     }
 
-    let runtime = &state.runtime;
-    let task = runtime.create_task(id, &objective).await?;
+    let task = runtime.create_task(id, objective, &[], None).await?;
+    // The new task is pending, so a scheduler's tick can find it before this
+    // claim lands; it then runs there, and the operator is told so.
+    begin(runtime, &task, gate(task.objective.clone())).await
+}
 
-    let gate = desktop_gate(app, state.approvals.clone(), objective);
+/// Start a run of `task`, as the caller read it.
+///
+/// The one place a desktop command starts a run, so that a claim another
+/// client won first reads as that, and not as a failure, from every command
+/// that can lose one.
+pub(crate) async fn begin(
+    runtime: &Runtime,
+    task: &Task,
+    gate: Arc<dyn ApprovalGate>,
+) -> Answer<StartedTask> {
     let (run_id, _handle) = runtime
-        .start_task(&task, gate, CancellationToken::new())
-        .await?;
-
+        .start_task(task, gate, CancellationToken::new())
+        .await
+        .map_err(super::runs::started_elsewhere)?;
     Ok(StartedTask {
         task_id: task.id.to_string(),
         run_id: run_id.to_string(),

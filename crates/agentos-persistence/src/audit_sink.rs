@@ -136,8 +136,22 @@ impl SqliteAuditSink {
 
 #[async_trait]
 impl AuditSink for SqliteAuditSink {
+    /// Append a record, refusing it as a conflict if its position is taken.
+    ///
+    /// The desktop application and a terminal can each hold a log over this
+    /// database, and each caches the tip it last wrote. Positions are dense, so
+    /// a log whose tip is stale always offers a position another process has
+    /// already filled, and the unique index on `sequence` refuses it in the
+    /// same statement that would have written it: there is no moment between
+    /// the check and the write for a third writer to use. The log then reseals
+    /// the record after the one that won.
+    ///
+    /// The sink checks nothing else about the record. Whether it links to its
+    /// predecessor is the verifier's question, and a store that quietly refused
+    /// unlinked records would hide exactly the tampering the verifier exists to
+    /// report.
     async fn append(&self, record: &AuditRecord) -> Result<(), AuditError> {
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO audit_events (id, sequence, at, kind, agent_id, task_id, run_id,
                                        payload, prev_hash, hash)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -153,9 +167,21 @@ impl AuditSink for SqliteAuditSink {
         .bind(&record.prev_hash)
         .bind(&record.hash)
         .execute(&self.pool)
-        .await
-        .map_err(|error| AuditError::Sink(error.to_string()))?;
-        Ok(())
+        .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            // The event id is unique too, but a log never offers one event
+            // twice; only the position can be taken by somebody else.
+            Err(sqlx::Error::Database(error))
+                if error.is_unique_violation() && error.message().contains("sequence") =>
+            {
+                Err(AuditError::Conflict {
+                    sequence: record.sequence,
+                })
+            }
+            Err(error) => Err(AuditError::Sink(error.to_string())),
+        }
     }
 
     async fn tip(&self) -> Result<(u64, String), AuditError> {
@@ -374,7 +400,60 @@ mod tests {
         sink.append(&record).await.unwrap();
 
         let clash = AuditRecord::seal(&started("b"), 1, GENESIS_HASH).unwrap();
-        assert!(sink.append(&clash).await.is_err());
+        assert!(matches!(
+            sink.append(&clash).await,
+            Err(AuditError::Conflict { sequence: 1 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn two_logs_over_one_database_keep_one_chain() {
+        // Two processes, each with its own log and its own cached tip. Two
+        // pools over one file, so their writes really do race.
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("agentos.db");
+        let desktop = Database::open(&path).await.unwrap();
+        let terminal = Database::open(&path).await.unwrap();
+        let desktop_log = Arc::new(
+            AuditLog::open(Arc::new(desktop.audit_sink()))
+                .await
+                .unwrap(),
+        );
+        let terminal_log = Arc::new(
+            AuditLog::open(Arc::new(terminal.audit_sink()))
+                .await
+                .unwrap(),
+        );
+
+        // Interleaved: each log's cached tip is stale on every write.
+        for i in 0..5 {
+            desktop_log
+                .record(started(&format!("desktop {i}")))
+                .await
+                .unwrap();
+            terminal_log
+                .record(started(&format!("terminal {i}")))
+                .await
+                .unwrap();
+        }
+
+        // And at once.
+        let mut writers = Vec::new();
+        for i in 0..10 {
+            for log in [desktop_log.clone(), terminal_log.clone()] {
+                writers.push(tokio::spawn(async move {
+                    log.record(started(&format!("concurrent {i}"))).await
+                }));
+            }
+        }
+        for writer in writers {
+            writer.await.unwrap().unwrap();
+        }
+
+        let records = desktop.audit_sink().all().await.unwrap();
+        assert_eq!(records.len(), 30, "a record was lost to a collision");
+        let verification = verify_chain(&records);
+        assert!(verification.is_intact(), "{:?}", verification.breaks);
     }
 
     #[tokio::test]

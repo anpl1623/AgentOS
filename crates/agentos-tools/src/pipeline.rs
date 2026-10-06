@@ -608,7 +608,11 @@ impl ToolPipeline {
             .for_run(context.run_id);
         if let Err(error) = self.audit.record(event).await {
             // Losing an audit record is serious but must not abort the run: the
-            // alternative is that a failing disk silently stops all work.
+            // alternative is that a failing disk silently stops all work. Nor
+            // is it only this log line: the log has already counted the loss
+            // in `agentos_audit::unrecorded`, which the desktop reports beside
+            // the chain's health, so a chain that verifies is not mistaken for
+            // a complete one.
             tracing::error!(%error, "failed to record audit event");
         }
     }
@@ -950,6 +954,61 @@ mod tests {
             "terminal.exec",
             &["filesystem.read", "terminal.exec"]
         ));
+    }
+
+    /// A sink on a disk that has stopped taking writes.
+    #[derive(Debug)]
+    struct FullDisk;
+
+    #[async_trait::async_trait]
+    impl agentos_audit::AuditSink for FullDisk {
+        async fn append(
+            &self,
+            _record: &agentos_audit::AuditRecord,
+        ) -> Result<(), agentos_audit::AuditError> {
+            Err(agentos_audit::AuditError::Sink("disk full".into()))
+        }
+
+        async fn tip(&self) -> Result<(u64, String), agentos_audit::AuditError> {
+            Ok((0, agentos_audit::GENESIS_HASH.to_owned()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_record_the_disk_refuses_is_counted_and_the_call_still_answers() {
+        let audit = Arc::new(AuditLog::open(Arc::new(FullDisk)).await.unwrap());
+        let pipeline = ToolPipeline::new(
+            Arc::new(ToolRegistry::new()),
+            Arc::new(agentos_permissions::DenyAllEngine),
+            Arc::new(crate::DenyAllGate),
+            audit,
+        );
+        let context = ToolContext::new(
+            agentos_core::ids::AgentId::new(),
+            agentos_core::ids::TaskId::new(),
+            agentos_core::ids::TaskRunId::new(),
+            std::env::temp_dir(),
+        );
+        let before = agentos_audit::unrecorded();
+
+        // An unknown tool is refused, and the refusal is a record the pipeline
+        // tries and fails to write.
+        let report = pipeline
+            .execute(
+                &ToolCall::new("1", "nowhere.nothing", serde_json::json!({})),
+                &context,
+                &TaintTracker::new(),
+                "agent",
+                &[],
+                &CancellationToken::new(),
+            )
+            .await;
+
+        assert!(
+            !report.outcome.executed(),
+            "the call was answered, as refused"
+        );
+        assert!(agentos_audit::unrecorded() > before, "the loss was counted");
     }
 
     #[test]

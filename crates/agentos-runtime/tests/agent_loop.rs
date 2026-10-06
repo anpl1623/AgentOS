@@ -268,7 +268,7 @@ async fn a_run_reports_its_identity_before_it_finishes() {
     runtime.set_provider_factory(Arc::new(FixedProviderFactory::new(provider)));
 
     let task = runtime
-        .create_task(harness.agent.id, "Read the input.")
+        .create_task(harness.agent.id, "Read the input.", &[], None)
         .await
         .unwrap();
     let (run_id, handle) = runtime
@@ -311,7 +311,7 @@ async fn a_backgrounded_run_can_be_cancelled_by_identity() {
     runtime.set_provider_factory(Arc::new(FixedProviderFactory::new(provider)));
 
     let task = runtime
-        .create_task(harness.agent.id, "Loop forever.")
+        .create_task(harness.agent.id, "Loop forever.", &[], None)
         .await
         .unwrap();
     let (run_id, handle) = runtime
@@ -854,7 +854,7 @@ async fn abandoned_runs_are_reaped_at_startup() {
     let harness = Harness::new(OPEN_POLICY).await;
     let task = harness
         .runtime
-        .create_task(harness.agent.id, "interrupted")
+        .create_task(harness.agent.id, "interrupted", &[], None)
         .await
         .unwrap();
 
@@ -1030,7 +1030,7 @@ async fn a_retry_of_a_tainted_run_starts_tainted() {
 
     let task = harness
         .runtime
-        .create_task(harness.agent.id, "Summarise the page.")
+        .create_task(harness.agent.id, "Summarise the page.", &[], None)
         .await
         .unwrap();
 
@@ -1039,8 +1039,11 @@ async fn a_retry_of_a_tainted_run_starts_tainted() {
         runtime.set_provider_factory(Arc::new(FixedProviderFactory::new(Arc::new(
             MockProvider::new(script),
         ))));
-        let task = task.clone();
+        let id = task.id;
         async move {
+            // Read as it now is, as a retry does: the claim compares with
+            // what was read, and a stale read of the task as pending loses.
+            let task = runtime.task(id).await.unwrap();
             runtime
                 .run_task(&task, gate, CancellationToken::new())
                 .await
@@ -1067,6 +1070,17 @@ async fn a_retry_of_a_tainted_run_starts_tainted() {
         0,
         "a read alone needs no approval"
     );
+
+    // Only a task whose attempt failed or was cancelled is attempted again;
+    // the claim refuses to start a succeeded one twice. The script above ends
+    // well, so the failure is recorded by hand.
+    harness
+        .runtime
+        .database()
+        .tasks()
+        .set_status(task.id, agentos_core::task::TaskStatus::Failed)
+        .await
+        .unwrap();
 
     // The retry calls nothing that reads; only inheritance can taint it.
     let second_gate = Arc::new(RecordingGate::approving());

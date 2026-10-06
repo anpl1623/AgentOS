@@ -66,6 +66,44 @@ it is technically a breaking change.
   terminal escape sequences included, and cut to 2,000 characters before it reaches the approvals
   table or the audit chain, from any client. The desktop refuses a longer note rather than cutting
   it.
+- **Standing instructions are audited.** Creating, pausing, resuming and deleting a schedule,
+  queuing a task or making one wait for another, recording, revising or forgetting a memory, and
+  starting or stopping a scheduler are `operator.*` records on the security record, from the CLI and
+  the desktop alike. A memory a person records is always recorded as theirs: no client can name
+  another source for it, and revising an untrusted memory leaves it untrusted.
+- **One task, one run, however many clients.** A run claims its task with a compare-and-set against
+  the status the client read, before it writes anything, so two schedulers, or a scheduler and a
+  person pressing retry, can no longer start one task twice, and a schedule's occurrence fires once.
+  A scheduler's read made before the operator cancelled a task, or before the task was told to wait
+  for another, starts nothing. Running a task that succeeded again is refused by the runtime, not
+  only by the desktop. A new task is written in one transaction with what it waits for, so no
+  scheduler can start it before it has been told to wait, and a claim is written in one transaction
+  with its run, so a crash between the two can no longer leave a task running that nothing will
+  ever start or reap.
+- **One scheduler per installation.** A running scheduler holds `scheduler.lock` in the data
+  directory. `agentos schedule run`, `--once` included, refuses to start while the desktop's
+  scheduler or another one holds it. Both take the lease and record the start before the first tick,
+  so nothing a scheduler starts precedes the record that it was running.
+- **The desktop's scheduler starts again on launch if it was left on, and asks no one.** It runs
+  behind the gate that refuses every approval, with no setting to change that; whatever would have
+  asked a person is refused with a note the model can plan around. A start on launch is recorded as
+  one. Saving the same pacing again leaves a running scheduler alone, and new pacing that would
+  restart it while its runs are in progress is refused rather than allowed to stop them.
+- **Closing the desktop says what it will stop.** Closing the window, or quitting with Cmd+Q, while
+  runs are live, the scheduler is on or approvals are waiting asks first. However the application
+  exits, live runs are then cancelled and recorded as cancelled rather than left for the next launch
+  to fail. A window whose interface does not acknowledge the question within three seconds closes
+  anyway, so a crashed interface cannot leave a window that will not close.
+- **An approval card shows what will run.** Direction controls and invisible characters, including
+  every default-ignorable code point a webview draws at zero width, are drawn as `⟨U+…⟩` and counted
+  in the arguments and in the card's summary, reason, affected resources and taint sources alike;
+  Copy JSON writes them as `\u` escapes. A string argument is drawn in quotes, so `"false"` cannot
+  pass for `false`. A pending request is never folded, and a value whose lines or blank stretches
+  push its tail out of sight says so above the block.
+- **Two processes writing the audit log no longer lose records.** The writer that loses a position
+  in the chain re-reads the tip and reseals after the winner. A record the process still fails to
+  write is counted, and the desktop's chain health reports the count rather than calling an
+  incomplete log intact.
 
 ### Added
 
@@ -80,6 +118,22 @@ it is technically a breaking change.
   first, a screen returned to opens where it was left, and a failed run raises an alert that opens
   it. The dock badge counts waiting approvals, and a new request asks for attention when the window
   is behind another.
+- Desktop: the scheduler runs inside the application. Turning it on is remembered for the next
+  launch, and each start and stop is recorded, with whether the start came from the launch.
+- Desktop: approval cards are ordered most dangerous first. Approve takes two presses, as Deny does,
+  either can carry a note, and no key answers a card. A risky or tainted request offers "Deny and
+  stop the run". A new request is announced in one line to a screen reader, not read out card and
+  all.
+- Desktop: the dashboard opens with what needs you, what failed recently and what was refused, each
+  row opening its run; a Tools panel shows refusals against runs over 7 or 30 days; a setup block
+  says what is missing before anything can work.
+- Desktop: Activity's Security only asks the log itself, the feed filters by text and kind, and a
+  stored event opens its audit record with both hashes; closing it returns to its row. Copy visible
+  writes JSON Lines.
+- The desktop's command surface gains schedules and cadence checks, memories, queued tasks and the
+  task graph, and a report of how far each granted tool's policy reaches, computed by the permission
+  engine. The report errs towards saying a tool can do more than it can, never less, and its
+  documentation lists where. Their screens follow.
 
 ### Changed
 
@@ -97,6 +151,15 @@ it is technically a breaking change.
   not hidden behind newer tasks that failed earlier.
 - The minimum supported Rust version is 1.94, which the database driver already required; the
   stated 1.85 was out of date.
+- `agentos task create --at` now combines with `--depends-on`; the task waits for both.
+- A queued task whose agent is disabled, or whose provider cannot be built, is failed once rather
+  than tried again on every tick. The dashboard says so of a failed task that never ran, rather
+  than blaming a dependency.
+- The task graph names the same failed dependency the scheduler names when it abandons a task that
+  waits on two.
+- `Runtime::create_task` takes dependencies and a time, and replaces `create_task_after` and
+  `create_task_at`; `add_task_dependency` and `set_schedule_paused` replace `add_dependency`,
+  `pause_schedule` and `resume_schedule`. Each records its change.
 
 ## [0.2.0]
 

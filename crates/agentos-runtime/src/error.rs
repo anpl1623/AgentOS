@@ -84,6 +84,31 @@ pub enum RuntimeError {
         source: std::io::Error,
     },
 
+    /// Another scheduler holds this data directory's scheduler lease.
+    ///
+    /// Two schedulers on one installation would each fire every due schedule
+    /// and start every runnable task. The claims underneath refuse the second
+    /// attempt at each, but the operator asked for one scheduler, and finding
+    /// out there were two from a log of lost claims is finding out too late.
+    #[error(
+        "the scheduler is already running in another process on this installation; \
+         stop that one first, or leave it running"
+    )]
+    SchedulerAlreadyRunning,
+
+    /// A task was no longer as the caller read it when the caller tried to
+    /// start it.
+    ///
+    /// Most often another client claimed it first and is running it. It may
+    /// also have ended, been cancelled, or been given something to wait for
+    /// since it was read. None of these is a failure of the task: a caller
+    /// that loses the claim starts nothing and must not mark the task failed.
+    #[error(
+        "task {0} was not started: since it was read it has been started elsewhere, has ended, \
+         or now waits for something"
+    )]
+    TaskAlreadyClaimed(agentos_core::ids::TaskId),
+
     /// The home directory could not be determined.
     #[error("cannot determine the home directory; set AGENTOS_HOME")]
     NoHomeDirectory,

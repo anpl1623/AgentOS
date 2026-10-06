@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Timestamp;
-use crate::ids::{AgentId, ApprovalId, EventId, TaskId, TaskRunId, ToolExecutionId};
+use crate::ids::{AgentId, ApprovalId, EventId, MemoryId, TaskId, TaskRunId, ToolExecutionId};
 use crate::permission::{Capability, Effect};
 use crate::risk::RiskLevel;
 use crate::task::{TaskState, TaskTrigger};
@@ -379,6 +379,148 @@ pub enum AgentEvent {
         /// Provider identifier.
         provider: String,
     },
+
+    /// An operator wrote a memory for an agent.
+    ///
+    /// The content is carried whole, as a policy's document is. Memories are
+    /// retrieved into the conversation before planning, so what one said while a
+    /// run planned is part of the explanation of that run, and the row may since
+    /// have been revised or forgotten.
+    #[serde(rename = "operator.memory.recorded")]
+    MemoryRemembered {
+        /// The agent's name, so the record reads after the agent is deleted.
+        agent: String,
+        /// The memory.
+        memory_id: MemoryId,
+        /// Kind of memory.
+        kind: String,
+        /// What it says.
+        content: String,
+    },
+
+    /// An operator rewrote a memory.
+    #[serde(rename = "operator.memory.revised")]
+    MemoryRevised {
+        /// The agent's name.
+        agent: String,
+        /// The memory.
+        memory_id: MemoryId,
+        /// What it says now.
+        content: String,
+    },
+
+    /// An operator deleted a memory.
+    ///
+    /// Carries what was forgotten: the row is gone, and a record that says only
+    /// that something was removed cannot explain a run that read it earlier.
+    #[serde(rename = "operator.memory.forgotten")]
+    MemoryForgotten {
+        /// The agent's name.
+        agent: String,
+        /// The memory.
+        memory_id: MemoryId,
+        /// Kind of memory.
+        kind: String,
+        /// What it said.
+        content: String,
+    },
+
+    /// An operator created a schedule.
+    ///
+    /// A schedule is standing permission for work to start with nobody present,
+    /// so its objective and cadence are kept as they were when it was created.
+    #[serde(rename = "operator.schedule.created")]
+    ScheduleCreated {
+        /// The schedule.
+        schedule_id: crate::ids::ScheduleId,
+        /// Its name.
+        name: String,
+        /// The objective each firing gets.
+        objective: String,
+        /// How often it fires.
+        cadence: crate::schedule::Cadence,
+        /// Its first occurrence.
+        next_run_at: Option<Timestamp>,
+    },
+
+    /// An operator stopped a schedule firing.
+    #[serde(rename = "operator.schedule.paused")]
+    SchedulePaused {
+        /// The schedule.
+        schedule_id: crate::ids::ScheduleId,
+        /// Its name.
+        name: String,
+    },
+
+    /// An operator started a paused schedule firing again.
+    #[serde(rename = "operator.schedule.resumed")]
+    ScheduleResumed {
+        /// The schedule.
+        schedule_id: crate::ids::ScheduleId,
+        /// Its name.
+        name: String,
+        /// When it fires next, computed forward from the moment of resuming;
+        /// `None` for a one-shot whose moment passed while it was paused.
+        next_run_at: Option<Timestamp>,
+    },
+
+    /// An operator deleted a schedule. The tasks it created are kept.
+    #[serde(rename = "operator.schedule.deleted")]
+    ScheduleDeleted {
+        /// The schedule.
+        schedule_id: crate::ids::ScheduleId,
+        /// Its name, which is all a reader has once the row is gone.
+        name: String,
+    },
+
+    /// An operator created a task.
+    ///
+    /// Whether it runs at once or waits, the objective is trusted control-plane
+    /// text, and the record is what ties it to the person who typed it.
+    #[serde(rename = "operator.task.created")]
+    TaskCreated {
+        /// What the agent is asked to do.
+        objective: String,
+        /// The tasks it waits for.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        depends_on: Vec<TaskId>,
+        /// The earliest moment it may start.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scheduled_for: Option<Timestamp>,
+    },
+
+    /// An operator made a task wait for another.
+    #[serde(rename = "operator.task.dependency_added")]
+    TaskDependencyAdded {
+        /// The task that now waits.
+        task_id: TaskId,
+        /// The task it waits for.
+        depends_on: TaskId,
+    },
+
+    /// A scheduler began acting on schedules and queued tasks.
+    ///
+    /// From here until the matching stop, work starts with nobody present.
+    /// The options are recorded because they bound how much of it.
+    #[serde(rename = "operator.scheduler.started")]
+    SchedulerStarted {
+        /// Seconds between ticks.
+        tick_seconds: u64,
+        /// How many runs it may have in flight at once.
+        max_concurrent_runs: u32,
+        /// Started by a preference saved earlier, as the application opened,
+        /// rather than by somebody asking for it then.
+        on_launch: bool,
+    },
+
+    /// A scheduler stopped.
+    #[serde(rename = "operator.scheduler.stopped")]
+    SchedulerStopped {
+        /// Seconds between ticks.
+        tick_seconds: u64,
+        /// How many runs it could have in flight at once.
+        max_concurrent_runs: u32,
+    },
 }
 
 impl AgentEvent {
@@ -420,6 +562,17 @@ impl AgentEvent {
             Self::AgentEnabledChanged { .. } => "operator.agent.enabled_changed",
             Self::ProviderKeySet { .. } => "operator.provider_key.set",
             Self::ProviderKeyRemoved { .. } => "operator.provider_key.removed",
+            Self::MemoryRemembered { .. } => "operator.memory.recorded",
+            Self::MemoryRevised { .. } => "operator.memory.revised",
+            Self::MemoryForgotten { .. } => "operator.memory.forgotten",
+            Self::ScheduleCreated { .. } => "operator.schedule.created",
+            Self::SchedulePaused { .. } => "operator.schedule.paused",
+            Self::ScheduleResumed { .. } => "operator.schedule.resumed",
+            Self::ScheduleDeleted { .. } => "operator.schedule.deleted",
+            Self::TaskCreated { .. } => "operator.task.created",
+            Self::TaskDependencyAdded { .. } => "operator.task.dependency_added",
+            Self::SchedulerStarted { .. } => "operator.scheduler.started",
+            Self::SchedulerStopped { .. } => "operator.scheduler.stopped",
         }
     }
 
@@ -451,6 +604,19 @@ impl AgentEvent {
             | Self::AgentEnabledChanged { .. }
             | Self::ProviderKeySet { .. }
             | Self::ProviderKeyRemoved { .. } => true,
+            // What an agent is told before it plans, and what starts work with
+            // nobody present, shape what it does as much as its grants do.
+            Self::MemoryRemembered { .. }
+            | Self::MemoryRevised { .. }
+            | Self::MemoryForgotten { .. }
+            | Self::ScheduleCreated { .. }
+            | Self::SchedulePaused { .. }
+            | Self::ScheduleResumed { .. }
+            | Self::ScheduleDeleted { .. }
+            | Self::TaskCreated { .. }
+            | Self::TaskDependencyAdded { .. }
+            | Self::SchedulerStarted { .. }
+            | Self::SchedulerStopped { .. } => true,
             Self::TaskStarted { .. }
             | Self::TaskCompleted { .. }
             | Self::TaskFailed { .. }
@@ -498,10 +664,63 @@ impl AgentEvent {
             }
             Self::ProviderKeySet { provider } => format!("{provider} key stored"),
             Self::ProviderKeyRemoved { provider } => format!("{provider} key removed"),
+            Self::MemoryRemembered {
+                agent,
+                kind,
+                content,
+                ..
+            } => format!("{agent}: {kind} remembered: {}", first_line(content)),
+            Self::MemoryRevised { agent, content, .. } => {
+                format!("{agent}: memory revised: {}", first_line(content))
+            }
+            Self::MemoryForgotten {
+                agent,
+                kind,
+                content,
+                ..
+            } => format!("{agent}: {kind} forgotten: {}", first_line(content)),
+            Self::ScheduleCreated { name, cadence, .. } => {
+                format!("schedule {name} created, {}", cadence.describe())
+            }
+            Self::SchedulePaused { name, .. } => format!("schedule {name} paused"),
+            Self::ScheduleResumed { name, .. } => format!("schedule {name} resumed"),
+            Self::ScheduleDeleted { name, .. } => format!("schedule {name} deleted"),
+            Self::TaskCreated {
+                objective,
+                depends_on,
+                scheduled_for,
+            } => {
+                let mut line = format!("task queued: {}", first_line(objective));
+                if !depends_on.is_empty() {
+                    line.push_str(&format!(", after {} task(s)", depends_on.len()));
+                }
+                if let Some(when) = scheduled_for {
+                    line.push_str(&format!(", not before {}", crate::format_timestamp(when)));
+                }
+                line
+            }
+            Self::TaskDependencyAdded { .. } => "task made to wait for another".to_owned(),
+            Self::SchedulerStarted {
+                tick_seconds,
+                max_concurrent_runs,
+                on_launch,
+            } => format!(
+                "scheduler started{}, every {tick_seconds}s, at most {max_concurrent_runs} run(s) at once",
+                if *on_launch { " on launch" } else { "" }
+            ),
+            Self::SchedulerStopped { .. } => "scheduler stopped".to_owned(),
             _ => return None,
         };
         Some(line)
     }
+}
+
+/// The first line of operator-typed text, for a one-line summary.
+///
+/// The record keeps the whole text; a feed row that wrapped a pasted paragraph
+/// would push everything after it off the screen.
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or("").trim()
 }
 
 /// [`AgentEvent::operator_summary`] for a stored payload.
@@ -556,6 +775,17 @@ pub const SECURITY_KINDS: &[&str] = &[
     "operator.agent.enabled_changed",
     "operator.provider_key.set",
     "operator.provider_key.removed",
+    "operator.memory.recorded",
+    "operator.memory.revised",
+    "operator.memory.forgotten",
+    "operator.schedule.created",
+    "operator.schedule.paused",
+    "operator.schedule.resumed",
+    "operator.schedule.deleted",
+    "operator.task.created",
+    "operator.task.dependency_added",
+    "operator.scheduler.started",
+    "operator.scheduler.stopped",
 ];
 
 /// An event with its context.
@@ -625,7 +855,7 @@ mod tests {
     /// How many variants [`AgentEvent`] has.
     ///
     /// Kept beside [`variant_index`] because the two change together.
-    const VARIANT_COUNT: usize = 31;
+    const VARIANT_COUNT: usize = 42;
 
     /// A dense index per variant, in declaration order.
     ///
@@ -666,6 +896,17 @@ mod tests {
             AgentEvent::AgentEnabledChanged { .. } => 28,
             AgentEvent::ProviderKeySet { .. } => 29,
             AgentEvent::ProviderKeyRemoved { .. } => 30,
+            AgentEvent::MemoryRemembered { .. } => 31,
+            AgentEvent::MemoryRevised { .. } => 32,
+            AgentEvent::MemoryForgotten { .. } => 33,
+            AgentEvent::ScheduleCreated { .. } => 34,
+            AgentEvent::SchedulePaused { .. } => 35,
+            AgentEvent::ScheduleResumed { .. } => 36,
+            AgentEvent::ScheduleDeleted { .. } => 37,
+            AgentEvent::TaskCreated { .. } => 38,
+            AgentEvent::TaskDependencyAdded { .. } => 39,
+            AgentEvent::SchedulerStarted { .. } => 40,
+            AgentEvent::SchedulerStopped { .. } => 41,
         }
     }
 
@@ -820,6 +1061,61 @@ mod tests {
             },
             AgentEvent::ProviderKeyRemoved {
                 provider: "anthropic".into(),
+            },
+            AgentEvent::MemoryRemembered {
+                agent: "a".into(),
+                memory_id: MemoryId::new(),
+                kind: "preference".into(),
+                content: "Reply in British English.".into(),
+            },
+            AgentEvent::MemoryRevised {
+                agent: "a".into(),
+                memory_id: MemoryId::new(),
+                content: "Reply in plain English.".into(),
+            },
+            AgentEvent::MemoryForgotten {
+                agent: "a".into(),
+                memory_id: MemoryId::new(),
+                kind: "fact".into(),
+                content: "The office is in Leeds.".into(),
+            },
+            AgentEvent::ScheduleCreated {
+                schedule_id: ScheduleId::new(),
+                name: "weekly".into(),
+                objective: "o".into(),
+                cadence: crate::schedule::Cadence::Every { seconds: 3600 },
+                next_run_at: Some(crate::now()),
+            },
+            AgentEvent::SchedulePaused {
+                schedule_id: ScheduleId::new(),
+                name: "weekly".into(),
+            },
+            AgentEvent::ScheduleResumed {
+                schedule_id: ScheduleId::new(),
+                name: "weekly".into(),
+                next_run_at: None,
+            },
+            AgentEvent::ScheduleDeleted {
+                schedule_id: ScheduleId::new(),
+                name: "weekly".into(),
+            },
+            AgentEvent::TaskCreated {
+                objective: "o".into(),
+                depends_on: vec![TaskId::new()],
+                scheduled_for: None,
+            },
+            AgentEvent::TaskDependencyAdded {
+                task_id: TaskId::new(),
+                depends_on: TaskId::new(),
+            },
+            AgentEvent::SchedulerStarted {
+                tick_seconds: 30,
+                max_concurrent_runs: 1,
+                on_launch: true,
+            },
+            AgentEvent::SchedulerStopped {
+                tick_seconds: 30,
+                max_concurrent_runs: 1,
             },
         ]
     }
@@ -1053,9 +1349,20 @@ mod tests {
                 "approval.denied",
                 "operator.agent.created",
                 "operator.agent.enabled_changed",
+                "operator.memory.forgotten",
+                "operator.memory.recorded",
+                "operator.memory.revised",
                 "operator.policy.changed",
                 "operator.provider_key.removed",
                 "operator.provider_key.set",
+                "operator.schedule.created",
+                "operator.schedule.deleted",
+                "operator.schedule.paused",
+                "operator.schedule.resumed",
+                "operator.scheduler.started",
+                "operator.scheduler.stopped",
+                "operator.task.created",
+                "operator.task.dependency_added",
                 "permission.denied",
                 "permission.escalated_by_taint",
                 "tool.arguments.rejected",

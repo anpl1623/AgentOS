@@ -306,3 +306,98 @@ fn a_valid_policy_can_be_installed_and_is_summarised() {
     let shown = run_ok(home, &["policy", "show", "demo"]);
     assert!(shown.contains("terminal.exec => allow"), "{shown}");
 }
+
+#[test]
+fn standing_instructions_and_the_scheduler_are_on_the_security_record() {
+    let guard = TempDir::new().unwrap();
+    let home = guard.path();
+    run_ok(
+        home,
+        &[
+            "agent",
+            "create",
+            "--name",
+            "demo",
+            "--provider",
+            "mock",
+            "--model",
+            "scripted",
+        ],
+    );
+
+    run_ok(
+        home,
+        &[
+            "schedule",
+            "create",
+            "hourly",
+            "Check in.",
+            "--every",
+            "3600",
+            "--at",
+            "2020-01-01T00:00:00Z",
+        ],
+    );
+    run_ok(home, &["schedule", "pause", "hourly"]);
+    let resumed = run_ok(home, &["schedule", "resume", "hourly"]);
+    assert!(resumed.contains("Next firing"), "{resumed}");
+    // Resumed forward from now, so it is not due; put it back in the past
+    // with a one-shot that is.
+    run_ok(
+        home,
+        &[
+            "schedule",
+            "create",
+            "catch-up",
+            "Check in.",
+            "--once",
+            "--at",
+            "2020-01-01T00:00:00Z",
+        ],
+    );
+    run_ok(
+        home,
+        &["task", "create", "Later.", "--at", "2999-01-01T00:00:00Z"],
+    );
+
+    let pass = run_ok(home, &["schedule", "run", "--once"]);
+    assert!(pass.contains("1 fired, 1 started"), "{pass}");
+    run_ok(home, &["schedule", "delete", "hourly"]);
+
+    let security = run_ok(home, &["audit", "tail", "--security", "--limit", "100"]);
+    for kind in [
+        "operator.schedule.created",
+        "operator.schedule.paused",
+        "operator.schedule.resumed",
+        "operator.schedule.deleted",
+        "operator.task.created",
+        "operator.scheduler.started",
+        "operator.scheduler.stopped",
+    ] {
+        assert!(security.contains(kind), "{kind} missing:\n{security}");
+    }
+    assert!(run_ok(home, &["audit", "verify"]).contains("intact"));
+
+    // Another process holds the lease: a second scheduler is refused before
+    // it fires, starts or records anything.
+    let lease = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(home.join("scheduler.lock"))
+        .unwrap();
+    lease.lock().unwrap();
+    let before = run_ok(home, &["audit", "tail", "--limit", "1000"])
+        .lines()
+        .count();
+    let refused = agentos(home, &["schedule", "run", "--once"]);
+    assert!(!refused.status.success());
+    let message = String::from_utf8_lossy(&refused.stderr);
+    assert!(message.contains("already running"), "{message}");
+    assert_eq!(
+        run_ok(home, &["audit", "tail", "--limit", "1000"])
+            .lines()
+            .count(),
+        before
+    );
+}

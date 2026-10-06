@@ -16,10 +16,12 @@
 //! * [`policy`] holds the rules and the specificity ordering that resolves
 //!   conflicts between them.
 //! * [`engine`] evaluates a request against a policy and produces a decision.
+//! * [`grant`] reads a policy for what it grants, by the same rules.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod engine;
 pub mod error;
+pub mod grant;
 pub mod origin;
 pub mod path;
 pub mod pattern;
@@ -28,6 +30,7 @@ pub mod yaml;
 
 pub use engine::{DenyAllEngine, PermissionEngine, PolicyEngine};
 pub use error::{OriginError, PathError, PatternError, PolicyError};
+pub use grant::Reach;
 pub use origin::normalise_origin;
 pub use pattern::{GlobKind, NamePattern, ResourcePattern};
 pub use policy::{

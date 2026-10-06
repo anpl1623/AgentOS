@@ -1,9 +1,10 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 
+import type { CloseGuard } from "../bindings/CloseGuard";
 import type { EventView } from "../bindings/EventView";
 import { AlertHost } from "../components/Alerts";
 import { CommandPalette } from "../components/CommandPalette";
-import { LeaveConfirmerHost } from "../components/ConfirmDialog";
+import { ConfirmDialog, LeaveConfirmerHost } from "../components/ConfirmDialog";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { ShortcutSheet } from "../components/Shortcuts";
 import { Activity } from "../routes/Activity";
@@ -17,7 +18,7 @@ import { Tasks } from "../routes/Tasks";
 import { dismiss, raise } from "../sdk/alerts";
 import { usePendingApprovals } from "../sdk/approvals";
 import { useScrollMemory } from "../sdk/cache";
-import { events } from "../sdk/client";
+import { api, describeError, events } from "../sdk/client";
 import { startEventStream, useEvents } from "../sdk/eventStream";
 import { useLive } from "../sdk/live";
 import { usingFixtures } from "../sdk/transport";
@@ -170,6 +171,7 @@ export function Shell() {
       ) : null}
       {overlay === "shortcuts" ? <ShortcutSheet apple={apple} onClose={closeOverlay} /> : null}
       <LeaveConfirmerHost />
+      <CloseGuardHost />
     </div>
   );
 }
@@ -252,6 +254,72 @@ function RunFailureAlerts({ route }: { route: Route }) {
     if (alert !== null) raise(alert);
   });
   return null;
+}
+
+/**
+ * Asks before the window closes on live work.
+ *
+ * The runtime holds a close of the main window while runs are live, the
+ * scheduler is on or approvals are waiting, and sends what it found. Closing
+ * stops all of it, and none of that is visible from a close button, so the
+ * question names each thing it will stop. Keeping the window open is the
+ * default answer; only "Close anyway" asks the runtime to close for real.
+ */
+function CloseGuardHost() {
+  const [guard, setGuard] = useState<CloseGuard | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  useLive<CloseGuard>(events.closeRequested, (next) => {
+    // Acknowledged before anything is drawn: the runtime closes a window
+    // whose interface does not answer, and this is the answer.
+    api.acknowledgeClose().catch(() => undefined);
+    setFailure(null);
+    setGuard(next);
+  });
+
+  if (guard === null) return null;
+  return (
+    <ConfirmDialog
+      title="Close AgentOS?"
+      message={closeMessage(guard, failure)}
+      confirmLabel="Close anyway"
+      cancelLabel="Keep open"
+      onAnswer={(close) => {
+        if (!close) {
+          setGuard(null);
+          return;
+        }
+        api.confirmClose().catch((error: unknown) => setFailure(describeError(error)));
+      }}
+    />
+  );
+}
+
+/** What closing will stop, one paragraph per thing that is live. */
+function closeMessage(guard: CloseGuard, failure: string | null): string {
+  const runs = (n: number) => (n === 1 ? "1 run" : `${n} runs`);
+  const paragraphs: string[] = [];
+  if (guard.live_runs > 0) {
+    paragraphs.push(
+      `${runs(guard.live_runs)} will be stopped and recorded as cancelled. A run that ` +
+        "does not stop in time is recorded as failed the next time AgentOS opens.",
+    );
+  }
+  if (guard.pending_approvals > 0) {
+    paragraphs.push(
+      guard.pending_approvals === 1
+        ? "1 approval is waiting on you. It can no longer be answered once its run stops."
+        : `${guard.pending_approvals} approvals are waiting on you. They can no longer be ` +
+            "answered once their runs stop.",
+    );
+  }
+  if (guard.scheduler_running) {
+    paragraphs.push(
+      "The scheduler stops. Schedules do not fire and queued tasks do not start until " +
+        "AgentOS is opened again; it starts again on its own then.",
+    );
+  }
+  if (failure !== null) paragraphs.push(`The window could not be closed: ${failure}`);
+  return paragraphs.join("\n\n");
 }
 
 /** Shows a store's failure to reach the runtime, and takes it down on recovery. */

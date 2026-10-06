@@ -13,6 +13,7 @@ pub mod agent_loop;
 pub mod config;
 pub mod error;
 pub mod gate;
+pub mod grants;
 mod liveness;
 pub mod operator;
 pub mod prompt;
@@ -35,6 +36,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 pub use agent_loop::{AgentLoop, RunOutcome};
+pub use agentos_permissions::Reach;
 pub use agentos_tools::ToolRegistry as Registry;
 pub use config::{
     FixedProviderFactory, ProviderFactory, RuntimeConfig, SecretBackedProviderFactory,
@@ -42,7 +44,11 @@ pub use config::{
 };
 pub use error::RuntimeError;
 pub use gate::RunApprovalGate;
-pub use scheduler::{Scheduler, SchedulerOptions, TickReport};
+pub use grants::{CapabilityGrant, ToolGrant};
+pub use scheduler::{
+    MIN_TICK_SECONDS, Scheduler, SchedulerOptions, SchedulerPreference, SchedulerTransition,
+    TickReport,
+};
 pub use state::RunStateMachine;
 
 /// Everything a running AgentOS installation needs.
@@ -213,152 +219,7 @@ impl Runtime {
         }
     }
 
-    // -- Tasks --------------------------------------------------------------
-
-    /// Create a task for an agent.
-    ///
-    /// # Errors
-    ///
-    /// [`RuntimeError::Database`] on failure.
-    pub async fn create_task(
-        &self,
-        agent_id: AgentId,
-        objective: &str,
-    ) -> Result<Task, RuntimeError> {
-        let task = Task::new(agent_id, objective);
-        self.database.tasks().insert(&task).await?;
-        Ok(task)
-    }
-
-    /// Create a task that waits for others to succeed first.
-    ///
-    /// The task is stored `Blocked` and each edge is checked for cycles before
-    /// it is written, so a graph that cannot make progress is refused at the
-    /// moment somebody describes it rather than discovered by a scheduler that
-    /// never starts anything.
-    ///
-    /// # Errors
-    ///
-    /// [`RuntimeError::InvalidGraph`] if a named dependency does not exist,
-    /// [`RuntimeError::DependencyCycle`] if an edge would close a cycle, or
-    /// [`RuntimeError::Database`] on failure.
-    pub async fn create_task_after(
-        &self,
-        agent_id: AgentId,
-        objective: &str,
-        dependencies: &[TaskId],
-    ) -> Result<Task, RuntimeError> {
-        // Validate before writing anything, so a graph with one bad edge does
-        // not leave a half-built one behind.
-        for dependency in dependencies {
-            if self.database.tasks().find(*dependency).await?.is_none() {
-                return Err(RuntimeError::InvalidGraph(format!(
-                    "task {dependency} does not exist, so nothing can wait for it"
-                )));
-            }
-        }
-
-        let task = if dependencies.is_empty() {
-            Task::new(agent_id, objective)
-        } else {
-            Task::new(agent_id, objective).blocked()
-        };
-        self.database.tasks().insert(&task).await?;
-
-        for dependency in dependencies {
-            self.add_dependency(task.id, *dependency).await?;
-        }
-        Ok(task)
-    }
-
-    /// Hold a task until a given moment.
-    ///
-    /// # Errors
-    ///
-    /// [`RuntimeError::Database`] on failure.
-    pub async fn create_task_at(
-        &self,
-        agent_id: AgentId,
-        objective: &str,
-        when: agentos_core::Timestamp,
-    ) -> Result<Task, RuntimeError> {
-        let task = Task::new(agent_id, objective).scheduled_for(when);
-        self.database.tasks().insert(&task).await?;
-        Ok(task)
-    }
-
-    /// Record that `task` waits for `depends_on`.
-    ///
-    /// # Errors
-    ///
-    /// [`RuntimeError::DependencyCycle`] if the edge would close a cycle,
-    /// [`RuntimeError::InvalidGraph`] if a task is missing or the edge is a
-    /// self-loop, or [`RuntimeError::Database`] on failure.
-    pub async fn add_dependency(
-        &self,
-        task: TaskId,
-        depends_on: TaskId,
-    ) -> Result<(), RuntimeError> {
-        if task == depends_on {
-            return Err(RuntimeError::InvalidGraph(
-                "a task cannot wait for itself".to_owned(),
-            ));
-        }
-        for id in [task, depends_on] {
-            if self.database.tasks().find(id).await?.is_none() {
-                return Err(RuntimeError::InvalidGraph(format!(
-                    "task {id} does not exist"
-                )));
-            }
-        }
-
-        // Walk the existing graph from `depends_on`. If `task` is reachable,
-        // then `task` is already upstream of `depends_on` and this edge would
-        // close the loop.
-        let edges = self.database.dependencies().all().await?;
-        if let Some(path) = path_between(&edges, depends_on, task) {
-            let mut cycle = vec![task];
-            cycle.extend(path);
-            return Err(RuntimeError::DependencyCycle { path: cycle });
-        }
-
-        self.database.dependencies().add(task, depends_on).await?;
-
-        // A task somebody has just made wait is not pending any more.
-        let stored = self.database.tasks().get(task).await?;
-        if matches!(stored.status, agentos_core::TaskStatus::Pending) {
-            self.database
-                .tasks()
-                .set_status(task, agentos_core::TaskStatus::Blocked)
-                .await?;
-        }
-        Ok(())
-    }
-
     // -- Schedules ------------------------------------------------------------
-
-    /// Create a schedule.
-    ///
-    /// # Errors
-    ///
-    /// [`RuntimeError::UnknownAgent`] if the agent does not exist,
-    /// [`RuntimeError::InvalidGraph`] never, and [`RuntimeError::Database`] on
-    /// failure. An unevaluable cadence surfaces as
-    /// [`RuntimeError::InvalidSchedule`].
-    pub async fn create_schedule(
-        &self,
-        agent_id: AgentId,
-        name: &str,
-        objective: &str,
-        cadence: agentos_core::schedule::Cadence,
-        first_run_at: agentos_core::Timestamp,
-    ) -> Result<agentos_core::schedule::Schedule, RuntimeError> {
-        let schedule =
-            agentos_core::schedule::Schedule::new(agent_id, name, objective, cadence, first_run_at)
-                .map_err(|error| RuntimeError::InvalidSchedule(error.to_string()))?;
-        self.database.schedules().insert(&schedule).await?;
-        Ok(schedule)
-    }
 
     /// Every schedule, newest first.
     ///
@@ -367,73 +228,6 @@ impl Runtime {
     /// [`RuntimeError::Database`] on failure.
     pub async fn schedules(&self) -> Result<Vec<agentos_core::schedule::Schedule>, RuntimeError> {
         Ok(self.database.schedules().list().await?)
-    }
-
-    /// Stop a schedule firing without deleting it.
-    ///
-    /// # Errors
-    ///
-    /// [`RuntimeError::Database`] on failure.
-    pub async fn pause_schedule(
-        &self,
-        id: agentos_core::ids::ScheduleId,
-    ) -> Result<(), RuntimeError> {
-        let schedule = self.database.schedules().get(id).await?;
-        self.database
-            .schedules()
-            .set_status(
-                id,
-                agentos_core::schedule::ScheduleStatus::Paused,
-                schedule.next_run_at,
-            )
-            .await?;
-        Ok(())
-    }
-
-    /// Start a paused schedule firing again.
-    ///
-    /// The next occurrence is computed forward from now, so a schedule that was
-    /// paused over a weekend does not wake up owing a backlog.
-    ///
-    /// # Errors
-    ///
-    /// [`RuntimeError::Database`] on failure.
-    pub async fn resume_schedule(
-        &self,
-        id: agentos_core::ids::ScheduleId,
-    ) -> Result<(), RuntimeError> {
-        let schedule = self.database.schedules().get(id).await?;
-        let now = agentos_core::now();
-        let next = match schedule.next_run_at {
-            // Its slot is still ahead; nothing was missed.
-            Some(next) if next > now => Some(next),
-            _ => schedule.cadence.next_after(now),
-        };
-        let status = if next.is_some() {
-            agentos_core::schedule::ScheduleStatus::Active
-        } else {
-            // A one-shot whose moment passed while it was paused has nothing
-            // left to do, and saying so beats leaving it active and inert.
-            agentos_core::schedule::ScheduleStatus::Finished
-        };
-        self.database
-            .schedules()
-            .set_status(id, status, next)
-            .await?;
-        Ok(())
-    }
-
-    /// Delete a schedule. The tasks it created are left alone.
-    ///
-    /// # Errors
-    ///
-    /// [`RuntimeError::Database`] on failure.
-    pub async fn delete_schedule(
-        &self,
-        id: agentos_core::ids::ScheduleId,
-    ) -> Result<(), RuntimeError> {
-        self.database.schedules().delete(id).await?;
-        Ok(())
     }
 
     /// Execute a task and return what it produced.
@@ -486,6 +280,17 @@ impl Runtime {
     }
 
     /// Everything a run needs, assembled but not yet started.
+    ///
+    /// The task is claimed, and its run written, in one step. Two clients can
+    /// both have read a task as runnable — a scheduler here and another in a
+    /// terminal, or a scheduler and a person pressing retry — and only the one
+    /// whose claim lands may start it. The claim compares with the status in
+    /// `task`, which is what the caller read: a task cancelled, run or given
+    /// something to wait for since then is not started on the strength of the
+    /// old read. A caller that loses gets [`RuntimeError::TaskAlreadyClaimed`]
+    /// having written nothing: no run row, no audit record, no model request. Everything that can refuse for a
+    /// reason of its own is checked first, so a refusal leaves the task as it
+    /// was rather than claimed by nobody.
     async fn prepare_run(
         &self,
         task: &Task,
@@ -514,10 +319,22 @@ impl Runtime {
             .max_per_run;
         let engine = engine_from(policy);
 
-        let attempt = self.database.runs().next_attempt(task.id).await?;
-        let mut run = TaskRun::new(task.id, attempt);
-        self.inherit_taint(&mut run).await?;
-        self.database.runs().insert(&run).await?;
+        let workspace = self.config.workspace_for(&agent.name);
+        std::fs::create_dir_all(&workspace).map_err(|source| {
+            RuntimeError::io(format!("creating {}", workspace.display()), source)
+        })?;
+
+        let run = self.next_run(task.id).await?;
+        // The claim and the run row are one write, so the task is never
+        // running without a run for the reaper to find.
+        if !self
+            .database
+            .tasks()
+            .claim_for_run(task.status, &run)
+            .await?
+        {
+            return Err(RuntimeError::TaskAlreadyClaimed(task.id));
+        }
 
         self.running.lock().await.insert(run.id, cancel.clone());
 
@@ -537,11 +354,6 @@ impl Runtime {
 
         let pipeline = ToolPipeline::new(self.registry.clone(), engine, gate, self.audit.clone());
 
-        let workspace = self.config.workspace_for(&agent.name);
-        std::fs::create_dir_all(&workspace).map_err(|source| {
-            RuntimeError::io(format!("creating {}", workspace.display()), source)
-        })?;
-
         let context = ToolContext::new(agent.id, task.id, run.id, workspace);
 
         Ok(PreparedRun {
@@ -554,6 +366,17 @@ impl Runtime {
             context,
             cancel,
         })
+    }
+
+    /// Assemble the next attempt at a task, to be written with its claim.
+    ///
+    /// Read before the claim, so a caller that loses it may have read for
+    /// nothing; it has written nothing, which is what matters.
+    async fn next_run(&self, task_id: TaskId) -> Result<TaskRun, RuntimeError> {
+        let attempt = self.database.runs().next_attempt(task_id).await?;
+        let mut run = TaskRun::new(task_id, attempt);
+        self.inherit_taint(&mut run).await?;
+        Ok(run)
     }
 
     /// Carry the taint of every earlier attempt at a task into a new one.
@@ -614,7 +437,7 @@ impl Runtime {
         approvals: Arc<dyn ApprovalGate>,
         cancel: CancellationToken,
     ) -> Result<RunOutcome, RuntimeError> {
-        let task = self.create_task(agent_id, objective).await?;
+        let task = self.create_task(agent_id, objective, &[], None).await?;
         self.run_task(&task, approvals, cancel).await
     }
 
@@ -631,6 +454,19 @@ impl Runtime {
             }
             None => false,
         }
+    }
+
+    /// Take this data directory's scheduler lease, for as long as the
+    /// returned handle is held.
+    ///
+    /// `None` for an in-memory runtime, whose database no other process can
+    /// see and which therefore has no other scheduler to exclude.
+    pub(crate) fn scheduler_lease(&self) -> Result<liveness::SchedulerLease, RuntimeError> {
+        if self.runs_lock.is_none() {
+            return Ok(liveness::SchedulerLease { _held: None });
+        }
+        liveness::take_scheduler_lease(&self.config.data_dir)
+            .map(|file| liveness::SchedulerLease { _held: Some(file) })
     }
 
     /// Run identifiers currently executing.
@@ -944,7 +780,11 @@ pub struct RunTrace {
 /// walks in the direction of "what am I waiting for". Breadth-first, so the path
 /// reported to somebody who has just written a cycle is the shortest one rather
 /// than whichever the recursion happened to find.
-fn path_between(edges: &[(TaskId, TaskId)], from: TaskId, to: TaskId) -> Option<Vec<TaskId>> {
+pub(crate) fn path_between(
+    edges: &[(TaskId, TaskId)],
+    from: TaskId,
+    to: TaskId,
+) -> Option<Vec<TaskId>> {
     use std::collections::{HashMap, HashSet, VecDeque};
 
     let mut queue = VecDeque::from([from]);

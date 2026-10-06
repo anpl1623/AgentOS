@@ -18,6 +18,14 @@ events: number,
  */
 intact: boolean, 
 /**
+ * Audit records this process failed to write since it launched.
+ *
+ * Separate from `intact`, which speaks only for the records the log
+ * holds: a chain can verify perfectly and still be missing what was never
+ * written to it. Anything above zero means the log is incomplete.
+ */
+unrecorded: number, 
+/**
  * When this answer was produced.
  */
 checked_at: string, };

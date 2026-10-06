@@ -18,6 +18,11 @@
 //! The lock is advisory and only AgentOS consults it. It defends against the
 //! runtime misreading itself, not against anything else that can write the
 //! database.
+//!
+//! A second file, `scheduler.lock`, is the scheduler's lease, held exclusively
+//! by the one scheduler acting on the installation. The same kernel guarantee
+//! applies: a scheduler that crashes gives up its lease as it dies, so a lease
+//! is never left held by nobody.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::PathBuf;
@@ -29,6 +34,9 @@ use crate::error::RuntimeError;
 
 /// The lock file's name inside the data directory.
 const LOCK_FILE: &str = "runs.lock";
+
+/// The scheduler lease's file name inside the data directory.
+const SCHEDULER_LOCK_FILE: &str = "scheduler.lock";
 
 /// How long to wait between attempts while a reaper holds the lock. Reaping
 /// is a handful of statements, so this is rarely waited at all.
@@ -105,6 +113,40 @@ impl RunsLock {
     }
 }
 
+/// A held scheduler lease, released when dropped.
+///
+/// Empty for an in-memory runtime, which has no data directory to lease and no
+/// other process to exclude.
+#[derive(Debug)]
+pub(crate) struct SchedulerLease {
+    /// Never read: holding the handle is holding the lock.
+    pub(crate) _held: Option<File>,
+}
+
+/// Take the scheduler lease for the data directory `data_dir`.
+///
+/// Fails at once rather than waiting: a scheduler that queued behind another
+/// would start the moment the first stopped, which is not what the person who
+/// stopped it asked for. The lease is released when the returned handle is
+/// dropped, or when the process exits however it exits.
+pub(crate) fn take_scheduler_lease(data_dir: &std::path::Path) -> Result<File, RuntimeError> {
+    let path = data_dir.join(SCHEDULER_LOCK_FILE);
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|source| RuntimeError::io(format!("opening {}", path.display()), source))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(RuntimeError::SchedulerAlreadyRunning),
+        Err(TryLockError::Error(source)) => Err(RuntimeError::io(
+            format!("locking {}", path.display()),
+            source,
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +170,25 @@ mod tests {
         // The driver exits, however it exits.
         drop(driver);
         assert!(reaper.try_exclusive().unwrap().is_some());
+    }
+
+    #[test]
+    fn one_scheduler_lease_per_data_directory() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let held = take_scheduler_lease(directory.path()).unwrap();
+        assert!(matches!(
+            take_scheduler_lease(directory.path()),
+            Err(RuntimeError::SchedulerAlreadyRunning)
+        ));
+
+        // Released when its holder lets go, as at exit.
+        drop(held);
+        let _again = take_scheduler_lease(directory.path()).unwrap();
+
+        // Independent of the runs lock: a scheduler and the processes driving
+        // runs are different questions.
+        let runs = RunsLock::in_directory(directory.path());
+        assert!(runs.try_exclusive().unwrap().is_some());
     }
 
     #[tokio::test]

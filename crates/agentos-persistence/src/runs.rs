@@ -29,33 +29,7 @@ impl RunRepository {
     ///
     /// [`DbError::Sql`] if the task does not exist or the attempt number is taken.
     pub async fn insert(&self, run: &TaskRun) -> Result<(), DbError> {
-        sqlx::query(
-            "INSERT INTO task_runs (id, task_id, attempt, state, tainted, taint_sources,
-                                    steps_taken, result, failure, input_tokens,
-                                    output_tokens, started_at, completed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-        )
-        .bind(run.id.to_string())
-        .bind(run.task_id.to_string())
-        .bind(i64::from(run.attempt))
-        .bind(run.state.as_str())
-        .bind(i64::from(run.tainted))
-        .bind(write_json("taint_sources", &run.taint_sources)?)
-        .bind(i64::from(run.steps_taken))
-        .bind(run.result.as_deref())
-        .bind(
-            run.failure
-                .as_ref()
-                .map(|failure| write_json("failure", failure))
-                .transpose()?,
-        )
-        .bind(clamp_u64(run.input_tokens))
-        .bind(clamp_u64(run.output_tokens))
-        .bind(write_time(&run.started_at))
-        .bind(write_optional_time(run.completed_at.as_ref()))
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        insert_with(&self.pool, run).await
     }
 
     /// Persist the current state of a run.
@@ -185,6 +159,43 @@ impl RunRepository {
         .await?;
         rows.iter().map(hydrate).collect()
     }
+}
+
+/// Insert a run through any executor.
+///
+/// Shared with the task repository, which writes a run in the same
+/// transaction that claims its task.
+pub(crate) async fn insert_with<'e, E>(executor: E, run: &TaskRun) -> Result<(), DbError>
+where
+    E: sqlx::SqliteExecutor<'e>,
+{
+    sqlx::query(
+        "INSERT INTO task_runs (id, task_id, attempt, state, tainted, taint_sources,
+                                steps_taken, result, failure, input_tokens,
+                                output_tokens, started_at, completed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+    )
+    .bind(run.id.to_string())
+    .bind(run.task_id.to_string())
+    .bind(i64::from(run.attempt))
+    .bind(run.state.as_str())
+    .bind(i64::from(run.tainted))
+    .bind(write_json("taint_sources", &run.taint_sources)?)
+    .bind(i64::from(run.steps_taken))
+    .bind(run.result.as_deref())
+    .bind(
+        run.failure
+            .as_ref()
+            .map(|failure| write_json("failure", failure))
+            .transpose()?,
+    )
+    .bind(clamp_u64(run.input_tokens))
+    .bind(clamp_u64(run.output_tokens))
+    .bind(write_time(&run.started_at))
+    .bind(write_optional_time(run.completed_at.as_ref()))
+    .execute(executor)
+    .await?;
+    Ok(())
 }
 
 fn clamp_u64(value: u64) -> i64 {

@@ -225,10 +225,21 @@ async fn a_scheduled_task_actually_runs() {
     let fired = scheduler.tick().await.unwrap();
     let task_id = fired.fired[0].1;
 
-    // The task exists before it has been started.
-    assert_eq!(harness.status(task_id).await, TaskStatus::Pending);
+    // Fired and started in one tick, and claimed before the tick returned: a
+    // task a scheduler has taken never still looks runnable to another.
+    assert_eq!(fired.started, vec![task_id]);
+    assert_eq!(harness.status(task_id).await, TaskStatus::Running);
+    assert!(
+        harness
+            .runtime
+            .database()
+            .tasks()
+            .list_runnable(10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
-    scheduler.tick().await.unwrap();
     scheduler.drain().await;
     assert_eq!(harness.status(task_id).await, TaskStatus::Succeeded);
 }
@@ -238,12 +249,12 @@ async fn a_graph_runs_in_dependency_order() {
     let harness = Harness::new().await;
     let gather = harness
         .runtime
-        .create_task(harness.agent.id, "Gather.")
+        .create_task(harness.agent.id, "Gather.", &[], None)
         .await
         .unwrap();
     let summarise = harness
         .runtime
-        .create_task_after(harness.agent.id, "Summarise.", &[gather.id])
+        .create_task(harness.agent.id, "Summarise.", &[gather.id], None)
         .await
         .unwrap();
 
@@ -269,17 +280,17 @@ async fn a_fan_in_waits_for_every_branch() {
     let harness = Harness::new().await;
     let a = harness
         .runtime
-        .create_task(harness.agent.id, "A.")
+        .create_task(harness.agent.id, "A.", &[], None)
         .await
         .unwrap();
     let b = harness
         .runtime
-        .create_task(harness.agent.id, "B.")
+        .create_task(harness.agent.id, "B.", &[], None)
         .await
         .unwrap();
     let join = harness
         .runtime
-        .create_task_after(harness.agent.id, "Both.", &[a.id, b.id])
+        .create_task(harness.agent.id, "Both.", &[a.id, b.id], None)
         .await
         .unwrap();
 
@@ -300,24 +311,24 @@ async fn a_cycle_is_refused_and_names_the_path() {
     let harness = Harness::new().await;
     let a = harness
         .runtime
-        .create_task(harness.agent.id, "A.")
+        .create_task(harness.agent.id, "A.", &[], None)
         .await
         .unwrap();
     let b = harness
         .runtime
-        .create_task_after(harness.agent.id, "B.", &[a.id])
+        .create_task(harness.agent.id, "B.", &[a.id], None)
         .await
         .unwrap();
     let c = harness
         .runtime
-        .create_task_after(harness.agent.id, "C.", &[b.id])
+        .create_task(harness.agent.id, "C.", &[b.id], None)
         .await
         .unwrap();
 
     // A waiting for C would close A -> C -> B -> A.
     let error = harness
         .runtime
-        .add_dependency(a.id, c.id)
+        .add_task_dependency(a.id, c.id)
         .await
         .expect_err("a cycle is refused");
 
@@ -342,18 +353,23 @@ async fn a_task_cannot_wait_for_itself_or_for_a_task_that_does_not_exist() {
     let harness = Harness::new().await;
     let a = harness
         .runtime
-        .create_task(harness.agent.id, "A.")
+        .create_task(harness.agent.id, "A.", &[], None)
         .await
         .unwrap();
 
     assert!(matches!(
-        harness.runtime.add_dependency(a.id, a.id).await,
+        harness.runtime.add_task_dependency(a.id, a.id).await,
         Err(RuntimeError::InvalidGraph(_))
     ));
     assert!(matches!(
         harness
             .runtime
-            .create_task_after(harness.agent.id, "B.", &[agentos_core::ids::TaskId::new()])
+            .create_task(
+                harness.agent.id,
+                "B.",
+                &[agentos_core::ids::TaskId::new()],
+                None
+            )
             .await,
         Err(RuntimeError::InvalidGraph(_))
     ));
@@ -364,7 +380,12 @@ async fn a_task_held_until_later_is_not_started_yet() {
     let harness = Harness::new().await;
     let later = harness
         .runtime
-        .create_task_at(harness.agent.id, "Later.", at("2999-01-01T00:00:00Z"))
+        .create_task(
+            harness.agent.id,
+            "Later.",
+            &[],
+            Some(at("2999-01-01T00:00:00Z")),
+        )
         .await
         .unwrap();
 
@@ -379,7 +400,7 @@ async fn concurrency_is_bounded() {
     for index in 0..5 {
         harness
             .runtime
-            .create_task(harness.agent.id, &format!("Task {index}."))
+            .create_task(harness.agent.id, &format!("Task {index}."), &[], None)
             .await
             .unwrap();
     }
@@ -416,11 +437,19 @@ async fn a_pause_stops_a_schedule_without_losing_it() {
         .await
         .unwrap();
 
-    harness.runtime.pause_schedule(schedule.id).await.unwrap();
+    harness
+        .runtime
+        .set_schedule_paused(schedule.id, true)
+        .await
+        .unwrap();
     let scheduler = harness.scheduler(1);
     assert!(scheduler.tick().await.unwrap().fired.is_empty());
 
-    harness.runtime.resume_schedule(schedule.id).await.unwrap();
+    harness
+        .runtime
+        .set_schedule_paused(schedule.id, false)
+        .await
+        .unwrap();
     let resumed = harness
         .runtime
         .database()
@@ -440,12 +469,12 @@ async fn an_unreachable_task_is_abandoned_rather_than_left_waiting() {
     let harness = Harness::new().await;
     let gather = harness
         .runtime
-        .create_task(harness.agent.id, "Gather.")
+        .create_task(harness.agent.id, "Gather.", &[], None)
         .await
         .unwrap();
     let summarise = harness
         .runtime
-        .create_task_after(harness.agent.id, "Summarise.", &[gather.id])
+        .create_task(harness.agent.id, "Summarise.", &[gather.id], None)
         .await
         .unwrap();
 
@@ -484,17 +513,17 @@ async fn a_dead_chain_is_abandoned_whole_in_one_tick() {
     let harness = Harness::new().await;
     let gather = harness
         .runtime
-        .create_task(harness.agent.id, "Gather.")
+        .create_task(harness.agent.id, "Gather.", &[], None)
         .await
         .unwrap();
     let summarise = harness
         .runtime
-        .create_task_after(harness.agent.id, "Summarise.", &[gather.id])
+        .create_task(harness.agent.id, "Summarise.", &[gather.id], None)
         .await
         .unwrap();
     let publish = harness
         .runtime
-        .create_task_after(harness.agent.id, "Publish.", &[summarise.id])
+        .create_task(harness.agent.id, "Publish.", &[summarise.id], None)
         .await
         .unwrap();
     harness.fail(gather.id).await;
@@ -530,22 +559,22 @@ async fn a_dead_diamond_abandons_its_join_once() {
     let harness = Harness::new().await;
     let root = harness
         .runtime
-        .create_task(harness.agent.id, "Root.")
+        .create_task(harness.agent.id, "Root.", &[], None)
         .await
         .unwrap();
     let left = harness
         .runtime
-        .create_task_after(harness.agent.id, "Left.", &[root.id])
+        .create_task(harness.agent.id, "Left.", &[root.id], None)
         .await
         .unwrap();
     let right = harness
         .runtime
-        .create_task_after(harness.agent.id, "Right.", &[root.id])
+        .create_task(harness.agent.id, "Right.", &[root.id], None)
         .await
         .unwrap();
     let join = harness
         .runtime
-        .create_task_after(harness.agent.id, "Join.", &[left.id, right.id])
+        .create_task(harness.agent.id, "Join.", &[left.id, right.id], None)
         .await
         .unwrap();
     harness.fail(root.id).await;
@@ -577,17 +606,17 @@ async fn a_task_found_both_directly_and_downstream_is_abandoned_once() {
     let harness = Harness::new().await;
     let root = harness
         .runtime
-        .create_task(harness.agent.id, "Root.")
+        .create_task(harness.agent.id, "Root.", &[], None)
         .await
         .unwrap();
     let middle = harness
         .runtime
-        .create_task_after(harness.agent.id, "Middle.", &[root.id])
+        .create_task(harness.agent.id, "Middle.", &[root.id], None)
         .await
         .unwrap();
     let after = harness
         .runtime
-        .create_task_after(harness.agent.id, "After.", &[root.id, middle.id])
+        .create_task(harness.agent.id, "After.", &[root.id, middle.id], None)
         .await
         .unwrap();
     harness.fail(root.id).await;
@@ -608,7 +637,7 @@ async fn a_dead_chain_longer_than_a_batch_finishes_on_the_next_tick() {
     let harness = Harness::new().await;
     let root = harness
         .runtime
-        .create_task(harness.agent.id, "Root.")
+        .create_task(harness.agent.id, "Root.", &[], None)
         .await
         .unwrap();
     let mut chain = Vec::new();
@@ -616,7 +645,12 @@ async fn a_dead_chain_longer_than_a_batch_finishes_on_the_next_tick() {
     for index in 0..4 {
         let task = harness
             .runtime
-            .create_task_after(harness.agent.id, &format!("Step {index}."), &[previous])
+            .create_task(
+                harness.agent.id,
+                &format!("Step {index}."),
+                &[previous],
+                None,
+            )
             .await
             .unwrap();
         previous = task.id;

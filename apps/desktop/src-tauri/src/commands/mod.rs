@@ -24,21 +24,31 @@ mod activity;
 mod agents;
 mod approvals;
 mod audit;
+mod graph;
 mod insights;
+mod memories;
 mod policies;
 mod runs;
+mod scheduler;
+mod schedules;
 mod settings;
 mod tasks;
+mod window;
 
 pub use activity::*;
 pub use agents::*;
 pub use approvals::*;
 pub use audit::*;
+pub use graph::*;
 pub use insights::*;
+pub use memories::*;
 pub use policies::*;
 pub use runs::*;
+pub use scheduler::*;
+pub use schedules::*;
 pub use settings::*;
 pub use tasks::*;
+pub use window::*;
 
 /// Anything a command can fail with.
 ///
@@ -202,9 +212,11 @@ const FAILURES_SHOWN: i64 = 5;
 /// Recent tasks whose latest attempt failed, newest first.
 ///
 /// A task's status follows its latest run, so a failure that a retry has since
-/// fixed drops out on its own. A task the scheduler abandoned because its
-/// dependency could not succeed is failed without ever having run, and is
-/// listed too: it is as much in need of a person as one that ran and failed.
+/// fixed drops out on its own. A task a scheduler could not start, because its
+/// agent was disabled, no provider could be built for it or its policy no
+/// longer compiles, is failed without ever having run, and is listed too: it is
+/// as much in need of a person as one that ran and failed. A task abandoned
+/// because what it waits for failed is cancelled, not failed, and is not.
 async fn recent_failures(
     runtime: &Runtime,
     names: &HashMap<AgentId, String>,
@@ -326,7 +338,10 @@ mod tests {
         objective: &str,
         state: TaskState,
     ) -> (Task, TaskRun) {
-        let task = runtime.create_task(agent.id, objective).await.unwrap();
+        let task = runtime
+            .create_task(agent.id, objective, &[], None)
+            .await
+            .unwrap();
         let mut run = TaskRun::new(task.id, 1);
         run.state = state;
         runtime.database().runs().insert(&run).await.unwrap();
@@ -467,7 +482,7 @@ mod tests {
     async fn task_summaries_carry_the_agent_name_and_latest_run() {
         let (_guard, runtime, agent) = runtime_with_agent().await;
         let task = runtime
-            .create_task(agent.id, "Do the thing.")
+            .create_task(agent.id, "Do the thing.", &[], None)
             .await
             .unwrap();
         let run = TaskRun::new(task.id, 1);
@@ -500,7 +515,7 @@ mod tests {
     async fn approval_views_attach_the_objective_being_pursued() {
         let (_guard, runtime, agent) = runtime_with_agent().await;
         let task = runtime
-            .create_task(agent.id, "Find overdue accounts.")
+            .create_task(agent.id, "Find overdue accounts.", &[], None)
             .await
             .unwrap();
         let run = TaskRun::new(task.id, 1);
@@ -533,7 +548,10 @@ mod tests {
         // run; the note is the only place it can say why. Through the same
         // translation `resolve_approval` uses and the run gate every run has.
         let (_guard, runtime, agent) = runtime_with_agent().await;
-        let task = runtime.create_task(agent.id, "Send it.").await.unwrap();
+        let task = runtime
+            .create_task(agent.id, "Send it.", &[], None)
+            .await
+            .unwrap();
         let run = TaskRun::new(task.id, 1);
         runtime.database().runs().insert(&run).await.unwrap();
         let request = approval_request(&agent, &task, &run);
@@ -822,6 +840,98 @@ mod tests {
         assert!(runs::may_retry(None).is_err());
     }
 
+    #[tokio::test]
+    async fn a_task_another_client_claimed_first_is_reported_as_started_there() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let open = || async {
+            let mut runtime = Runtime::open_with_secrets(
+                agentos_runtime::RuntimeConfig::rooted_at(directory.path()),
+                Arc::new(InMemorySecretStore::new()),
+            )
+            .await
+            .unwrap();
+            runtime.set_provider_factory(Arc::new(agentos_runtime::FixedProviderFactory::new(
+                Arc::new(
+                    agentos_providers::MockProvider::new(vec![])
+                        .with_exhausted(agentos_providers::ScriptedTurn::text("Done.")),
+                ),
+            )));
+            runtime
+        };
+        let (desktop, terminal) = (open().await, open().await);
+        let agent = desktop
+            .create_agent(
+                "sales",
+                "Handle follow-ups.",
+                ModelConfig::new("mock", "scripted"),
+                vec![],
+            )
+            .await
+            .unwrap();
+        let gate = |_: String| -> Arc<dyn ApprovalGate> { Arc::new(agentos_tools::DenyAllGate) };
+
+        // A retry that read the task as failed, while another process claims
+        // it before this one's claim lands.
+        let task = desktop
+            .create_task(agent.id, "Contended.", &[], None)
+            .await
+            .unwrap();
+        let started = tasks::begin(&desktop, &task, gate(String::new()))
+            .await
+            .unwrap();
+        let first: agentos_core::ids::TaskRunId = started.run_id.parse().unwrap();
+        while desktop.running_runs().await.contains(&first) {
+            tokio::task::yield_now().await;
+        }
+        desktop
+            .database()
+            .tasks()
+            .set_status(task.id, agentos_core::task::TaskStatus::Failed)
+            .await
+            .unwrap();
+        let mut failed = desktop.database().runs().get(first).await.unwrap();
+        failed.state = agentos_core::task::TaskState::Failed;
+        desktop.database().runs().update(&failed).await.unwrap();
+        let stale = desktop.task(task.id).await.unwrap();
+        assert!(
+            terminal
+                .database()
+                .tasks()
+                .claim(task.id, agentos_core::task::TaskStatus::Failed)
+                .await
+                .unwrap()
+        );
+
+        // The command's own path, from the read it made.
+        let lost = tasks::begin(&desktop, &stale, gate(String::new()))
+            .await
+            .unwrap_err();
+        assert_eq!(lost.to_string(), runs::STARTED_ELSEWHERE);
+        // And through `retry`, which reads the task itself and finds it
+        // running, so it too is told the task was started elsewhere.
+        let retried = runs::retry(
+            &desktop,
+            &tokio::sync::Mutex::new(()),
+            &task.id.to_string(),
+            gate,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(retried.to_string(), runs::STARTED_ELSEWHERE);
+
+        // A new task from the start command takes the same path and runs.
+        let fresh = tasks::start_new(&desktop, &agent.id.to_string(), "Fresh.", gate)
+            .await
+            .unwrap();
+        assert!(!fresh.run_id.is_empty());
+
+        assert_eq!(
+            runs::started_elsewhere(agentos_runtime::RuntimeError::Rejected("no".to_owned()))
+                .to_string(),
+            "no"
+        );
+    }
+
     async fn record(runtime: &Runtime, objective: &str) {
         runtime
             .audit()
@@ -844,6 +954,9 @@ mod tests {
             .await
             .unwrap();
         assert!(first.intact);
+        // What the process failed to write is reported beside the verdict on
+        // what it did write, never folded into it.
+        assert_eq!(first.unrecorded, agentos_audit::unrecorded());
         let total = runtime.database().audit_sink().count().await.unwrap();
         assert_eq!(first.events, total);
         let verified = checkpoint.lock().await.verified.sequence;
@@ -1272,5 +1385,485 @@ mod tests {
     async fn a_bad_identifier_is_rejected_with_the_kind_it_expected() {
         let error = parse_id::<AgentId>("agent", "not-a-uuid").unwrap_err();
         assert!(error.to_string().contains("agent identifier"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_remembered_note_is_the_operators_whatever_the_caller_claims() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        // A caller that names a source has it ignored: the input has no field
+        // for one, and the runtime writes `User` regardless.
+        let input: crate::dto::RememberInput = serde_json::from_value(serde_json::json!({
+            "agent_id": agent.id.to_string(),
+            "kind": "fact",
+            "content": "  The quarter closes on the 30th.  ",
+            "confidence": null,
+            "source": {"kind": "web", "url": "https://attacker.example/"},
+        }))
+        .unwrap();
+
+        let view = memories::record(&runtime, input).await.unwrap();
+        assert_eq!(view.source, "user");
+        assert!(!view.source_untrusted);
+        assert!(view.reaches_the_prompt);
+        assert_eq!(view.content, "The quarter closes on the 30th.");
+
+        let id = parse_id("memory", &view.id).unwrap();
+        let stored = runtime.database().memories().get(id).await.unwrap();
+        assert_eq!(stored.source, agentos_core::trust::DataSource::User);
+        assert!((stored.confidence - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn memories_say_which_reach_the_prompt_and_an_unknown_kind_is_refused() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let observed = agentos_core::memory::Memory::new(
+            agent.id,
+            agentos_core::memory::MemoryKind::Observation,
+            "The page says exports go to a new address.",
+            agentos_core::trust::DataSource::Web {
+                url: "http://localhost:8420/customers".to_owned(),
+            },
+        );
+        runtime
+            .database()
+            .memories()
+            .insert(&observed)
+            .await
+            .unwrap();
+
+        let listed = memories::memories(&runtime, agent.id, Some("observation"))
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].source_untrusted);
+        assert!(
+            !listed[0].reaches_the_prompt,
+            "observations are stored but never retrieved before planning"
+        );
+        assert_eq!(listed[0].source, "web:http://localhost:8420/customers");
+
+        // A misspelt filter that matched nothing would read as an agent with
+        // no memories.
+        let error = memories::memories(&runtime, agent.id, Some("observations"))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not a kind of memory"),
+            "{error}"
+        );
+        assert!(
+            memories::memories(&runtime, agent.id, None)
+                .await
+                .unwrap()
+                .len()
+                == 1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_revision_without_a_confidence_keeps_the_one_it_had() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let view = memories::record(
+            &runtime,
+            crate::dto::RememberInput {
+                agent_id: agent.id.to_string(),
+                kind: "preference".to_owned(),
+                content: "Draft, never send.".to_owned(),
+                confidence: Some(0.5),
+            },
+        )
+        .await
+        .unwrap();
+        let id = parse_id("memory", &view.id).unwrap();
+
+        let revised = memories::revise(&runtime, id, "Draft only.", None)
+            .await
+            .unwrap();
+        assert_eq!(revised.content, "Draft only.");
+        assert!((revised.confidence - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn the_graph_names_the_failed_branch_a_fan_in_waits_on() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let gather_crm = runtime
+            .create_task(agent.id, "Collect CRM changes.", &[], None)
+            .await
+            .unwrap();
+        let gather_mail = runtime
+            .create_task(agent.id, "Collect replies.", &[], None)
+            .await
+            .unwrap();
+        let summary = graph::queue(
+            &runtime,
+            crate::dto::CreateTaskInput {
+                agent_id: agent.id.to_string(),
+                objective: "Summarise the week.".to_owned(),
+                depends_on: vec![gather_crm.id.to_string(), gather_mail.id.to_string()],
+                scheduled_for: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary.status, "blocked");
+        assert_eq!(summary.blocked_by.len(), 2);
+        assert!(!summary.runnable && !summary.unreachable);
+
+        let tasks = runtime.database().tasks();
+        tasks
+            .set_status(gather_crm.id, TaskStatus::Succeeded)
+            .await
+            .unwrap();
+        tasks
+            .set_status(gather_mail.id, TaskStatus::Failed)
+            .await
+            .unwrap();
+
+        let nodes = graph::graph(&runtime, 10).await.unwrap();
+        let join = nodes.iter().find(|node| node.id == summary.id).unwrap();
+        assert!(join.unreachable);
+        assert!(!join.runnable);
+        assert_eq!(
+            join.blocked_by_failure,
+            Some(gather_mail.id.to_string()),
+            "the branch that failed, not merely a branch"
+        );
+        let crm = nodes
+            .iter()
+            .find(|node| node.id == gather_crm.id.to_string())
+            .unwrap();
+        assert_eq!(crm.blocks, vec![summary.id.clone()]);
+
+        // The scheduler's own count agrees with the graph.
+        assert_eq!(tasks.list_unreachable(10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn of_two_failed_branches_the_graph_names_the_one_the_scheduler_does() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let one = runtime
+            .create_task(agent.id, "Collect CRM changes.", &[], None)
+            .await
+            .unwrap();
+        let two = runtime
+            .create_task(agent.id, "Collect replies.", &[], None)
+            .await
+            .unwrap();
+        // The edge written first points at the id that sorts last, so key
+        // order and insertion order disagree about which branch comes first.
+        let (first, second) = if one.id.to_string() > two.id.to_string() {
+            (one.id, two.id)
+        } else {
+            (two.id, one.id)
+        };
+        let join = runtime
+            .create_task(agent.id, "Summarise the week.", &[first, second], None)
+            .await
+            .unwrap();
+        let tasks = runtime.database().tasks();
+        tasks.set_status(second, TaskStatus::Failed).await.unwrap();
+        tasks.set_status(first, TaskStatus::Failed).await.unwrap();
+
+        let nodes = graph::graph(&runtime, 10).await.unwrap();
+        let node = nodes
+            .iter()
+            .find(|node| node.id == join.id.to_string())
+            .unwrap();
+        assert_eq!(node.blocked_by_failure, Some(first.to_string()));
+
+        let scheduler = agentos_runtime::Scheduler::new(
+            runtime.clone(),
+            agentos_runtime::SchedulerOptions::default(),
+        );
+        assert_eq!(scheduler.tick().await.unwrap().abandoned, vec![join.id]);
+        let abandoned = runtime
+            .database()
+            .audit_sink()
+            .all()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|record| record.kind == "agent.task.abandoned")
+            .unwrap();
+        assert_eq!(abandoned.payload["blocked_by"], first.to_string());
+    }
+
+    #[tokio::test]
+    async fn a_cycle_is_refused_with_its_path_and_a_missing_task_is_named() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let first = runtime
+            .create_task(agent.id, "First.", &[], None)
+            .await
+            .unwrap();
+        let second = graph::queue(
+            &runtime,
+            crate::dto::CreateTaskInput {
+                agent_id: agent.id.to_string(),
+                objective: "Second.".to_owned(),
+                depends_on: vec![first.id.to_string()],
+                scheduled_for: Some("2030-01-01T09:00:00Z".to_owned()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(second.scheduled_for.is_some());
+
+        let second_id: TaskId = parse_id("task", &second.id).unwrap();
+        let cycle = runtime
+            .add_task_dependency(first.id, second_id)
+            .await
+            .unwrap_err();
+        let shown = DesktopError::from(cycle).to_string();
+        assert!(shown.contains("cycle"), "{shown}");
+        assert!(shown.contains(&first.id.to_string()), "{shown}");
+
+        let missing = graph::queue(
+            &runtime,
+            crate::dto::CreateTaskInput {
+                agent_id: agent.id.to_string(),
+                objective: "Waits for nothing real.".to_owned(),
+                depends_on: vec![TaskId::new().to_string()],
+                scheduled_for: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(missing.to_string().contains("does not exist"), "{missing}");
+    }
+
+    #[tokio::test]
+    async fn schedules_carry_their_agent_and_cadence_and_a_one_shot_needs_a_time() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let created = schedules::create(
+            &runtime,
+            crate::dto::CreateScheduleInput {
+                agent_id: agent.id.to_string(),
+                name: "weekday-follow-ups".to_owned(),
+                objective: "Draft follow-ups.".to_owned(),
+                cadence: crate::dto::CadenceInput {
+                    kind: "cron".to_owned(),
+                    seconds: None,
+                    expression: Some("0 9 * * 1-5".to_owned()),
+                    clock: Some("local".to_owned()),
+                },
+                first_run_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(created.agent_name, "sales");
+        assert_eq!(created.cadence.description, "cron `0 9 * * 1-5` (local)");
+        assert!(created.next_run_at.is_some());
+
+        let once = schedules::create(
+            &runtime,
+            crate::dto::CreateScheduleInput {
+                agent_id: agent.id.to_string(),
+                name: "one-off".to_owned(),
+                objective: "Close the quarter.".to_owned(),
+                cadence: crate::dto::CadenceInput {
+                    kind: "once".to_owned(),
+                    ..crate::dto::CadenceInput::default()
+                },
+                first_run_at: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(once.to_string().contains("needs a time"), "{once}");
+
+        let listed = schedules::schedule_views(&runtime).await.unwrap();
+        assert_eq!(listed.len(), 1, "the refused one-shot stored nothing");
+        assert_eq!(listed[0].agent_name, "sales");
+    }
+
+    #[tokio::test]
+    async fn the_scheduler_view_counts_what_a_tick_would_find_while_stopped() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let supervisor = crate::state::SchedulerSupervisor::new(
+            runtime.clone(),
+            agentos_runtime::SchedulerOptions::default(),
+        );
+        runtime
+            .create_task(agent.id, "Ready now.", &[], None)
+            .await
+            .unwrap();
+        runtime
+            .create_schedule(
+                agent.id,
+                "overdue",
+                "Run it.",
+                agentos_core::schedule::Cadence::Every { seconds: 3600 },
+                agentos_core::now() - Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+
+        let view = scheduler::scheduler_view(&runtime, &supervisor)
+            .await
+            .unwrap();
+        assert!(!view.running);
+        assert_eq!(view.tick_seconds, 30);
+        assert_eq!(view.max_concurrent_runs, 1);
+        assert_eq!(view.active_schedules, 1);
+        assert_eq!(view.overdue, 1);
+        assert!(view.next_fire_at.is_some());
+        assert_eq!(view.runnable_tasks, 1);
+        assert_eq!(view.unreachable_tasks, 0);
+        assert!(view.started_at.is_none() && view.error.is_none());
+    }
+
+    #[test]
+    fn the_switch_refuses_bad_pacing_before_changing_anything() {
+        tauri::async_runtime::block_on(async {
+            let (_guard, runtime, _agent) = runtime_with_agent().await;
+            let supervisor = crate::state::SchedulerSupervisor::new(
+                runtime.clone(),
+                agentos_runtime::SchedulerOptions::default(),
+            );
+
+            for (tick, max) in [(4, 1), (30, 0)] {
+                assert!(
+                    scheduler::switch(&runtime, &supervisor, true, tick, max)
+                        .await
+                        .is_err()
+                );
+            }
+            assert!(!supervisor.is_running().await);
+            assert!(!runtime.scheduler_preference().await.unwrap().enabled);
+
+            let on = scheduler::switch(&runtime, &supervisor, true, 10, 2)
+                .await
+                .unwrap();
+            assert!(on.running);
+            assert_eq!((on.tick_seconds, on.max_concurrent_runs), (10, 2));
+            assert!(runtime.scheduler_preference().await.unwrap().enabled);
+
+            let off = scheduler::switch(&runtime, &supervisor, false, 10, 2)
+                .await
+                .unwrap();
+            assert!(!off.running);
+            assert!(!runtime.scheduler_preference().await.unwrap().enabled);
+            assert_eq!(
+                records_of(&runtime, "operator.scheduler.started").await,
+                1,
+                "turning it off did not restart it on the way"
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn every_operator_change_the_standing_surface_makes_reads_as_a_line() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let memory = memories::record(
+            &runtime,
+            crate::dto::RememberInput {
+                agent_id: agent.id.to_string(),
+                kind: "decision".to_owned(),
+                content: "Use the shared inbox.".to_owned(),
+                confidence: None,
+            },
+        )
+        .await
+        .unwrap();
+        let memory_id = parse_id("memory", &memory.id).unwrap();
+        memories::revise(&runtime, memory_id, "Use the team inbox.", None)
+            .await
+            .unwrap();
+        runtime.forget_memory(memory_id).await.unwrap();
+
+        let schedule = runtime
+            .create_schedule(
+                agent.id,
+                "hourly",
+                "Check.",
+                agentos_core::schedule::Cadence::Every { seconds: 3600 },
+                agentos_core::now(),
+            )
+            .await
+            .unwrap();
+        runtime
+            .set_schedule_paused(schedule.id, true)
+            .await
+            .unwrap();
+        runtime
+            .set_schedule_paused(schedule.id, false)
+            .await
+            .unwrap();
+        runtime.delete_schedule(schedule.id).await.unwrap();
+
+        let first = runtime
+            .create_task(agent.id, "First.", &[], None)
+            .await
+            .unwrap();
+        let second = runtime
+            .create_task(agent.id, "Second.", &[], None)
+            .await
+            .unwrap();
+        runtime
+            .add_task_dependency(second.id, first.id)
+            .await
+            .unwrap();
+
+        let options = agentos_runtime::SchedulerOptions::default();
+        for transition in [
+            agentos_runtime::SchedulerTransition::Started { on_launch: true },
+            agentos_runtime::SchedulerTransition::Stopped,
+        ] {
+            runtime
+                .record_scheduler_state(transition, &options)
+                .await
+                .unwrap();
+        }
+
+        let events = recent_events(&runtime, 100, false).await.unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        for event in events
+            .iter()
+            .filter(|event| event.kind.starts_with("operator."))
+        {
+            assert!(!event.summary.is_empty(), "{} has no summary", event.kind);
+            seen.insert(event.kind.as_str());
+        }
+        for kind in [
+            "operator.memory.recorded",
+            "operator.memory.revised",
+            "operator.memory.forgotten",
+            "operator.schedule.created",
+            "operator.schedule.paused",
+            "operator.schedule.resumed",
+            "operator.schedule.deleted",
+            "operator.task.created",
+            "operator.task.dependency_added",
+            "operator.scheduler.started",
+            "operator.scheduler.stopped",
+        ] {
+            assert!(seen.contains(kind), "no {kind} record was summarised");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_grant_report_reads_the_policy_not_the_tool_list() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let report = runtime.grant_report(agent.id).await.unwrap();
+        let views: Vec<crate::dto::ToolGrantView> =
+            report.iter().map(crate::dto::ToolGrantView::from).collect();
+
+        // The starter policy reads inside the agent's own workspace only.
+        let read = views
+            .iter()
+            .find(|view| view.tool == "filesystem.read")
+            .unwrap();
+        assert!(read.registered);
+        assert_eq!(read.capabilities[0].capability, "filesystem.read");
+        assert_eq!(read.reach, "scoped");
+        assert_eq!(read.capabilities[0].reach, "scoped");
+    }
+
+    #[tokio::test]
+    async fn the_close_guard_names_what_closing_would_stop() {
+        let (_guard, runtime, _agent) = runtime_with_agent().await;
+        let state = AppState::new(runtime);
+        assert!(crate::lifecycle::close_guard(&state).await.is_quiet());
     }
 }

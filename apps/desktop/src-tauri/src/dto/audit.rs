@@ -20,6 +20,13 @@ pub struct AuditHealth {
     /// Whether every record checked so far verifies and links to the one
     /// before it.
     pub intact: bool,
+    /// Audit records this process failed to write since it launched.
+    ///
+    /// Separate from `intact`, which speaks only for the records the log
+    /// holds: a chain can verify perfectly and still be missing what was never
+    /// written to it. Anything above zero means the log is incomplete.
+    #[ts(type = "number")]
+    pub unrecorded: u64,
     /// When this answer was produced.
     pub checked_at: String,
 }

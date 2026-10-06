@@ -13,6 +13,7 @@ pub mod record;
 
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use agentos_core::event::{AgentEvent, Event};
 use async_trait::async_trait;
@@ -40,6 +41,44 @@ pub enum AuditError {
     /// The durable sink failed.
     #[error("audit sink failed: {0}")]
     Sink(String),
+
+    /// Another writer appended at this position first.
+    ///
+    /// Two processes can each hold a log over one database. Each caches the
+    /// chain's tip, so the one that wrote second is extending a tip that is no
+    /// longer the end. The sink refuses the record rather than store a second
+    /// record at one position or a record that does not follow its
+    /// predecessor, and [`AuditLog::record`] re-reads the tip and seals again.
+    #[error("another writer appended record {sequence} first")]
+    Conflict {
+        /// The position that was taken.
+        sequence: u64,
+    },
+}
+
+/// How many times one record is resealed after losing its position.
+///
+/// Each loss means another writer appended in the moment between reading the
+/// tip and writing, so with two processes the second attempt nearly always
+/// succeeds. The bound is what stops a writer that can never win — a sink that
+/// reports a conflict for some other reason — from looping for ever.
+const MAX_APPEND_ATTEMPTS: usize = 16;
+
+/// Records this process failed to write, since it started.
+///
+/// Process-wide rather than per log: the question an operator asks is whether
+/// the chain on disk is missing anything this process did, whichever log
+/// handle the record went through.
+static UNRECORDED: AtomicU64 = AtomicU64::new(0);
+
+/// How many audit records this process has failed to write since it started.
+///
+/// Every failure counts, including one the caller was told about: either way
+/// the event happened and the chain has no record of it. A count above zero
+/// means the log is incomplete, however intact the records it does hold.
+#[must_use]
+pub fn unrecorded() -> u64 {
+    UNRECORDED.load(Ordering::Relaxed)
 }
 
 /// Somewhere audit records are durably written.
@@ -50,9 +89,15 @@ pub enum AuditError {
 pub trait AuditSink: Send + Sync + fmt::Debug {
     /// Append a record.
     ///
+    /// A sink shared between processes must refuse a record whose position is
+    /// already taken, or whose predecessor is not the record it names, with
+    /// [`AuditError::Conflict`], and must decide that atomically with the
+    /// write.
+    ///
     /// # Errors
     ///
-    /// Returns [`AuditError::Sink`] if the write fails.
+    /// Returns [`AuditError::Conflict`] if another writer holds the position,
+    /// and [`AuditError::Sink`] if the write fails.
     async fn append(&self, record: &AuditRecord) -> Result<(), AuditError>;
 
     /// The sequence number and hash of the last record written, so a restart
@@ -193,21 +238,59 @@ impl AuditLog {
     /// subscriber can never observe an event that was not recorded. A broadcast
     /// with no subscribers is not an error.
     ///
+    /// A failure is counted in [`unrecorded`] before it is returned, so a
+    /// caller that cannot afford to stop — a run mid-action — can carry on
+    /// without the loss going unnoticed.
+    ///
     /// # Errors
     ///
-    /// Returns [`AuditError`] if serialisation or the durable write fails.
+    /// Returns [`AuditError`] if serialisation or the durable write fails, or
+    /// if other writers took every position this record was sealed for.
     pub async fn record(&self, event: Event) -> Result<AuditRecord, AuditError> {
-        let mut tip = self.tip.lock().await;
-        let (last_sequence, last_hash) = &*tip;
-        let record = AuditRecord::seal(&event, last_sequence + 1, last_hash)?;
-
-        self.sink.append(&record).await?;
-        *tip = (record.sequence, record.hash.clone());
-        drop(tip);
+        let record = match self.append(&event).await {
+            Ok(record) => record,
+            Err(error) => {
+                UNRECORDED.fetch_add(1, Ordering::Relaxed);
+                return Err(error);
+            }
+        };
 
         // `send` errors only when nobody is listening, which is normal.
         let _ = self.broadcast.send(Arc::new(event));
         Ok(record)
+    }
+
+    /// Seal and write one record, resealing it after the next position if
+    /// another writer took this one.
+    ///
+    /// The cached tip is exact while this process is the only writer, and is
+    /// re-read from the sink only when the sink says it is stale. The lock is
+    /// held throughout, so within a process the order on disk is still the
+    /// order of the hashes.
+    async fn append(&self, event: &Event) -> Result<AuditRecord, AuditError> {
+        let mut tip = self.tip.lock().await;
+        for _ in 0..MAX_APPEND_ATTEMPTS {
+            let (last_sequence, last_hash) = &*tip;
+            let record = AuditRecord::seal(event, last_sequence + 1, last_hash)?;
+            match self.sink.append(&record).await {
+                Ok(()) => {
+                    *tip = (record.sequence, record.hash.clone());
+                    return Ok(record);
+                }
+                Err(AuditError::Conflict { .. }) => *tip = self.sink.tip().await?,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(AuditError::Sink(format!(
+            "other writers took the next position {MAX_APPEND_ATTEMPTS} times running"
+        )))
+    }
+
+    /// How many audit records this process has failed to write; see
+    /// [`unrecorded`].
+    #[must_use]
+    pub fn unrecorded(&self) -> u64 {
+        unrecorded()
     }
 
     /// Record an event payload with no context attached.
@@ -325,6 +408,101 @@ mod tests {
         assert_eq!(records.len(), 16);
         let verification = verify_chain(&records);
         assert!(verification.is_intact(), "{:?}", verification.breaks);
+    }
+
+    /// A sink another writer is also appending to.
+    ///
+    /// Every record this log offers first finds `rival` records already
+    /// written ahead of it, as if another process had appended them since this
+    /// log last read the tip.
+    #[derive(Debug)]
+    struct Contended {
+        inner: InMemorySink,
+        rival: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl AuditSink for Contended {
+        async fn append(&self, record: &AuditRecord) -> Result<(), AuditError> {
+            let mut rival = self.rival.lock().await;
+            if *rival > 0 {
+                *rival -= 1;
+                let (sequence, hash) = self.inner.tip().await?;
+                let theirs = AuditRecord::seal(&started("theirs"), sequence + 1, &hash)?;
+                self.inner.append(&theirs).await?;
+            }
+            drop(rival);
+            let (sequence, hash) = self.inner.tip().await?;
+            if record.sequence != sequence + 1 || record.prev_hash != hash {
+                return Err(AuditError::Conflict {
+                    sequence: record.sequence,
+                });
+            }
+            self.inner.append(record).await
+        }
+
+        async fn tip(&self) -> Result<(u64, String), AuditError> {
+            self.inner.tip().await
+        }
+    }
+
+    /// A sink whose every write fails.
+    #[derive(Debug)]
+    struct Broken;
+
+    #[async_trait]
+    impl AuditSink for Broken {
+        async fn append(&self, _record: &AuditRecord) -> Result<(), AuditError> {
+            Err(AuditError::Sink("disk full".into()))
+        }
+
+        async fn tip(&self) -> Result<(u64, String), AuditError> {
+            Ok((0, GENESIS_HASH.to_owned()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_record_that_loses_its_position_is_resealed_after_the_winner() {
+        let sink = Arc::new(Contended {
+            inner: InMemorySink::new(),
+            rival: Mutex::new(3),
+        });
+        let log = AuditLog::open(sink.clone()).await.unwrap();
+        for i in 0..3 {
+            log.record(started(&format!("ours {i}"))).await.unwrap();
+        }
+
+        let records = sink.inner.records().await;
+        assert_eq!(records.len(), 6);
+        let verification = verify_chain(&records);
+        assert!(verification.is_intact(), "{:?}", verification.breaks);
+        assert_eq!(log.tip().await.0, 6);
+    }
+
+    #[tokio::test]
+    async fn a_writer_that_never_wins_gives_up_and_is_counted() {
+        let sink = Arc::new(Contended {
+            inner: InMemorySink::new(),
+            rival: Mutex::new(usize::MAX),
+        });
+        let log = AuditLog::open(sink).await.unwrap();
+        let before = unrecorded();
+        assert!(matches!(
+            log.record(started("never")).await,
+            Err(AuditError::Sink(_))
+        ));
+        assert!(unrecorded() > before);
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_is_counted_and_not_broadcast() {
+        let log = AuditLog::open(Arc::new(Broken)).await.unwrap();
+        let mut subscriber = log.subscribe();
+        let before = log.unrecorded();
+
+        assert!(log.record(started("lost")).await.is_err());
+        assert!(log.unrecorded() > before);
+        assert!(subscriber.try_recv().is_err());
     }
 
     #[tokio::test]

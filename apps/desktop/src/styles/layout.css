@@ -281,6 +281,12 @@ button.row {
 button.row:last-child {
   border-bottom: none;
 }
+/* A row in a list is its item's only child, so :last-child above is true of
+ * every one and would take every separator with it. In a list, the item's
+ * place decides instead. */
+[role="listitem"]:not(:last-child) > .row {
+  border-bottom: 1px solid var(--border-subtle);
+}
 .row.clickable {
   cursor: pointer;
 }

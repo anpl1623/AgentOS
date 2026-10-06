@@ -4,8 +4,8 @@ use agentos_core::agent::ModelConfig;
 use agentos_runtime::Runtime;
 use tauri::State;
 
-use super::{Answer, DesktopError, policy_view};
-use crate::dto::{AgentDetail, AgentSummary, CreateAgentInput, task_summary};
+use super::{Answer, DesktopError, parse_id, policy_view};
+use crate::dto::{AgentDetail, AgentSummary, CreateAgentInput, ToolGrantView, task_summary};
 use crate::state::AppState;
 
 /// Every configured agent.
@@ -19,6 +19,26 @@ pub async fn list_agents(state: State<'_, AppState>) -> Answer<Vec<AgentSummary>
         .await?
         .iter()
         .map(AgentSummary::from)
+        .collect())
+}
+
+/// For each tool an agent has been given, how far its policy lets each of the
+/// tool's capabilities reach.
+///
+/// Read by the permission engine from the compiled policy, so the agent editor
+/// can show what a grant actually permits without interpreting rule text.
+#[tauri::command]
+pub async fn grant_report(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Answer<Vec<ToolGrantView>> {
+    let id = parse_id("agent", &agent_id)?;
+    Ok(state
+        .runtime
+        .grant_report(id)
+        .await?
+        .iter()
+        .map(ToolGrantView::from)
         .collect())
 }
 

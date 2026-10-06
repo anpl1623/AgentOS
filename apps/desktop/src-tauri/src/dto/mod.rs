@@ -25,7 +25,12 @@ mod agent;
 mod approval;
 mod audit;
 mod event;
+mod grant;
+mod graph;
 mod insight;
+mod memory;
+mod schedule;
+mod scheduler;
 mod settings;
 mod task;
 
@@ -33,7 +38,12 @@ pub use agent::*;
 pub use approval::*;
 pub use audit::*;
 pub use event::*;
+pub use grant::*;
+pub use graph::*;
 pub use insight::*;
+pub use memory::*;
+pub use schedule::*;
+pub use scheduler::*;
 pub use settings::*;
 pub use task::*;
 
@@ -75,7 +85,9 @@ pub fn summarise_event(payload: &serde_json::Value) -> String {
         return format!("{tool} planned undeclared {undeclared}");
     }
 
-    for name in ["tool", "objective", "reason", "error", "summary"] {
+    // `name` after `objective`: a schedule's firing carries its name and no
+    // objective, and would otherwise read as an empty line.
+    for name in ["tool", "objective", "name", "reason", "error", "summary"] {
         if let Some(value) = payload.get(name).and_then(serde_json::Value::as_str)
             && !value.is_empty()
         {
@@ -158,6 +170,18 @@ mod tests {
             summarise_event(&created),
             "ops created on anthropic/claude-opus-5"
         );
+
+        // A firing names its schedule; a task's objective still wins where
+        // both are present.
+        let fired = serde_json::json!({
+            "event": "schedule.fired",
+            "schedule_id": "s1",
+            "name": "weekday-follow-ups",
+            "task_id": "t1",
+        });
+        assert_eq!(summarise_event(&fired), "weekday-follow-ups");
+        let both = serde_json::json!({"objective": "Summarise the week.", "name": "weekly"});
+        assert_eq!(summarise_event(&both), "Summarise the week.");
 
         assert_eq!(summarise_event(&serde_json::json!({})), "");
     }

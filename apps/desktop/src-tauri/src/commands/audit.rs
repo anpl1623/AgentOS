@@ -74,6 +74,7 @@ pub(crate) async fn check_audit_health(
     Ok(AuditHealth {
         events: runtime.database().audit_sink().count().await?,
         intact: watch.intact,
+        unrecorded: runtime.audit().unrecorded(),
         checked_at: agentos_core::format_timestamp(&agentos_core::now()),
     })
 }

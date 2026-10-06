@@ -1,4 +1,5 @@
-//! Application state, the approval bridge and the live event stream.
+//! Application state, the approval bridge, the live event stream and the
+//! scheduler's supervisor.
 //!
 //! Everything here is plumbing between the runtime and the webview. No decision
 //! about what an agent may do is made in this file, or anywhere else in this
@@ -7,16 +8,21 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use agentos_core::approval::ApprovalRequest;
 use agentos_core::ids::ApprovalId;
-use agentos_runtime::{AuditCheckpoint, Runtime};
+use agentos_runtime::{
+    AuditCheckpoint, Runtime, RuntimeError, Scheduler, SchedulerOptions, SchedulerTransition,
+};
 use agentos_tools::{ApprovalGate, ApprovalOutcome};
 use async_trait::async_trait;
+use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager, UserAttentionType};
 use tokio::sync::{Mutex, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use crate::commands::{Answer, DesktopError};
 use crate::dto::{ApprovalView, EventView, summarise_event};
 
 /// Event emitted when an agent needs a human decision.
@@ -220,6 +226,14 @@ pub struct AppState {
     /// Without it, two clicks on Retry can both see a failed attempt and both
     /// start one, interleaving two traces under a single objective.
     pub retrying: Mutex<()>,
+    /// The scheduler, run inside the application. Constructed stopped.
+    pub scheduler: Arc<SchedulerSupervisor>,
+    /// Set once the window may close without asking: the operator confirmed,
+    /// nothing was live, or the process is already exiting.
+    pub closing: AtomicBool,
+    /// Woken when the interface acknowledges a held close, which is how the
+    /// guard knows somebody is there to be asked.
+    pub close_acknowledged: tokio::sync::Notify,
 }
 
 impl AppState {
@@ -227,12 +241,298 @@ impl AppState {
     #[must_use]
     pub fn new(runtime: Runtime) -> Self {
         Self {
+            scheduler: Arc::new(SchedulerSupervisor::new(
+                runtime.clone(),
+                SchedulerOptions::default(),
+            )),
             runtime,
             approvals: ApprovalBridge::new(),
             audit: Mutex::new(AuditWatch::default()),
             retrying: Mutex::new(()),
+            closing: AtomicBool::new(false),
+            close_acknowledged: tokio::sync::Notify::new(),
         }
     }
+}
+
+/// The refusal shown when another process holds the scheduler's lease.
+pub const SCHEDULER_ELSEWHERE: &str = "the scheduler is already running in another process on \
+     this installation, most likely `agentos schedule run` in a terminal. Schedules fire and \
+     queued tasks start either way; stop that one first to run the scheduler here instead.";
+
+/// The refusal shown when new pacing would stop scheduled runs in progress.
+pub const SCHEDULER_BUSY: &str = "the scheduler has runs in progress, and changing how it is \
+     paced restarts it, which would stop them. Nothing was changed. Try again once they have \
+     finished, or turn the scheduler off, which stops them and says so.";
+
+/// Turn a scheduler's failure into the words an operator is shown.
+///
+/// The lease refusal is the one an operator can act on, and the runtime's own
+/// message for it does not say where the other scheduler probably is. Every
+/// other failure passes through as the runtime wrote it.
+#[must_use]
+pub fn scheduler_failure(error: RuntimeError) -> DesktopError {
+    match error {
+        RuntimeError::SchedulerAlreadyRunning => {
+            DesktopError::Rejected(SCHEDULER_ELSEWHERE.to_owned())
+        }
+        other => DesktopError::Runtime(other),
+    }
+}
+
+/// Runs the scheduler inside the application, so unattended work happens
+/// without a terminal left open.
+///
+/// The scheduler is driven behind the runtime's default `DenyAllGate`, and
+/// never given [`Scheduler::with_approvals`]. Everything the policy permits
+/// outright proceeds; everything that would ask a person is refused with a note
+/// the model can plan around. An approval prompt arriving hours later, out of
+/// the context that produced it, to whoever happens to be at the window, is not
+/// a human in the loop, and a card that gets clicked through because it is the
+/// fortieth of the night is the approval gate made decorative.
+///
+/// A [`Scheduler`] is built afresh on every start, because its cancellation
+/// token is one-shot: once stopped, a scheduler stays stopped.
+#[derive(Debug)]
+pub struct SchedulerSupervisor {
+    runtime: Runtime,
+    options: Mutex<SchedulerOptions>,
+    running: Mutex<Option<Running>>,
+    /// Why the last scheduler ended without being asked to, until the next
+    /// successful start.
+    failure: Mutex<Option<String>>,
+}
+
+/// A scheduler that has been started, and the task driving it.
+#[derive(Debug)]
+struct Running {
+    scheduler: Arc<Scheduler>,
+    /// Resolves once the scheduler has stopped and its stop is recorded.
+    task: JoinHandle<Result<(), RuntimeError>>,
+    started_at: agentos_core::Timestamp,
+}
+
+/// A supervisor's state, read at one moment.
+#[derive(Debug, Clone)]
+pub struct SupervisorStatus {
+    /// Whether a scheduler is ticking.
+    pub running: bool,
+    /// The pacing a start uses, or the running scheduler's.
+    pub options: SchedulerOptions,
+    /// When the running scheduler started.
+    pub started_at: Option<agentos_core::Timestamp>,
+    /// Why the last scheduler stopped on its own, if it did.
+    pub error: Option<String>,
+}
+
+impl SchedulerSupervisor {
+    /// A stopped supervisor that will start schedulers with `options`.
+    #[must_use]
+    pub fn new(runtime: Runtime, options: SchedulerOptions) -> Self {
+        Self {
+            runtime,
+            options: Mutex::new(options),
+            running: Mutex::new(None),
+            failure: Mutex::new(None),
+        }
+    }
+
+    /// Start a scheduler, unless one is already running.
+    ///
+    /// `on_launch` records that a saved preference started it as the
+    /// application opened, rather than somebody asking for it then.
+    ///
+    /// # Errors
+    ///
+    /// [`DesktopError::Rejected`] in plain words when another process holds
+    /// the scheduler lease, and the runtime's error when its start could not
+    /// be recorded. Either way nothing has ticked.
+    pub async fn start(&self, on_launch: bool) -> Answer<()> {
+        let mut running = self.running.lock().await;
+        if let Some(current) = running.as_ref()
+            && !current.task.inner().is_finished()
+        {
+            return Ok(());
+        }
+        if let Some(ended) = running.take() {
+            self.collect(ended).await;
+        }
+
+        let options = *self.options.lock().await;
+        let scheduler = Arc::new(Scheduler::new(self.runtime.clone(), options));
+
+        // The lease first, so a refusal is this call's error, which the switch
+        // can show, rather than a task that dies a moment after the switch has
+        // said "on"; and so the start is recorded only for the scheduler that
+        // will run.
+        if let Err(error) = scheduler.take_lease() {
+            let error = scheduler_failure(error);
+            *self.failure.lock().await = Some(error.to_string());
+            return Err(error);
+        }
+
+        // Then the record, before the first tick, so the chain shows the
+        // scheduler starting ahead of anything it starts. A start that cannot
+        // be recorded does not stand: unattended work with no record that
+        // anything was set to do it is the gap the operator record exists to
+        // close. Nothing has ticked yet, and dropping the scheduler releases
+        // its lease.
+        if let Err(error) = self
+            .runtime
+            .record_scheduler_state(SchedulerTransition::Started { on_launch }, &options)
+            .await
+        {
+            *self.failure.lock().await = Some(error.to_string());
+            return Err(error.into());
+        }
+
+        let runtime = self.runtime.clone();
+        let ticking = Arc::clone(&scheduler);
+        let task = tauri::async_runtime::spawn(async move {
+            // `run` keeps the lease taken above.
+            let ended = ticking.run().await;
+            // However it ended, by request or by failure, from here nothing
+            // fires, and the chain says so.
+            if let Err(error) = runtime
+                .record_scheduler_state(SchedulerTransition::Stopped, &options)
+                .await
+            {
+                tracing::error!(%error, "could not record that the scheduler stopped");
+            }
+            if let Err(error) = &ended {
+                tracing::error!(%error, "the scheduler stopped on its own");
+            }
+            ended
+        });
+        let started = Running {
+            scheduler,
+            task,
+            started_at: agentos_core::now(),
+        };
+
+        *self.failure.lock().await = None;
+        *running = Some(started);
+        Ok(())
+    }
+
+    /// Stop the scheduler: cancel it, wait for its runs to drain, and join it.
+    ///
+    /// The runs it started are given the same cancellation the operator's stop
+    /// button uses, and waited for, so none is left marked as running.
+    pub async fn stop(&self) {
+        let Some(current) = self.running.lock().await.take() else {
+            return;
+        };
+        current.scheduler.shutdown().await;
+        self.collect(current).await;
+    }
+
+    /// Whether a scheduler is ticking.
+    pub async fn is_running(&self) -> bool {
+        self.running
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|current| !current.task.inner().is_finished())
+    }
+
+    /// Take new pacing for the next start.
+    ///
+    /// Pacing equal to what is in force changes nothing, so saving the same
+    /// settings twice, or turning on a scheduler that is already on, leaves it
+    /// running untouched. A running scheduler with different pacing has to be
+    /// replaced, since a scheduler's pacing is fixed when it is built; it is
+    /// stopped here, and the caller starts its successor with
+    /// [`Self::start`]. Stopping a scheduler cancels the runs it started, and a
+    /// change of pacing is not a decision to stop work, so while any of them
+    /// is still going the change is refused and nothing is touched.
+    ///
+    /// # Errors
+    ///
+    /// [`DesktopError::Rejected`] with [`SCHEDULER_BUSY`] while the running
+    /// scheduler has runs in progress.
+    pub async fn repace(&self, options: SchedulerOptions) -> Answer<()> {
+        let mut running = self.running.lock().await;
+        let live = running
+            .as_ref()
+            .filter(|current| !current.task.inner().is_finished());
+        if let Some(current) = live
+            && *current.scheduler.options() != options
+        {
+            if !current.scheduler.shutdown_if_idle().await {
+                return Err(DesktopError::Rejected(SCHEDULER_BUSY.to_owned()));
+            }
+            if let Some(stopped) = running.take() {
+                self.collect(stopped).await;
+            }
+        }
+        *self.options.lock().await = options;
+        Ok(())
+    }
+
+    /// The supervisor's state now.
+    pub async fn status(&self) -> SupervisorStatus {
+        let mut running = self.running.lock().await;
+        // A scheduler that ended on its own is collected here, so its reason
+        // is reported rather than the switch quietly reading "off".
+        if running
+            .as_ref()
+            .is_some_and(|current| current.task.inner().is_finished())
+            && let Some(ended) = running.take()
+        {
+            self.collect(ended).await;
+        }
+
+        SupervisorStatus {
+            running: running.is_some(),
+            options: match running.as_ref() {
+                Some(current) => *current.scheduler.options(),
+                None => *self.options.lock().await,
+            },
+            started_at: running.as_ref().map(|current| current.started_at),
+            error: self.failure.lock().await.clone(),
+        }
+    }
+
+    /// Join a scheduler's task, keeping the reason if it failed.
+    async fn collect(&self, ended: Running) {
+        let failure = match ended.task.await {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(scheduler_failure(error).to_string()),
+            Err(error) => Some(format!("the scheduler's task failed: {error}")),
+        };
+        if failure.is_some() {
+            *self.failure.lock().await = failure;
+        }
+    }
+}
+
+/// Start the scheduler as the application opens, if the operator left it on.
+///
+/// Spawned, so a slow first tick does not hold the window back. A failure,
+/// most often another process holding the lease, is kept for the status view
+/// to report; the preference is left as it was, so the next launch tries
+/// again.
+pub fn resume_scheduler(supervisor: Arc<SchedulerSupervisor>) {
+    tauri::async_runtime::spawn(async move {
+        let preference = match supervisor.runtime.scheduler_preference().await {
+            Ok(preference) => preference,
+            Err(error) => {
+                tracing::error!(%error, "could not read the scheduler preference");
+                return;
+            }
+        };
+        if !preference.enabled {
+            return;
+        }
+        if let Err(error) = supervisor.repace(preference.options()).await {
+            tracing::error!(%error, "could not apply the saved scheduler pacing");
+            return;
+        }
+        if let Err(error) = supervisor.start(true).await {
+            tracing::warn!(%error, "the saved scheduler preference could not be honoured");
+        }
+    });
 }
 
 /// Forward every audit event to the interface as it happens.
@@ -348,6 +648,312 @@ mod tests {
         // The sender is gone, so the waiting run sees a closed channel and
         // treats it as a cancellation rather than hanging forever.
         assert!(receiver.await.is_err());
+    }
+
+    /// Records of `kind` in the runtime's audit log, oldest first.
+    async fn payloads_of(runtime: &Runtime, kind: &str) -> Vec<serde_json::Value> {
+        runtime
+            .database()
+            .audit_sink()
+            .all()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|record| record.kind == kind)
+            .map(|record| record.payload)
+            .collect()
+    }
+
+    /// A runtime over a real data directory, so the scheduler lease is real.
+    async fn runtime_in(directory: &std::path::Path) -> Runtime {
+        Runtime::open_with_secrets(
+            agentos_runtime::RuntimeConfig::rooted_at(directory),
+            Arc::new(agentos_secrets::InMemorySecretStore::new()),
+        )
+        .await
+        .unwrap()
+    }
+
+    // These drive the supervisor on Tauri's own runtime, as the application
+    // does: it spawns there, and a test runtime of its own would be torn down
+    // under the scheduler's task.
+    #[test]
+    fn the_supervisor_starts_stops_and_starts_again() {
+        tauri::async_runtime::block_on(async {
+            let directory = tempfile::TempDir::new().unwrap();
+            let runtime = runtime_in(directory.path()).await;
+            let options = SchedulerOptions::default().with_tick(std::time::Duration::from_secs(5));
+            let supervisor = SchedulerSupervisor::new(runtime.clone(), options);
+            assert!(!supervisor.is_running().await);
+
+            supervisor.start(true).await.unwrap();
+            assert!(supervisor.is_running().await);
+            // A second start while running is not a second scheduler.
+            supervisor.start(false).await.unwrap();
+            let status = supervisor.status().await;
+            assert!(status.running);
+            assert!(status.started_at.is_some());
+            assert_eq!(status.options.tick, std::time::Duration::from_secs(5));
+
+            supervisor.stop().await;
+            assert!(!supervisor.is_running().await);
+            // A new scheduler, since a stopped one's cancellation cannot be
+            // undone; the lease the first held has been let go.
+            supervisor.start(false).await.unwrap();
+            assert!(supervisor.is_running().await);
+            supervisor.stop().await;
+            supervisor.stop().await;
+
+            let started = payloads_of(&runtime, "operator.scheduler.started").await;
+            assert_eq!(started.len(), 2);
+            assert_eq!(started[0]["on_launch"], true);
+            assert_eq!(started[1]["on_launch"], false);
+            assert_eq!(
+                payloads_of(&runtime, "operator.scheduler.stopped")
+                    .await
+                    .len(),
+                2
+            );
+            assert!(supervisor.status().await.error.is_none());
+        });
+    }
+
+    #[test]
+    fn a_held_lease_is_refused_in_plain_words_and_recorded_as_nothing() {
+        tauri::async_runtime::block_on(async {
+            let directory = tempfile::TempDir::new().unwrap();
+            let terminal = SchedulerSupervisor::new(
+                runtime_in(directory.path()).await,
+                SchedulerOptions::default(),
+            );
+            let runtime = runtime_in(directory.path()).await;
+            let window = SchedulerSupervisor::new(runtime.clone(), SchedulerOptions::default());
+
+            terminal.start(false).await.unwrap();
+            let refused = window.start(false).await.unwrap_err();
+            assert_eq!(refused.to_string(), SCHEDULER_ELSEWHERE);
+            assert!(!window.is_running().await);
+            let status = window.status().await;
+            assert!(!status.running);
+            assert_eq!(status.error.as_deref(), Some(SCHEDULER_ELSEWHERE));
+            // One start recorded, the one that took the lease.
+            assert_eq!(
+                payloads_of(&runtime, "operator.scheduler.started")
+                    .await
+                    .len(),
+                1
+            );
+
+            terminal.stop().await;
+            window.start(false).await.unwrap();
+            assert!(window.status().await.error.is_none());
+            window.stop().await;
+        });
+    }
+
+    #[test]
+    fn only_the_lease_refusal_is_reworded() {
+        assert_eq!(
+            scheduler_failure(RuntimeError::SchedulerAlreadyRunning).to_string(),
+            SCHEDULER_ELSEWHERE
+        );
+        assert!(SCHEDULER_ELSEWHERE.contains("agentos schedule run"));
+        assert_eq!(
+            scheduler_failure(RuntimeError::Rejected("no".to_owned())).to_string(),
+            "no"
+        );
+    }
+
+    /// A model that answers only once the test lets it, so a run can be held
+    /// in progress for as long as a test needs.
+    #[derive(Debug)]
+    struct Held {
+        release: Arc<tokio::sync::Semaphore>,
+    }
+
+    #[async_trait]
+    impl agentos_providers::ModelProvider for Held {
+        fn id(&self) -> &str {
+            agentos_providers::provider_ids::MOCK
+        }
+
+        fn capabilities(&self) -> agentos_providers::ProviderCapabilities {
+            agentos_providers::ProviderCapabilities {
+                tools: true,
+                usage_reporting: true,
+                vision: false,
+            }
+        }
+
+        async fn complete(
+            &self,
+            request: agentos_providers::CompletionRequest,
+            cancel: CancellationToken,
+        ) -> Result<agentos_providers::CompletionResponse, agentos_providers::ProviderError>
+        {
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    return Err(agentos_providers::ProviderError::Cancelled);
+                }
+                permit = self.release.acquire() => drop(permit),
+            }
+            agentos_providers::MockProvider::answering("Done.")
+                .complete(request, cancel)
+                .await
+        }
+    }
+
+    /// A runtime whose runs wait for `release`, with one agent and one task
+    /// queued for it.
+    async fn held_runtime(
+        directory: &std::path::Path,
+        release: &Arc<tokio::sync::Semaphore>,
+    ) -> (Runtime, agentos_core::ids::TaskId) {
+        let mut runtime = runtime_in(directory).await;
+        runtime.set_provider_factory(Arc::new(agentos_runtime::FixedProviderFactory::new(
+            Arc::new(Held {
+                release: Arc::clone(release),
+            }),
+        )));
+        let agent = runtime
+            .create_agent(
+                "worker",
+                "Do the work.",
+                agentos_core::agent::ModelConfig::new("mock", "scripted"),
+                vec![],
+            )
+            .await
+            .unwrap();
+        let task = runtime
+            .create_task(agent.id, "Queued.", &[], None)
+            .await
+            .unwrap();
+        (runtime, task.id)
+    }
+
+    async fn wait_for_status(
+        runtime: &Runtime,
+        task: agentos_core::ids::TaskId,
+        status: agentos_core::task::TaskStatus,
+    ) {
+        for _ in 0..400 {
+            if runtime.task(task).await.unwrap().status == status {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("the task never became {status:?}");
+    }
+
+    #[test]
+    fn new_pacing_waits_for_scheduled_runs_and_the_same_pacing_disturbs_nothing() {
+        tauri::async_runtime::block_on(async {
+            use agentos_core::task::TaskStatus;
+
+            let directory = tempfile::TempDir::new().unwrap();
+            let release = Arc::new(tokio::sync::Semaphore::new(0));
+            let (runtime, task) = held_runtime(directory.path(), &release).await;
+            let options = SchedulerOptions::default();
+            let supervisor = SchedulerSupervisor::new(runtime.clone(), options);
+
+            // Pacing for a stopped scheduler is kept for its start.
+            let slower = options.with_tick(std::time::Duration::from_secs(90));
+            supervisor.repace(slower).await.unwrap();
+            assert!(!supervisor.is_running().await);
+            supervisor.repace(options).await.unwrap();
+
+            supervisor.start(false).await.unwrap();
+            wait_for_status(&runtime, task, TaskStatus::Running).await;
+
+            // The same pacing again, as saving unchanged settings sends:
+            // nothing is restarted and the run goes on.
+            supervisor.repace(options).await.unwrap();
+            assert!(supervisor.is_running().await);
+            // New pacing would mean a restart, and a restart would cancel the
+            // run, so it is refused and nothing changes.
+            let refused = supervisor.repace(slower).await.unwrap_err();
+            assert_eq!(refused.to_string(), SCHEDULER_BUSY);
+            assert!(supervisor.is_running().await);
+            assert_eq!(supervisor.status().await.options, options);
+            assert_eq!(
+                runtime.task(task).await.unwrap().status,
+                TaskStatus::Running
+            );
+
+            // Once the run is over, the same change goes through.
+            release.add_permits(1);
+            wait_for_status(&runtime, task, TaskStatus::Succeeded).await;
+            supervisor.repace(slower).await.unwrap();
+            assert!(!supervisor.is_running().await);
+            supervisor.start(false).await.unwrap();
+            assert_eq!(supervisor.status().await.options, slower);
+            supervisor.stop().await;
+
+            let started = payloads_of(&runtime, "operator.scheduler.started").await;
+            assert_eq!(started.len(), 2);
+            assert_eq!(started[1]["tick_seconds"], 90);
+            assert!(
+                payloads_of(&runtime, "agent.task.cancelled")
+                    .await
+                    .is_empty()
+            );
+        });
+    }
+
+    #[test]
+    fn a_scheduler_is_recorded_as_started_before_it_starts_anything() {
+        tauri::async_runtime::block_on(async {
+            let directory = tempfile::TempDir::new().unwrap();
+            let release = Arc::new(tokio::sync::Semaphore::new(1));
+            let (runtime, task) = held_runtime(directory.path(), &release).await;
+            let supervisor = SchedulerSupervisor::new(runtime.clone(), SchedulerOptions::default());
+
+            // With the chain refusing writes, the start cannot be recorded,
+            // and the queued task must still be queued afterwards: nothing
+            // ticked on the strength of a start the chain never heard of.
+            sqlx::query(
+                "CREATE TRIGGER refuse_records BEFORE INSERT ON audit_events
+                 BEGIN SELECT RAISE(ABORT, 'records refused'); END",
+            )
+            .execute(runtime.database().pool())
+            .await
+            .unwrap();
+            assert!(supervisor.start(false).await.is_err());
+            assert!(!supervisor.is_running().await);
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            assert_eq!(
+                runtime.task(task).await.unwrap().status,
+                agentos_core::task::TaskStatus::Pending
+            );
+            sqlx::query("DROP TRIGGER refuse_records")
+                .execute(runtime.database().pool())
+                .await
+                .unwrap();
+
+            // Recorded, the start precedes the first thing it starts, and the
+            // failed attempt let its lease go.
+            supervisor.start(false).await.unwrap();
+            wait_for_status(&runtime, task, agentos_core::task::TaskStatus::Succeeded).await;
+            supervisor.stop().await;
+            let kinds: Vec<String> = runtime
+                .database()
+                .audit_sink()
+                .all()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|record| record.kind)
+                .collect();
+            let started = kinds
+                .iter()
+                .position(|kind| kind == "operator.scheduler.started")
+                .unwrap();
+            let ran = kinds
+                .iter()
+                .position(|kind| kind == "agent.task.started")
+                .unwrap();
+            assert!(started < ran, "{kinds:?}");
+        });
     }
 
     #[test]

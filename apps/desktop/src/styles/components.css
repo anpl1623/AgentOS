@@ -223,8 +223,16 @@
   justify-content: space-between;
   gap: var(--s-6);
 }
+/* A level-two heading, reset from the bare h2's small-capitals section label:
+ * upper-casing would change how a tool name reads on the one screen where it
+ * must read exactly. */
 .approval-title {
+  font-size: inherit;
   font-weight: var(--fw-semibold);
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text);
+  margin: 0;
 }
 .approval-body {
   flex: 1 1 auto;
@@ -334,6 +342,15 @@ pre.code {
   overflow: auto;
   white-space: pre;
 }
+/* Arguments awaiting a decision wrap instead. A line that runs past the right
+ * edge keeps its tail behind a sideways scroll the operator may never take,
+ * and the tail is where a payload hides what matters. A soft wrap changes no
+ * character, keeps every space and line break, and anything invisible is
+ * already drawn as an escape; the block still scrolls down. */
+pre.code.wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 /* --- trace --------------------------------------------------------------- */
 
@@ -379,6 +396,25 @@ pre.code {
 }
 .event:last-child {
   border-bottom: none;
+}
+/* A line that opens its record is a .row button, for the platform's keyboard
+ * handling, and keeps the feed's shape: one line, the summary ending in an
+ * ellipsis rather than wrapping beneath the time. */
+.row.event {
+  flex-wrap: nowrap;
+  border-bottom-color: var(--border-hairline);
+}
+[role="listitem"]:not(:last-child) > .event {
+  border-bottom-color: var(--border-hairline);
+}
+/* The feed's panel clips its corners without becoming a scroll container, so
+ * a day's heading pins to the main column while its events scroll past. hidden
+ * stays as the fallback for a webview without clip, as on .approval; flow-root
+ * keeps the formatting context that hidden gave. */
+.panel.feed {
+  display: flow-root;
+  overflow: hidden;
+  overflow: clip;
 }
 .event-time {
   color: var(--text-faint);
@@ -426,6 +462,7 @@ pre.code {
   color: var(--text-dim);
   background: var(--surface-panel);
   border-bottom: 1px solid var(--border-subtle);
+  margin: 0;
 }
 
 /* --- loading ------------------------------------------------------------- */

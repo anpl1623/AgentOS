@@ -167,11 +167,13 @@ export function feedEvents(windows: EventWindows, filter: FeedFilter): readonly 
 export interface EventStream extends EventWindows {
   /** History has been read at least once. */
   loaded: boolean;
+  /** How many records the deepest history read so far asked for; 0 before one has answered. */
+  depth: number;
   /** Why the last history read failed, if it did. */
   error: string | null;
 }
 
-let stream: EventStream = { all: [], security: [], loaded: false, error: null };
+let stream: EventStream = { all: [], security: [], loaded: false, depth: 0, error: null };
 let filter: FeedFilter = { securityOnly: false, follow: true };
 let started = false;
 let pending: EventView[] = [];
@@ -207,11 +209,22 @@ export function startEventStream(): void {
   void reloadEventHistory();
 }
 
-/** Read recent history from the audit log and merge it into the feed. */
-export async function reloadEventHistory(): Promise<void> {
+/**
+ * Read recent history from the audit log and merge it into the feed.
+ *
+ * `limit` reads further back than launch does. What it brings in stays in the
+ * shared window, so a deeper read outlives the screen that asked for it; a
+ * later, shallower reload merges by id and does not shorten it.
+ */
+export async function reloadEventHistory(limit: number = HISTORY_LOAD): Promise<void> {
   try {
-    const history = await api.activity(HISTORY_LOAD);
-    publish({ ...mergeEvents(stream, history), loaded: true, error: null });
+    const history = await api.activity(limit);
+    publish({
+      ...mergeEvents(stream, history),
+      loaded: true,
+      depth: Math.max(stream.depth, limit),
+      error: null,
+    });
   } catch (failure) {
     publish({ ...stream, error: describeError(failure) });
   }
