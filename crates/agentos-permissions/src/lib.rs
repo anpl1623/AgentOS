@@ -30,5 +30,8 @@ pub use engine::{DenyAllEngine, PermissionEngine, PolicyEngine};
 pub use error::{OriginError, PathError, PatternError, PolicyError};
 pub use origin::normalise_origin;
 pub use pattern::{GlobKind, NamePattern, ResourcePattern};
-pub use policy::{IMMUTABLE_DENY, Policy, PolicyRule, TaintPolicy, is_immutably_denied};
+pub use policy::{
+    ApprovalPolicy, DEFAULT_MAX_APPROVALS_PER_RUN, IMMUTABLE_DENY, Policy, PolicyRule, TaintPolicy,
+    is_immutably_denied,
+};
 pub use yaml::{PolicyDocument, load_policy_file, quote_scalar, starter_policy_yaml};

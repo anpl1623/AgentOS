@@ -46,6 +46,8 @@ const EXPECTED: &[(&str, &[&str])] = &[
         &["filesystem.delete", "filesystem.write"],
     ),
     ("filesystem.read", &["filesystem.read"]),
+    // `filesystem.search` names what it finds and, given `contains`, reads it.
+    ("filesystem.search", &["filesystem.list", "filesystem.read"]),
     ("filesystem.write", &["filesystem.write"]),
     // `terminal.exec` authorises where a program runs as well as which one, so
     // its working directory is a `filesystem.read` it must declare.
@@ -120,6 +122,10 @@ async fn tools_that_can_plan_offline_plan_within_their_manifest() {
             serde_json::json!({"path": "b.txt", "content": "y"}),
         ),
         ("filesystem.list", serde_json::json!({"path": "."})),
+        (
+            "filesystem.search",
+            serde_json::json!({"path": ".", "name": "*.txt", "contains": "x"}),
+        ),
         ("filesystem.delete", serde_json::json!({"path": "a.txt"})),
         (
             "filesystem.copy",

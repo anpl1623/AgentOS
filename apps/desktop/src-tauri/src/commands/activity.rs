@@ -1,4 +1,4 @@
-//! The activity feed and audit verification.
+//! The activity feed.
 
 use tauri::State;
 
@@ -7,18 +7,20 @@ use crate::dto::EventView;
 use crate::state::AppState;
 
 /// Recent audit events.
+///
+/// `security_only` filters on the runtime's side, so a feed of refusals and
+/// escalations is the most recent of those, not whichever of them happen to
+/// sit among the most recent records of every kind.
 #[tauri::command]
-pub async fn activity(state: State<'_, AppState>, limit: Option<i64>) -> Answer<Vec<EventView>> {
-    recent_events(&state.runtime, limit.unwrap_or(200)).await
-}
-
-/// Verify the audit chain.
-#[tauri::command]
-pub async fn verify_audit(state: State<'_, AppState>) -> Answer<Vec<String>> {
-    let verification = state.runtime.verify_audit().await?;
-    Ok(verification
-        .breaks
-        .iter()
-        .map(ToString::to_string)
-        .collect())
+pub async fn activity(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+    security_only: Option<bool>,
+) -> Answer<Vec<EventView>> {
+    recent_events(
+        &state.runtime,
+        limit.unwrap_or(200),
+        security_only.unwrap_or(false),
+    )
+    .await
 }

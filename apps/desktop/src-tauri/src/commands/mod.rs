@@ -6,7 +6,11 @@
 //! equal footing with the CLI, and the moment logic starts accumulating here the
 //! two clients have begun to disagree.
 
+use std::collections::HashMap;
+
 use agentos_core::approval::ApprovalRequest;
+use agentos_core::ids::{AgentId, TaskId};
+use agentos_core::task::{Task, TaskStatus};
 use agentos_runtime::Runtime;
 use tauri::State;
 
@@ -19,14 +23,20 @@ use crate::state::AppState;
 mod activity;
 mod agents;
 mod approvals;
+mod audit;
+mod insights;
 mod policies;
+mod runs;
 mod settings;
 mod tasks;
 
 pub use activity::*;
 pub use agents::*;
 pub use approvals::*;
+pub use audit::*;
+pub use insights::*;
 pub use policies::*;
+pub use runs::*;
 pub use settings::*;
 pub use tasks::*;
 
@@ -43,6 +53,10 @@ pub enum DesktopError {
     /// Storage failed.
     #[error(transparent)]
     Database(#[from] agentos_persistence::DbError),
+
+    /// The audit log could not be read.
+    #[error(transparent)]
+    Audit(#[from] agentos_audit::AuditError),
 
     /// An identifier from the interface was not a valid one.
     #[error("`{value}` is not a valid {kind} identifier")]
@@ -113,12 +127,18 @@ pub(crate) fn policy_view(document: String, version: i64) -> PolicyView {
 }
 
 /// Turn approval requests into views, attaching the objective each belongs to.
+///
+/// Requests cluster on a few tasks, so each distinct task is read once rather
+/// than once per request.
 pub(crate) async fn approval_views(
     runtime: &Runtime,
     requests: Vec<ApprovalRequest>,
 ) -> Answer<Vec<ApprovalView>> {
-    let mut views = Vec::with_capacity(requests.len());
-    for request in requests {
+    let mut objectives: HashMap<TaskId, String> = HashMap::new();
+    for request in &requests {
+        if objectives.contains_key(&request.task_id) {
+            continue;
+        }
         let objective = runtime
             .database()
             .tasks()
@@ -126,32 +146,94 @@ pub(crate) async fn approval_views(
             .await?
             .map(|task| task.objective)
             .unwrap_or_default();
-        views.push(ApprovalView::new(&request, objective));
+        objectives.insert(request.task_id, objective);
     }
-    Ok(views)
+    Ok(requests
+        .iter()
+        .map(|request| {
+            let objective = objectives
+                .get(&request.task_id)
+                .cloned()
+                .unwrap_or_default();
+            ApprovalView::new(request, objective)
+        })
+        .collect())
+}
+
+/// Every agent's name by identity, read in one query.
+pub(crate) async fn agent_names(runtime: &Runtime) -> Answer<HashMap<AgentId, String>> {
+    Ok(runtime
+        .database()
+        .agents()
+        .list()
+        .await?
+        .into_iter()
+        .map(|agent| (agent.id, agent.name))
+        .collect())
+}
+
+/// Summarise tasks, given every agent's name.
+async fn summarise_tasks(
+    runtime: &Runtime,
+    tasks: Vec<Task>,
+    names: &HashMap<AgentId, String>,
+) -> Answer<Vec<TaskSummary>> {
+    let mut out = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        let name = names
+            .get(&task.agent_id)
+            .map_or("(deleted)", String::as_str);
+        let run = runtime.database().runs().latest_for_task(task.id).await?;
+        out.push(task_summary(&task, name, run.as_ref()));
+    }
+    Ok(out)
 }
 
 /// Load recent tasks with their agent names and latest runs.
 pub(crate) async fn task_summaries(runtime: &Runtime, limit: i64) -> Answer<Vec<TaskSummary>> {
     let tasks = runtime.database().tasks().list(limit).await?;
-    let mut out = Vec::with_capacity(tasks.len());
-    for task in tasks {
-        let name = runtime
-            .database()
-            .agents()
-            .find(task.agent_id)
-            .await?
-            .map(|agent| agent.name)
-            .unwrap_or_else(|| "(deleted)".to_owned());
-        let run = runtime.database().runs().latest_for_task(task.id).await?;
-        out.push(task_summary(&task, &name, run.as_ref()));
-    }
-    Ok(out)
+    let names = agent_names(runtime).await?;
+    summarise_tasks(runtime, tasks, &names).await
+}
+
+/// How many failures the dashboard lists.
+const FAILURES_SHOWN: i64 = 5;
+
+/// Recent tasks whose latest attempt failed, newest first.
+///
+/// A task's status follows its latest run, so a failure that a retry has since
+/// fixed drops out on its own. A task the scheduler abandoned because its
+/// dependency could not succeed is failed without ever having run, and is
+/// listed too: it is as much in need of a person as one that ran and failed.
+async fn recent_failures(
+    runtime: &Runtime,
+    names: &HashMap<AgentId, String>,
+) -> Answer<Vec<TaskSummary>> {
+    let failed = runtime
+        .database()
+        .tasks()
+        .list_with_status(TaskStatus::Failed, FAILURES_SHOWN)
+        .await?;
+    summarise_tasks(runtime, failed, names).await
 }
 
 /// Recent audit events, newest last so the feed reads downward.
-pub(crate) async fn recent_events(runtime: &Runtime, limit: i64) -> Answer<Vec<EventView>> {
-    let mut records = runtime.database().audit_sink().tail(limit).await?;
+///
+/// With `security_only`, only the kinds [`agentos_core::event::is_security_kind`]
+/// names are kept, and `limit` counts those rather than the records read to
+/// find them.
+pub(crate) async fn recent_events(
+    runtime: &Runtime,
+    limit: i64,
+    security_only: bool,
+) -> Answer<Vec<EventView>> {
+    let sink = runtime.database().audit_sink();
+    let mut records = if security_only {
+        sink.tail_of_kinds(agentos_core::event::SECURITY_KINDS, limit)
+            .await?
+    } else {
+        sink.tail(limit).await?
+    };
     records.reverse();
     Ok(records
         .into_iter()
@@ -173,33 +255,32 @@ pub(crate) async fn recent_events(runtime: &Runtime, limit: i64) -> Answer<Vec<E
 // ---------------------------------------------------------------------------
 
 /// Everything the dashboard shows.
+///
+/// Polled while the window is visible, so it reads nothing that grows with the
+/// age of the installation: no audit verification, no event feed. The chain's
+/// health is [`audit_health`], on its own slower schedule.
 #[tauri::command]
 pub async fn dashboard(state: State<'_, AppState>) -> Answer<DashboardView> {
-    let runtime = &state.runtime;
+    dashboard_view(&state.runtime).await
+}
+
+/// The dashboard, shaped.
+pub(crate) async fn dashboard_view(runtime: &Runtime) -> Answer<DashboardView> {
     let agents = runtime.database().agents().list().await?;
+    let names: HashMap<AgentId, String> = agents
+        .iter()
+        .map(|agent| (agent.id, agent.name.clone()))
+        .collect();
 
     let active = runtime.database().tasks().list_active().await?;
-    let mut running_tasks = Vec::with_capacity(active.len());
-    for task in active {
-        let name = runtime
-            .database()
-            .agents()
-            .find(task.agent_id)
-            .await?
-            .map(|agent| agent.name)
-            .unwrap_or_else(|| "(deleted)".to_owned());
-        let run = runtime.database().runs().latest_for_task(task.id).await?;
-        running_tasks.push(task_summary(&task, &name, run.as_ref()));
-    }
+    let running_tasks = summarise_tasks(runtime, active, &names).await?;
 
     let pending = runtime.database().approvals().list_pending().await?;
-    let verification = runtime.verify_audit().await?;
 
     Ok(DashboardView {
         agents: agents.iter().map(AgentSummary::from).collect(),
         running_tasks,
         pending_approvals: approval_views(runtime, pending).await?,
-        recent_events: recent_events(runtime, 40).await?,
         recent_refusals: runtime
             .database()
             .executions()
@@ -208,8 +289,7 @@ pub async fn dashboard(state: State<'_, AppState>) -> Answer<DashboardView> {
             .iter()
             .map(ExecutionView::from)
             .collect(),
-        audit_events: runtime.database().audit_sink().count().await?,
-        audit_intact: verification.is_intact(),
+        recent_failures: recent_failures(runtime, &names).await?,
     })
 }
 
@@ -217,15 +297,119 @@ pub async fn dashboard(state: State<'_, AppState>) -> Answer<DashboardView> {
 mod tests {
     use std::sync::Arc;
 
+    use std::time::Duration;
+
+    use agentos_audit::{AuditRecord, AuditSink};
     use agentos_core::agent::ModelConfig;
     use agentos_core::approval::ApprovalStatus;
-    use agentos_core::ids::{AgentId, ApprovalId};
-    use agentos_core::permission::Capability;
+    use agentos_core::event::{AgentEvent, Event};
+    use agentos_core::ids::{AgentId, ApprovalId, ToolExecutionId};
+    use agentos_core::permission::{Capability, Effect};
     use agentos_core::risk::RiskLevel;
-    use agentos_core::task::{Task, TaskRun};
+    use agentos_core::task::{Task, TaskRun, TaskState};
+    use agentos_core::tool::ToolOutcome;
+    use agentos_persistence::ToolExecutionRecord;
+    use agentos_runtime::{AuditCheckpoint, RunApprovalGate, RunStateMachine};
     use agentos_secrets::InMemorySecretStore;
+    use agentos_tools::{ApprovalGate, ApprovalOutcome};
+    use tokio::sync::Mutex;
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
+    use crate::dto::ApprovalDecisionInput;
+    use crate::state::AuditWatch;
+
+    /// A task with one run, for the agent [`runtime_with_agent`] made.
+    async fn task_with_run(
+        runtime: &Runtime,
+        agent: &agentos_core::agent::Agent,
+        objective: &str,
+        state: TaskState,
+    ) -> (Task, TaskRun) {
+        let task = runtime.create_task(agent.id, objective).await.unwrap();
+        let mut run = TaskRun::new(task.id, 1);
+        run.state = state;
+        runtime.database().runs().insert(&run).await.unwrap();
+        runtime
+            .database()
+            .tasks()
+            .set_status(task.id, TaskStatus::from_run_state(state))
+            .await
+            .unwrap();
+        (task, run)
+    }
+
+    /// A high-risk request on a tainted run, as the pipeline raises one.
+    fn approval_request(
+        agent: &agentos_core::agent::Agent,
+        task: &Task,
+        run: &TaskRun,
+    ) -> ApprovalRequest {
+        ApprovalRequest {
+            id: ApprovalId::new(),
+            agent_id: agent.id,
+            agent_name: agent.name.clone(),
+            task_id: task.id,
+            run_id: run.id,
+            tool: "browser.type".to_owned(),
+            arguments: serde_json::json!({"selector": "#send"}),
+            capability: Capability::new("browser", "interact"),
+            risk: RiskLevel::High,
+            effect_before_taint: Effect::Allow,
+            asked_this_run: 3,
+            approval_budget: Some(10),
+            reason: "policy requires approval".to_owned(),
+            explanation: "Submit the form.".to_owned(),
+            affected_resources: vec!["origin:http://localhost:8420".to_owned()],
+            tainted: true,
+            taint_sources: vec!["web:http://localhost:8420/customers".to_owned()],
+            status: ApprovalStatus::Pending,
+            requested_at: agentos_core::now(),
+            decided_at: None,
+            decision_note: None,
+        }
+    }
+
+    /// A recorded tool call.
+    fn execution(
+        run: &TaskRun,
+        tool: &str,
+        outcome: ToolOutcome,
+        started_at: agentos_core::Timestamp,
+    ) -> ToolExecutionRecord {
+        ToolExecutionRecord {
+            id: ToolExecutionId::new(),
+            run_id: run.id,
+            tool: tool.to_owned(),
+            call_id: "c1".to_owned(),
+            arguments: serde_json::json!({}),
+            outcome,
+            effect: if outcome == ToolOutcome::Denied {
+                Effect::Deny
+            } else {
+                Effect::Allow
+            },
+            risk: RiskLevel::Low,
+            tainted: false,
+            approval_id: None,
+            output_bytes: 0,
+            error: None,
+            duration_ms: 5,
+            started_at,
+            completed_at: None,
+        }
+    }
+
+    /// Answers every request with one fixed outcome, standing in for a person.
+    #[derive(Debug)]
+    struct Answering(ApprovalOutcome);
+
+    #[async_trait::async_trait]
+    impl ApprovalGate for Answering {
+        async fn request(&self, _: &ApprovalRequest, _: CancellationToken) -> ApprovalOutcome {
+            self.0.clone()
+        }
+    }
 
     /// A runtime with one agent, backed by a temporary directory.
     ///
@@ -322,26 +506,7 @@ mod tests {
         let run = TaskRun::new(task.id, 1);
         runtime.database().runs().insert(&run).await.unwrap();
 
-        let request = ApprovalRequest {
-            id: ApprovalId::new(),
-            agent_id: agent.id,
-            agent_name: agent.name.clone(),
-            task_id: task.id,
-            run_id: run.id,
-            tool: "browser.type".to_owned(),
-            arguments: serde_json::json!({"selector": "#send"}),
-            capability: Capability::new("browser", "interact"),
-            risk: RiskLevel::High,
-            reason: "policy requires approval".to_owned(),
-            explanation: "Submit the form.".to_owned(),
-            affected_resources: vec!["origin:http://localhost:8420".to_owned()],
-            tainted: true,
-            taint_sources: vec!["web:http://localhost:8420/customers".to_owned()],
-            status: ApprovalStatus::Pending,
-            requested_at: agentos_core::now(),
-            decided_at: None,
-            decision_note: None,
-        };
+        let request = approval_request(&agent, &task, &run);
         runtime
             .database()
             .approvals()
@@ -356,6 +521,647 @@ mod tests {
         assert_eq!(views[0].taint_sources.len(), 1);
         // The arguments are pretty-printed for a person to read.
         assert!(views[0].arguments.contains("\n"));
+        // And the card can say why it is asking and how often this run has.
+        assert_eq!(views[0].effect_before_taint, "allow");
+        assert_eq!(views[0].asked_this_run, 3);
+        assert_eq!(views[0].approval_budget, Some(10));
+    }
+
+    #[tokio::test]
+    async fn an_approval_note_survives_to_the_stored_decision() {
+        // The chain can prove a person allowed a high-risk action on a tainted
+        // run; the note is the only place it can say why. Through the same
+        // translation `resolve_approval` uses and the run gate every run has.
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let task = runtime.create_task(agent.id, "Send it.").await.unwrap();
+        let run = TaskRun::new(task.id, 1);
+        runtime.database().runs().insert(&run).await.unwrap();
+        let request = approval_request(&agent, &task, &run);
+
+        let (id, outcome) = approvals::decision(ApprovalDecisionInput {
+            approval_id: request.id.to_string(),
+            approved: true,
+            note: Some("checked the recipient against the CRM".to_owned()),
+        })
+        .unwrap();
+        assert_eq!(id, request.id);
+
+        let machine = Arc::new(RunStateMachine::new(
+            agent.id,
+            task.id,
+            run.id,
+            TaskState::Executing,
+            runtime.database().clone(),
+            runtime.audit().clone(),
+        ));
+        let gate = RunApprovalGate::new(
+            Arc::new(Answering(outcome)),
+            runtime.database().clone(),
+            machine,
+        );
+        let answered = gate.request(&request, CancellationToken::new()).await;
+        assert!(answered.is_approved());
+
+        let stored = runtime
+            .database()
+            .approvals()
+            .get(request.id)
+            .await
+            .unwrap();
+        assert_eq!(stored.status, ApprovalStatus::Approved);
+        assert_eq!(
+            stored.decision_note.as_deref(),
+            Some("checked the recipient against the CRM")
+        );
+    }
+
+    #[test]
+    fn a_blank_note_is_no_note_on_either_answer() {
+        for approved in [true, false] {
+            let (_, outcome) = approvals::decision(ApprovalDecisionInput {
+                approval_id: ApprovalId::new().to_string(),
+                approved,
+                note: Some("  \n ".to_owned()),
+            })
+            .unwrap();
+            let expected = if approved {
+                ApprovalOutcome::Approved { note: None }
+            } else {
+                ApprovalOutcome::Denied { note: None }
+            };
+            assert_eq!(outcome, expected);
+        }
+    }
+
+    #[test]
+    fn an_oversized_note_is_refused_and_control_characters_are_dropped() {
+        let answer = |note: String| {
+            approvals::decision(ApprovalDecisionInput {
+                approval_id: ApprovalId::new().to_string(),
+                approved: false,
+                note: Some(note),
+            })
+        };
+
+        let limit = agentos_core::approval::MAX_DECISION_NOTE_CHARS;
+        let error = answer("x".repeat(limit + 1)).unwrap_err();
+        assert!(matches!(error, DesktopError::Rejected(_)), "{error}");
+        assert!(answer("x".repeat(limit)).is_ok());
+
+        let (_, outcome) = answer("wrong\u{1b}[2J recipient\nsee ticket".to_owned()).unwrap();
+        assert_eq!(
+            outcome,
+            ApprovalOutcome::Denied {
+                note: Some("wrong[2J recipient\nsee ticket".to_owned())
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_approvals_are_decided_rows_newest_first_with_their_notes() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let (task, run) = task_with_run(&runtime, &agent, "Follow up.", TaskState::Completed).await;
+        let now = agentos_core::now();
+
+        let mut earlier = approval_request(&agent, &task, &run);
+        earlier.status = ApprovalStatus::Denied;
+        earlier.requested_at = now - Duration::from_secs(600);
+        earlier.decided_at = Some(now - Duration::from_secs(590));
+        earlier.decision_note = Some("wrong recipient".to_owned());
+
+        let mut later = approval_request(&agent, &task, &run);
+        later.status = ApprovalStatus::Approved;
+        later.requested_at = now - Duration::from_secs(120);
+        later.decided_at = Some(now - Duration::from_secs(60));
+        later.decision_note = Some("expected follow-up".to_owned());
+
+        // Raised after both decisions and still waiting: a card for the queue,
+        // which the history must not show a second time.
+        let mut waiting = approval_request(&agent, &task, &run);
+        waiting.requested_at = now - Duration::from_secs(5);
+
+        for request in [&earlier, &later, &waiting] {
+            runtime
+                .database()
+                .approvals()
+                .insert(request)
+                .await
+                .unwrap();
+        }
+
+        let recent = runtime
+            .database()
+            .approvals()
+            .list_recent(20)
+            .await
+            .unwrap();
+        let views = approval_views(&runtime, recent).await.unwrap();
+        let ids: Vec<String> = views.iter().map(|view| view.id.clone()).collect();
+        assert_eq!(ids, vec![later.id.to_string(), earlier.id.to_string()]);
+        assert_eq!(views[0].status, "approved");
+        assert_eq!(views[0].note.as_deref(), Some("expected follow-up"));
+        assert!(views[0].decided_at.is_some());
+        assert_eq!(views[1].note.as_deref(), Some("wrong recipient"));
+        assert_eq!(views[1].objective, "Follow up.");
+    }
+
+    #[tokio::test]
+    async fn refused_and_executed_calls_land_in_different_usage_buckets() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let (_, run) = task_with_run(&runtime, &agent, "Read.", TaskState::Completed).await;
+        let now = agentos_core::now();
+        let executions = runtime.database().executions();
+
+        executions
+            .insert(&execution(
+                &run,
+                "filesystem.read",
+                ToolOutcome::Success,
+                now,
+            ))
+            .await
+            .unwrap();
+        executions
+            .insert(&execution(
+                &run,
+                "filesystem.read",
+                ToolOutcome::Denied,
+                now,
+            ))
+            .await
+            .unwrap();
+
+        let usage = insights::tool_usage_over(&runtime, 7).await.unwrap();
+        let read = usage
+            .iter()
+            .find(|row| row.tool == "filesystem.read")
+            .expect("a used tool is listed");
+        assert_eq!(read.calls, 2);
+        assert_eq!(read.executed, 1, "a refusal must not count as executed");
+        assert_eq!(read.denied, 1);
+        assert!(read.last_used_at.is_some());
+        // Catalogue facts travel with the counts.
+        assert_eq!(read.risk.as_deref(), Some("low"));
+        // The busiest tool comes first.
+        assert_eq!(usage[0].tool, "filesystem.read");
+    }
+
+    #[tokio::test]
+    async fn a_call_outside_the_window_is_not_counted() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let (_, old_run) = task_with_run(&runtime, &agent, "Old.", TaskState::Completed).await;
+        let (_, new_run) = task_with_run(&runtime, &agent, "New.", TaskState::Completed).await;
+        let now = agentos_core::now();
+        let month_ago = now - Duration::from_secs(30 * 24 * 60 * 60);
+        let executions = runtime.database().executions();
+
+        executions
+            .insert(&execution(
+                &old_run,
+                "filesystem.read",
+                ToolOutcome::Success,
+                month_ago,
+            ))
+            .await
+            .unwrap();
+        executions
+            .insert(&execution(
+                &new_run,
+                "filesystem.read",
+                ToolOutcome::Success,
+                now,
+            ))
+            .await
+            .unwrap();
+        executions
+            .insert(&execution(
+                &old_run,
+                "filesystem.list",
+                ToolOutcome::Success,
+                month_ago,
+            ))
+            .await
+            .unwrap();
+
+        let usage = insights::tool_usage_over(&runtime, 7).await.unwrap();
+        let count = |tool: &str| {
+            usage
+                .iter()
+                .find(|row| row.tool == tool)
+                .map_or(0, |row| row.calls)
+        };
+        assert_eq!(count("filesystem.read"), 1);
+        assert_eq!(
+            count("filesystem.list"),
+            0,
+            "a tool used only before the window reads as unused"
+        );
+
+        let month = insights::tool_usage_over(&runtime, 31).await.unwrap();
+        assert_eq!(
+            month
+                .iter()
+                .find(|row| row.tool == "filesystem.read")
+                .map(|row| row.calls),
+            Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_dashboard_lists_failures_and_carries_no_audit_work() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let (failed, failed_run) =
+            task_with_run(&runtime, &agent, "Broke.", TaskState::Failed).await;
+        let (_, _) = task_with_run(&runtime, &agent, "Fine.", TaskState::Completed).await;
+        let (running, _) = task_with_run(&runtime, &agent, "Busy.", TaskState::Executing).await;
+
+        let view = dashboard_view(&runtime).await.unwrap();
+        assert_eq!(view.recent_failures.len(), 1);
+        assert_eq!(view.recent_failures[0].id, failed.id.to_string());
+        assert_eq!(
+            view.recent_failures[0]
+                .latest_run
+                .as_ref()
+                .map(|run| run.id.clone()),
+            Some(failed_run.id.to_string()),
+            "the failure links to the run that failed"
+        );
+        assert_eq!(view.running_tasks.len(), 1);
+        assert_eq!(view.running_tasks[0].id, running.id.to_string());
+        assert_eq!(view.running_tasks[0].agent_name, "sales");
+
+        // The shape is the contract: nothing in it is read from the audit log.
+        let json = serde_json::to_value(&view).unwrap();
+        for absent in ["recent_events", "audit_events", "audit_intact"] {
+            assert!(
+                json.get(absent).is_none(),
+                "{absent} is back on the dashboard"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_failed_or_cancelled_attempt_may_be_retried() {
+        let run = |state| {
+            let mut run = TaskRun::new(agentos_core::ids::TaskId::new(), 1);
+            run.state = state;
+            run
+        };
+
+        assert!(runs::may_retry(Some(&run(TaskState::Failed))).is_ok());
+        assert!(runs::may_retry(Some(&run(TaskState::Cancelled))).is_ok());
+
+        let running = runs::may_retry(Some(&run(TaskState::WaitingForApproval))).unwrap_err();
+        assert!(running.to_string().contains("still running"), "{running}");
+        assert!(runs::may_retry(Some(&run(TaskState::Executing))).is_err());
+
+        // A finished objective run again repeats its side effects.
+        let succeeded = runs::may_retry(Some(&run(TaskState::Completed))).unwrap_err();
+        assert!(succeeded.to_string().contains("succeeded"), "{succeeded}");
+
+        assert!(runs::may_retry(None).is_err());
+    }
+
+    async fn record(runtime: &Runtime, objective: &str) {
+        runtime
+            .audit()
+            .record(Event::new(AgentEvent::TaskStarted {
+                objective: objective.to_owned(),
+                attempt: 1,
+            }))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn audit_health_verifies_only_what_is_new() {
+        let (_guard, runtime, _agent) = runtime_with_agent().await;
+        let checkpoint = Mutex::new(AuditWatch::default());
+
+        record(&runtime, "one").await;
+        record(&runtime, "two").await;
+        let first = audit::check_audit_health(&runtime, &checkpoint)
+            .await
+            .unwrap();
+        assert!(first.intact);
+        let total = runtime.database().audit_sink().count().await.unwrap();
+        assert_eq!(first.events, total);
+        let verified = checkpoint.lock().await.verified.sequence;
+        assert_eq!(i64::try_from(verified).unwrap(), total);
+
+        record(&runtime, "three").await;
+        let second = audit::check_audit_health(&runtime, &checkpoint)
+            .await
+            .unwrap();
+        assert!(second.intact);
+        assert_eq!(checkpoint.lock().await.verified.sequence, verified + 1);
+
+        // Nothing new: nothing read, and the answer stands.
+        let third = audit::check_audit_health(&runtime, &checkpoint)
+            .await
+            .unwrap();
+        assert!(third.intact);
+        assert_eq!(checkpoint.lock().await.verified.sequence, verified + 1);
+    }
+
+    #[tokio::test]
+    async fn audit_health_reports_a_record_that_does_not_link() {
+        let (_guard, runtime, _agent) = runtime_with_agent().await;
+        let checkpoint = Mutex::new(AuditWatch::default());
+        record(&runtime, "one").await;
+        assert!(
+            audit::check_audit_health(&runtime, &checkpoint)
+                .await
+                .unwrap()
+                .intact
+        );
+
+        // Written straight to the sink, past the log that would have chained
+        // it: the shape of a record inserted by something other than the
+        // runtime.
+        let sink = runtime.database().audit_sink();
+        let (tip, _) = sink.tip().await.unwrap();
+        let forged = AuditRecord::seal(
+            &Event::new(AgentEvent::TaskStarted {
+                objective: "forged".to_owned(),
+                attempt: 1,
+            }),
+            tip + 1,
+            agentos_audit::GENESIS_HASH,
+        )
+        .unwrap();
+        sink.append(&forged).await.unwrap();
+
+        assert!(
+            !audit::check_audit_health(&runtime, &checkpoint)
+                .await
+                .unwrap()
+                .intact
+        );
+
+        // A record correctly chained onto the forgery does not mend the break.
+        let after = AuditRecord::seal(
+            &Event::new(AgentEvent::TaskStarted {
+                objective: "after".to_owned(),
+                attempt: 1,
+            }),
+            tip + 2,
+            &forged.hash,
+        )
+        .unwrap();
+        sink.append(&after).await.unwrap();
+        assert!(
+            !audit::check_audit_health(&runtime, &checkpoint)
+                .await
+                .unwrap()
+                .intact
+        );
+        // Nothing past the break counts as verified, so the broken stretch is
+        // checked again, and reported again, on every later check.
+        assert_eq!(checkpoint.lock().await.verified.sequence, tip);
+    }
+
+    #[tokio::test]
+    async fn audit_health_notices_a_record_missing_between_checks() {
+        let (_guard, runtime, _agent) = runtime_with_agent().await;
+        let checkpoint = Mutex::new(AuditWatch::default());
+        record(&runtime, "one").await;
+        assert!(
+            audit::check_audit_health(&runtime, &checkpoint)
+                .await
+                .unwrap()
+                .intact
+        );
+
+        // The record after the tip never arrives; the one after that links to
+        // it rather than to the tip, as it would had a record been deleted.
+        let sink = runtime.database().audit_sink();
+        let (tip, tip_hash) = sink.tip().await.unwrap();
+        let missing = AuditRecord::seal(
+            &Event::new(AgentEvent::TaskStarted {
+                objective: "deleted".to_owned(),
+                attempt: 1,
+            }),
+            tip + 1,
+            &tip_hash,
+        )
+        .unwrap();
+        let orphan = AuditRecord::seal(
+            &Event::new(AgentEvent::TaskStarted {
+                objective: "orphan".to_owned(),
+                attempt: 1,
+            }),
+            tip + 2,
+            &missing.hash,
+        )
+        .unwrap();
+        sink.append(&orphan).await.unwrap();
+
+        assert!(
+            !audit::check_audit_health(&runtime, &checkpoint)
+                .await
+                .unwrap()
+                .intact
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_health_notices_a_modified_record_and_stays_broken() {
+        let (_guard, runtime, _agent) = runtime_with_agent().await;
+        let checkpoint = Mutex::new(AuditWatch::default());
+        record(&runtime, "one").await;
+        assert!(
+            audit::check_audit_health(&runtime, &checkpoint)
+                .await
+                .unwrap()
+                .intact
+        );
+
+        // In its place and linked correctly, but its payload no longer
+        // matches its hash.
+        let sink = runtime.database().audit_sink();
+        let (tip, tip_hash) = sink.tip().await.unwrap();
+        let mut rewritten = AuditRecord::seal(
+            &Event::new(AgentEvent::TaskStarted {
+                objective: "original".to_owned(),
+                attempt: 1,
+            }),
+            tip + 1,
+            &tip_hash,
+        )
+        .unwrap();
+        rewritten.payload = serde_json::json!({"objective": "rewritten"});
+        sink.append(&rewritten).await.unwrap();
+        assert!(
+            !audit::check_audit_health(&runtime, &checkpoint)
+                .await
+                .unwrap()
+                .intact
+        );
+
+        let after = AuditRecord::seal(
+            &Event::new(AgentEvent::TaskStarted {
+                objective: "after".to_owned(),
+                attempt: 1,
+            }),
+            tip + 2,
+            &rewritten.hash,
+        )
+        .unwrap();
+        sink.append(&after).await.unwrap();
+        assert!(
+            !audit::check_audit_health(&runtime, &checkpoint)
+                .await
+                .unwrap()
+                .intact,
+            "good records after a break must not mend it"
+        );
+    }
+
+    /// A record sealed at `sequence` onto `prev`, without passing through the
+    /// log that would have chained it.
+    fn sealed(objective: &str, sequence: u64, prev: &str) -> AuditRecord {
+        AuditRecord::seal(
+            &Event::new(AgentEvent::TaskStarted {
+                objective: objective.to_owned(),
+                attempt: 1,
+            }),
+            sequence,
+            prev,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_break_the_full_check_finds_behind_the_checkpoint_stays_reported() {
+        let (_guard, runtime, _agent) = runtime_with_agent().await;
+        let watch = Mutex::new(AuditWatch::default());
+        let sink = runtime.database().audit_sink();
+
+        // A modified record, and a good one linked after it.
+        let (tip, tip_hash) = sink.tip().await.unwrap();
+        let mut modified = sealed("original", tip + 1, &tip_hash);
+        modified.payload = serde_json::json!({"objective": "rewritten"});
+        sink.append(&modified).await.unwrap();
+        let after = sealed("after", tip + 2, &modified.hash);
+        sink.append(&after).await.unwrap();
+
+        // The routine check had already proved everything up to `after`
+        // before the record was modified, so it has nothing new to look at.
+        watch.lock().await.verified = AuditCheckpoint {
+            sequence: after.sequence,
+            hash: after.hash.clone(),
+        };
+        assert!(
+            audit::check_audit_health(&runtime, &watch)
+                .await
+                .unwrap()
+                .intact
+        );
+
+        // Only the deliberate check can see it.
+        let breaks = audit::verify_whole_chain(&runtime, &watch).await.unwrap();
+        assert!(!breaks.is_empty());
+
+        // And from then on the routine check reports what it found, though
+        // nothing it reads is broken.
+        assert!(
+            !audit::check_audit_health(&runtime, &watch)
+                .await
+                .unwrap()
+                .intact,
+            "the full check's verdict must stick"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_log_missing_its_oldest_records_is_broken_to_both_checks() {
+        let guard = tempfile::TempDir::new().unwrap();
+        let root = std::fs::canonicalize(guard.path()).unwrap();
+        let runtime = Runtime::in_memory(root, Arc::new(InMemorySecretStore::new()))
+            .await
+            .unwrap();
+        let sink = runtime.database().audit_sink();
+
+        // Records 1 and 2 existed once; only what followed them is left.
+        let first = sealed("one", 1, agentos_audit::GENESIS_HASH);
+        let second = sealed("two", 2, &first.hash);
+        let third = sealed("three", 3, &second.hash);
+        let fourth = sealed("four", 4, &third.hash);
+        sink.append(&third).await.unwrap();
+        sink.append(&fourth).await.unwrap();
+
+        let watch = Mutex::new(AuditWatch::default());
+        assert!(
+            !audit::check_audit_health(&runtime, &watch)
+                .await
+                .unwrap()
+                .intact
+        );
+        let breaks = audit::verify_whole_chain(&runtime, &watch).await.unwrap();
+        assert!(!breaks.is_empty());
+        assert!(
+            !watch.lock().await.intact,
+            "the full check cleared a real break"
+        );
+        assert!(!runtime.verify_audit().await.unwrap().is_intact());
+    }
+
+    #[tokio::test]
+    async fn an_opened_audit_record_keeps_its_hashes_and_whole_payload() {
+        let (_guard, runtime, _agent) = runtime_with_agent().await;
+        let event = Event::new(AgentEvent::PermissionDenied {
+            tool: "terminal.exec".to_owned(),
+            capability: Capability::new("terminal", "exec"),
+            reason: "no rule matched".to_owned(),
+            matched_rule: None,
+        });
+        let id = event.id;
+        runtime.audit().record(event).await.unwrap();
+
+        let stored = runtime
+            .database()
+            .audit_sink()
+            .find(id)
+            .await
+            .unwrap()
+            .expect("the record was written");
+        let view = crate::dto::AuditRecordView::from(&stored);
+        assert_eq!(view.id, id.to_string());
+        assert_eq!(view.kind, "permission.denied");
+        assert!(view.security_relevant);
+        assert_eq!(view.hash, stored.hash);
+        assert_eq!(view.prev_hash, stored.prev_hash);
+        assert!(view.payload.contains("\n"), "laid out for a person");
+        assert!(view.payload.contains("no rule matched"));
+    }
+
+    #[tokio::test]
+    async fn a_security_feed_is_not_a_filter_over_the_newest_records() {
+        let (_guard, runtime, _agent) = runtime_with_agent().await;
+        for tool in ["terminal.exec", "filesystem.delete"] {
+            runtime
+                .audit()
+                .record(Event::new(AgentEvent::PermissionDenied {
+                    tool: tool.to_owned(),
+                    capability: Capability::new("terminal", "exec"),
+                    reason: "no rule matched".to_owned(),
+                    matched_rule: None,
+                }))
+                .await
+                .unwrap();
+        }
+        for index in 0..20 {
+            record(&runtime, &format!("routine {index}")).await;
+        }
+
+        let feed = recent_events(&runtime, 2, true).await.unwrap();
+        let summaries: Vec<&str> = feed.iter().map(|event| event.summary.as_str()).collect();
+        assert_eq!(summaries, vec!["terminal.exec", "filesystem.delete"]);
+        assert!(feed.iter().all(|event| event.security_relevant));
+
+        let everything = recent_events(&runtime, 2, false).await.unwrap();
+        assert!(everything.iter().all(|event| !event.security_relevant));
     }
 
     #[tokio::test]
@@ -386,7 +1192,7 @@ mod tests {
             .unwrap();
         let _ = agent;
 
-        let events = recent_events(&runtime, 10).await.unwrap();
+        let events = recent_events(&runtime, 10, false).await.unwrap();
         assert!(events.len() >= 2);
 
         let first = events.iter().position(|e| e.kind == "agent.task.started");
@@ -396,6 +1202,70 @@ mod tests {
         let denial = &events[denial.expect("a denial was recorded")];
         assert!(denial.security_relevant);
         assert_eq!(denial.summary, "terminal.exec");
+    }
+
+    /// How many records of `kind` the audit log holds.
+    async fn records_of(runtime: &Runtime, kind: &str) -> usize {
+        runtime
+            .database()
+            .audit_sink()
+            .all()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|record| record.kind == kind)
+            .count()
+    }
+
+    #[tokio::test]
+    async fn the_desktop_policy_and_agent_edits_are_recorded() {
+        // A policy widened shortly before a bad action is part of the
+        // explanation for it, so the desktop must go through the runtime layer
+        // that records operator changes rather than straight to storage.
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let policies = records_of(&runtime, "operator.policy.changed").await;
+        let toggles = records_of(&runtime, "operator.agent.enabled_changed").await;
+
+        let view = policies::install_policy(
+            &runtime,
+            &agent.id.to_string(),
+            "default: deny\n".to_owned(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(view.version, 2, "the starter policy was version one");
+        assert_eq!(
+            records_of(&runtime, "operator.policy.changed").await,
+            policies + 1
+        );
+
+        let summary = agents::enable_agent(&runtime, "sales", false)
+            .await
+            .unwrap();
+        assert_eq!(summary.status, "disabled");
+        assert_eq!(
+            records_of(&runtime, "operator.agent.enabled_changed").await,
+            toggles + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_policy_that_does_not_compile_is_refused_and_records_nothing() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let before = records_of(&runtime, "operator.policy.changed").await;
+
+        let error = policies::install_policy(
+            &runtime,
+            &agent.id.to_string(),
+            "permisions: {}\n".to_owned(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("does not compile"), "{error}");
+        assert_eq!(
+            records_of(&runtime, "operator.policy.changed").await,
+            before
+        );
     }
 
     #[tokio::test]

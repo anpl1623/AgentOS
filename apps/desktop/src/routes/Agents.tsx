@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 
 import { Empty, Enabled, ErrorBanner, Loading, Risk, Status } from "../components/common";
 import { api, describeError } from "../sdk/client";
+import { useUnsavedGuard } from "../sdk/drafts";
 import { ago } from "../sdk/format";
 import { useAsync } from "../sdk/useAsync";
 import type { Navigate, Route } from "./route";
@@ -86,7 +87,12 @@ function CreateAgent({ onCreated }: { onCreated: (name: string) => void }) {
   const [baseUrl, setBaseUrl] = useState("");
   // Three states, matching the runtime: yes, no, or "whatever the provider says".
   const [vision, setVision] = useState<"default" | "yes" | "no">("default");
-  const [granted, setGranted] = useState<string[]>(["filesystem.read", "filesystem.list"]);
+  // The CLI's read-only default: search plans only `list` and `read`.
+  const [granted, setGranted] = useState<string[]>([
+    "filesystem.read",
+    "filesystem.list",
+    "filesystem.search",
+  ]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -322,6 +328,10 @@ function PolicyEditor({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checked, setChecked] = useState<string | null>(null);
+  useUnsavedGuard(
+    editing && document !== (policy?.document ?? ""),
+    "This agent's policy has edits that have not been saved.",
+  );
 
   const save = useCallback(async () => {
     setBusy(true);

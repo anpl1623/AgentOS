@@ -1,6 +1,6 @@
 //! `agentos agent` — create and inspect agents.
 
-use agentos_core::agent::{AgentStatus, ModelConfig};
+use agentos_core::agent::ModelConfig;
 use agentos_providers::provider_ids;
 use agentos_runtime::RuntimeConfig;
 use anyhow::{Context, Result};
@@ -68,8 +68,11 @@ pub enum AgentCommand {
 
 /// Tools a new agent gets unless told otherwise.
 ///
-/// Read-only. Anything that changes the world is an explicit choice.
-const DEFAULT_TOOLS: &[&str] = &["filesystem.read", "filesystem.list"];
+/// Read-only. Anything that changes the world is an explicit choice. Search is
+/// among them because it plans only `list` and `read`, which the starter policy
+/// already scopes to the agent's workspace, and it asks the policy about every
+/// path it walks into.
+const DEFAULT_TOOLS: &[&str] = &["filesystem.read", "filesystem.list", "filesystem.search"];
 
 /// Dispatch.
 pub async fn run(command: AgentCommand, config: &RuntimeConfig) -> Result<()> {
@@ -211,13 +214,8 @@ pub async fn run(command: AgentCommand, config: &RuntimeConfig) -> Result<()> {
         }
 
         AgentCommand::Set { name, enabled } => {
-            let mut agent = runtime.agent_by_name(&name).await?;
-            agent.status = if enabled {
-                AgentStatus::Enabled
-            } else {
-                AgentStatus::Disabled
-            };
-            runtime.database().agents().update(&agent).await?;
+            let agent = runtime.agent_by_name(&name).await?;
+            let agent = runtime.set_agent_enabled(agent.id, enabled).await?;
             println!(
                 "{} {} is now {}",
                 style.green("Updated"),

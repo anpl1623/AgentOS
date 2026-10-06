@@ -1,6 +1,7 @@
 //! Listing, inspecting, creating and enabling agents.
 
-use agentos_core::agent::{AgentStatus, ModelConfig};
+use agentos_core::agent::ModelConfig;
+use agentos_runtime::Runtime;
 use tauri::State;
 
 use super::{Answer, DesktopError, policy_view};
@@ -58,6 +59,9 @@ pub async fn get_agent(state: State<'_, AppState>, name: String) -> Answer<Agent
 }
 
 /// Create an agent with a deny-by-default starter policy.
+///
+/// Through the runtime, which records the creation and the starter policy in
+/// the audit chain.
 #[tauri::command]
 pub async fn create_agent(
     state: State<'_, AppState>,
@@ -85,19 +89,24 @@ pub async fn create_agent(
 }
 
 /// Enable or disable an agent.
+///
+/// Through the runtime, which records the change in the audit chain.
 #[tauri::command]
 pub async fn set_agent_enabled(
     state: State<'_, AppState>,
     name: String,
     enabled: bool,
 ) -> Answer<AgentSummary> {
-    let runtime = &state.runtime;
-    let mut agent = runtime.agent_by_name(&name).await?;
-    agent.status = if enabled {
-        AgentStatus::Enabled
-    } else {
-        AgentStatus::Disabled
-    };
-    runtime.database().agents().update(&agent).await?;
+    enable_agent(&state.runtime, &name, enabled).await
+}
+
+/// Enable or disable the agent with this name.
+pub(crate) async fn enable_agent(
+    runtime: &Runtime,
+    name: &str,
+    enabled: bool,
+) -> Answer<AgentSummary> {
+    let agent = runtime.agent_by_name(name).await?;
+    let agent = runtime.set_agent_enabled(agent.id, enabled).await?;
     Ok(AgentSummary::from(&agent))
 }

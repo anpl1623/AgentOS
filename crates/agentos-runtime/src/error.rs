@@ -57,6 +57,10 @@ pub enum RuntimeError {
     #[error("{0}")]
     InvalidGraph(String),
 
+    /// An operator asked for something that cannot be done as asked.
+    #[error("{0}")]
+    Rejected(String),
+
     /// A schedule's cadence cannot be evaluated.
     #[error("{0}")]
     InvalidSchedule(String),

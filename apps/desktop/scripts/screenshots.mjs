@@ -26,13 +26,10 @@ import { parseArgs } from "node:util";
 import { createServer } from "vite";
 
 /**
- * Every screen, in navigation order. Each is loaded as `<url>/#/<route>`.
- *
- * The app does not read the hash yet: until the hash router lands, every one of
- * these renders the dashboard. The list is kept complete now so the captures
- * start meaning something the moment routing does, with no change here.
+ * Every screen, in navigation order. Each is loaded as `<url>/#/<route>`, the
+ * address the shell's hash router gives that screen.
  */
-const ROUTES = ["dashboard", "approvals", "tasks", "agents", "activity", "settings", "schedules"];
+const ROUTES = ["dashboard", "approvals", "tasks", "schedules", "agents", "activity", "settings"];
 
 /** Logical viewport; the device scale factor doubles it in the PNG. */
 const WINDOW_SIZE = "1280,860";

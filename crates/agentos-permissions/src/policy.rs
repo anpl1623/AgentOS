@@ -127,6 +127,36 @@ impl Default for TaintPolicy {
     }
 }
 
+/// How many times one run may put a request to a person.
+///
+/// Approval fatigue is the failure an approval gate invites: a policy that asks
+/// fifty times a run looks, from the card in front of somebody, exactly like
+/// one that asks twice, and by the fiftieth they are approving without reading.
+/// A run that needs that many is a misconfigured policy. Once the budget is
+/// spent the run stops asking and is refused, which sends the operator to fix
+/// the policy rather than training them to click.
+///
+/// There is deliberately no counterpart that grants: no bulk approval, no
+/// "always allow", no approving a run's remaining requests at once. Widening
+/// what an agent may do stays an edit to its policy, which is slower than
+/// clicking a card on purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApprovalPolicy {
+    /// The most requests one run may raise. `None` is no limit.
+    pub max_per_run: Option<u32>,
+}
+
+/// The budget a policy gets when it does not name one.
+pub const DEFAULT_MAX_APPROVALS_PER_RUN: u32 = 10;
+
+impl Default for ApprovalPolicy {
+    fn default() -> Self {
+        Self {
+            max_per_run: Some(DEFAULT_MAX_APPROVALS_PER_RUN),
+        }
+    }
+}
+
 /// Capabilities no policy may ever grant.
 ///
 /// These are the self-modification paths. If an agent could edit its own policy
@@ -161,6 +191,8 @@ pub struct Policy {
     pub rules: Vec<PolicyRule>,
     /// Taint escalation settings.
     pub taint: TaintPolicy,
+    /// How many approvals one run may ask for.
+    pub approvals: ApprovalPolicy,
 }
 
 impl Default for Policy {
@@ -179,6 +211,7 @@ impl Policy {
             max_risk: None,
             rules: Vec::new(),
             taint: TaintPolicy::default(),
+            approvals: ApprovalPolicy::default(),
         }
     }
 
@@ -200,6 +233,13 @@ impl Policy {
     #[must_use]
     pub const fn with_taint_policy(mut self, taint: TaintPolicy) -> Self {
         self.taint = taint;
+        self
+    }
+
+    /// Replace the approval budget.
+    #[must_use]
+    pub const fn with_approval_policy(mut self, approvals: ApprovalPolicy) -> Self {
+        self.approvals = approvals;
         self
     }
 
@@ -337,6 +377,12 @@ mod tests {
             assert!(is_immutably_denied(&Capability::new(*domain, *action)));
         }
         assert!(!is_immutably_denied(&Capability::new("filesystem", "read")));
+    }
+
+    #[test]
+    fn a_run_may_ask_ten_times_unless_the_policy_says_otherwise() {
+        assert_eq!(ApprovalPolicy::default().max_per_run, Some(10));
+        assert_eq!(Policy::default().approvals, ApprovalPolicy::default());
     }
 
     #[test]

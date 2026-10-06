@@ -21,6 +21,12 @@ pub struct ToolView {
     /// The single most useful thing to know when deciding what to grant, so it
     /// is surfaced rather than buried in the description.
     pub returns_untrusted_data: bool,
+    /// The capabilities a call may plan, which are what a policy rule must
+    /// name for it to be allowed.
+    ///
+    /// Without this, finding out that one tool needs a capability from another
+    /// domain means reading its source.
+    pub capabilities: Vec<String>,
 }
 
 impl From<&ToolMetadata> for ToolView {
@@ -31,6 +37,7 @@ impl From<&ToolMetadata> for ToolView {
             description: metadata.description.clone(),
             risk: metadata.risk.as_str().to_owned(),
             returns_untrusted_data: metadata.returns_untrusted_data,
+            capabilities: metadata.capability_names(),
         }
     }
 }

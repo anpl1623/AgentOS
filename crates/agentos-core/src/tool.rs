@@ -112,10 +112,29 @@ impl ToolCall {
     }
 }
 
-/// How a tool invocation ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolOutcome {
+/// Declares [`ToolOutcome`] and [`ToolOutcome::ALL`] from one list.
+///
+/// Anything that must account for every outcome, such as the usage totals
+/// whose SQL spells the outcomes out, is checked against `ALL`. A hand-kept
+/// copy of the list could miss a new variant and every such check would still
+/// pass; written once here, a variant cannot exist without being in it.
+macro_rules! tool_outcomes {
+    ($($(#[$meta:meta])* $variant:ident,)+) => {
+        /// How a tool invocation ended.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum ToolOutcome {
+            $($(#[$meta])* $variant,)+
+        }
+
+        impl ToolOutcome {
+            /// Every outcome, in declaration order.
+            pub const ALL: &'static [Self] = &[$(Self::$variant,)+];
+        }
+    };
+}
+
+tool_outcomes! {
     /// The tool ran and produced a result.
     Success,
     /// Arguments failed validation; the tool never ran.

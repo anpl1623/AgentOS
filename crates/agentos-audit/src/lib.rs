@@ -19,7 +19,9 @@ use async_trait::async_trait;
 use thiserror::Error;
 use tokio::sync::{Mutex, broadcast};
 
-pub use record::{AuditRecord, ChainBreak, ChainVerification, GENESIS_HASH, verify_chain};
+pub use record::{
+    AuditRecord, ChainBreak, ChainVerification, GENESIS_HASH, verify_chain, verify_chain_from,
+};
 
 /// How many events the live broadcast channel buffers per subscriber.
 ///

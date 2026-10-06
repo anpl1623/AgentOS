@@ -187,9 +187,16 @@ pub enum AgentEvent {
         tool: String,
         /// How long the human took.
         waited_ms: u64,
+        /// Why they said yes, if they wrote it down.
+        ///
+        /// The chain can already prove that a person allowed a high-risk call
+        /// on a tainted run; this is what lets it say why. Defaulted so that
+        /// records written before the field existed still read.
+        #[serde(default)]
+        note: Option<String>,
     },
 
-    /// A human declined.
+    /// A human declined, or the run's approval budget refused without asking.
     #[serde(rename = "approval.denied")]
     ApprovalDenied {
         /// The request.
@@ -198,6 +205,13 @@ pub enum AgentEvent {
         tool: String,
         /// Their note, if any.
         note: Option<String>,
+        /// Set when nobody was asked because the run had spent its approval
+        /// budget, so the chain says who refused without anyone parsing the
+        /// note. Omitted when false, which keeps a person's denial recorded in
+        /// the shape it always had, and defaulted so that records written
+        /// before the field existed still read.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        over_budget: bool,
     },
 
     /// A tool invocation began.
@@ -309,6 +323,62 @@ pub enum AgentEvent {
         /// What happened to that dependency.
         reason: String,
     },
+
+    /// An operator installed a policy for an agent.
+    ///
+    /// The document is carried whole. The policies table keeps only the
+    /// current version, so without it a policy widened shortly before a bad
+    /// action and narrowed again afterwards would leave no trace of what it
+    /// said while the action ran.
+    #[serde(rename = "operator.policy.changed")]
+    PolicyChanged {
+        /// The agent's name, so the record reads after the agent is deleted.
+        agent: String,
+        /// The version the policy now has.
+        version: i64,
+        /// The YAML as installed.
+        document: String,
+    },
+
+    /// An operator created an agent.
+    #[serde(rename = "operator.agent.created")]
+    AgentCreated {
+        /// Its name.
+        agent: String,
+        /// Provider identifier.
+        provider: String,
+        /// Model identifier.
+        model: String,
+        /// The tools it was given.
+        tools: Vec<String>,
+    },
+
+    /// An operator switched an agent on or off.
+    #[serde(rename = "operator.agent.enabled_changed")]
+    AgentEnabledChanged {
+        /// Its name.
+        agent: String,
+        /// Whether it may now run.
+        enabled: bool,
+    },
+
+    /// An operator stored a credential for a model provider.
+    ///
+    /// Names the provider and nothing else. Neither the key nor any part of it
+    /// is recorded: the log is evidence, and evidence that holds a credential
+    /// is one more place to steal it from.
+    #[serde(rename = "operator.provider_key.set")]
+    ProviderKeySet {
+        /// Provider identifier.
+        provider: String,
+    },
+
+    /// An operator removed a stored provider credential.
+    #[serde(rename = "operator.provider_key.removed")]
+    ProviderKeyRemoved {
+        /// Provider identifier.
+        provider: String,
+    },
 }
 
 impl AgentEvent {
@@ -345,6 +415,11 @@ impl AgentEvent {
             Self::MemoryRecorded { .. } => "agent.memory.recorded",
             Self::ScheduleFired { .. } => "schedule.fired",
             Self::TaskAbandoned { .. } => "agent.task.abandoned",
+            Self::PolicyChanged { .. } => "operator.policy.changed",
+            Self::AgentCreated { .. } => "operator.agent.created",
+            Self::AgentEnabledChanged { .. } => "operator.agent.enabled_changed",
+            Self::ProviderKeySet { .. } => "operator.provider_key.set",
+            Self::ProviderKeyRemoved { .. } => "operator.provider_key.removed",
         }
     }
 
@@ -369,6 +444,13 @@ impl AgentEvent {
             Self::UnknownToolRequested { .. } => true,
             Self::TaintRaised { .. } => true,
             Self::ToolManifestExceeded { .. } => true,
+            // What an agent may do is decided by these. A grant widened before
+            // a bad action is part of the explanation of that action.
+            Self::PolicyChanged { .. }
+            | Self::AgentCreated { .. }
+            | Self::AgentEnabledChanged { .. }
+            | Self::ProviderKeySet { .. }
+            | Self::ProviderKeyRemoved { .. } => true,
             Self::TaskStarted { .. }
             | Self::TaskCompleted { .. }
             | Self::TaskFailed { .. }
@@ -390,6 +472,52 @@ impl AgentEvent {
             | Self::TaskAbandoned { .. } => false,
         }
     }
+
+    /// A one-line description of an operator change, or `None` for any other
+    /// event.
+    ///
+    /// The generic summaries read a tool, an objective or a reason, and an
+    /// operator change carries none of them: a feed would show a policy
+    /// installed as a blank line, or an agent created as its model. Both
+    /// clients summarise from here so they describe the change the same way.
+    /// A provider change names the provider and nothing else, as its record does.
+    #[must_use]
+    pub fn operator_summary(&self) -> Option<String> {
+        let line = match self {
+            Self::PolicyChanged { agent, version, .. } => {
+                format!("{agent}: policy version {version} installed")
+            }
+            Self::AgentCreated {
+                agent,
+                provider,
+                model,
+                ..
+            } => format!("{agent} created on {provider}/{model}"),
+            Self::AgentEnabledChanged { agent, enabled } => {
+                format!("{agent} {}", if *enabled { "enabled" } else { "disabled" })
+            }
+            Self::ProviderKeySet { provider } => format!("{provider} key stored"),
+            Self::ProviderKeyRemoved { provider } => format!("{provider} key removed"),
+            _ => return None,
+        };
+        Some(line)
+    }
+}
+
+/// [`AgentEvent::operator_summary`] for a stored payload.
+///
+/// Only a payload tagged with an `operator.` kind is deserialised, so a feed of
+/// routine records pays nothing for it. A payload that carries the tag and does
+/// not read as its event gives `None`, and the caller's generic summary stands.
+#[must_use]
+pub fn operator_summary_of(payload: &serde_json::Value) -> Option<String> {
+    let kind = payload.get("event")?.as_str()?;
+    if !kind.starts_with("operator.") {
+        return None;
+    }
+    serde_json::from_value::<AgentEvent>(payload.clone())
+        .ok()?
+        .operator_summary()
 }
 
 /// Whether a stored record of this kind is security-relevant.
@@ -407,17 +535,28 @@ impl AgentEvent {
 /// list.
 #[must_use]
 pub fn is_security_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "permission.denied"
-            | "permission.escalated_by_taint"
-            | "approval.denied"
-            | "tool.arguments.rejected"
-            | "tool.unknown"
-            | "agent.taint.raised"
-            | "tool.manifest_exceeded"
-    )
+    SECURITY_KINDS.contains(&kind)
 }
+
+/// Every kind [`is_security_kind`] accepts.
+///
+/// A list as well as a predicate so a store can select these kinds in its own
+/// query. Filtering the newest records of every kind instead finds almost
+/// none: security records are a small fraction of a busy log.
+pub const SECURITY_KINDS: &[&str] = &[
+    "permission.denied",
+    "permission.escalated_by_taint",
+    "approval.denied",
+    "tool.arguments.rejected",
+    "tool.unknown",
+    "agent.taint.raised",
+    "tool.manifest_exceeded",
+    "operator.policy.changed",
+    "operator.agent.created",
+    "operator.agent.enabled_changed",
+    "operator.provider_key.set",
+    "operator.provider_key.removed",
+];
 
 /// An event with its context.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -486,7 +625,7 @@ mod tests {
     /// How many variants [`AgentEvent`] has.
     ///
     /// Kept beside [`variant_index`] because the two change together.
-    const VARIANT_COUNT: usize = 26;
+    const VARIANT_COUNT: usize = 31;
 
     /// A dense index per variant, in declaration order.
     ///
@@ -522,6 +661,11 @@ mod tests {
             AgentEvent::MemoryRecorded { .. } => 23,
             AgentEvent::ScheduleFired { .. } => 24,
             AgentEvent::TaskAbandoned { .. } => 25,
+            AgentEvent::PolicyChanged { .. } => 26,
+            AgentEvent::AgentCreated { .. } => 27,
+            AgentEvent::AgentEnabledChanged { .. } => 28,
+            AgentEvent::ProviderKeySet { .. } => 29,
+            AgentEvent::ProviderKeyRemoved { .. } => 30,
         }
     }
 
@@ -607,11 +751,13 @@ mod tests {
                 approval_id: ApprovalId::new(),
                 tool: "t".into(),
                 waited_ms: 5,
+                note: Some("checked the recipient".into()),
             },
             AgentEvent::ApprovalDenied {
                 approval_id: ApprovalId::new(),
                 tool: "t".into(),
                 note: None,
+                over_budget: false,
             },
             AgentEvent::ToolExecutionStarted {
                 execution_id: ToolExecutionId::new(),
@@ -654,6 +800,27 @@ mod tests {
                 blocked_by: TaskId::new(),
                 reason: "failed".into(),
             },
+            AgentEvent::PolicyChanged {
+                agent: "a".into(),
+                version: 2,
+                document: "default: deny\n".into(),
+            },
+            AgentEvent::AgentCreated {
+                agent: "a".into(),
+                provider: "mock".into(),
+                model: "m".into(),
+                tools: vec!["filesystem.read".into()],
+            },
+            AgentEvent::AgentEnabledChanged {
+                agent: "a".into(),
+                enabled: false,
+            },
+            AgentEvent::ProviderKeySet {
+                provider: "anthropic".into(),
+            },
+            AgentEvent::ProviderKeyRemoved {
+                provider: "anthropic".into(),
+            },
         ]
     }
 
@@ -665,6 +832,37 @@ mod tests {
         let mut indices: Vec<usize> = sample_events().iter().map(variant_index).collect();
         indices.sort_unstable();
         assert_eq!(indices, (0..VARIANT_COUNT).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_refusal_by_budget_is_told_apart_from_a_person_saying_no() {
+        let by_budget = AgentEvent::ApprovalDenied {
+            approval_id: ApprovalId::new(),
+            tool: "t".into(),
+            note: Some("over budget".into()),
+            over_budget: true,
+        };
+        let json = serde_json::to_value(&by_budget).unwrap();
+        assert_eq!(json["over_budget"], serde_json::Value::Bool(true));
+        assert_eq!(
+            serde_json::from_value::<AgentEvent>(json).unwrap(),
+            by_budget
+        );
+
+        // A person's denial keeps the shape it had before the field existed,
+        // and a record written then still reads as a person's denial.
+        let by_person = AgentEvent::ApprovalDenied {
+            approval_id: ApprovalId::new(),
+            tool: "t".into(),
+            note: None,
+            over_budget: false,
+        };
+        let json = serde_json::to_value(&by_person).unwrap();
+        assert!(json.get("over_budget").is_none(), "{json}");
+        assert_eq!(
+            serde_json::from_value::<AgentEvent>(json).unwrap(),
+            by_person
+        );
     }
 
     #[test]
@@ -689,6 +887,39 @@ mod tests {
                 .unwrap();
             assert_eq!(tag, event.kind(), "tag/kind mismatch for {event:?}");
         }
+    }
+
+    #[test]
+    fn every_operator_change_has_a_summary_and_nothing_else_does() {
+        // Keyed on the kind's prefix rather than a list, so a sixth operator
+        // event without a summary line fails here instead of reaching a feed
+        // as a blank row.
+        for event in sample_events() {
+            let stored = serde_json::to_value(&event).unwrap();
+            let summary = operator_summary_of(&stored);
+            if event.kind().starts_with("operator.") {
+                let line = summary.unwrap_or_else(|| panic!("no summary for {}", event.kind()));
+                assert!(
+                    !line.trim().is_empty(),
+                    "blank summary for {}",
+                    event.kind()
+                );
+            } else {
+                assert_eq!(summary, None, "{} is not an operator change", event.kind());
+            }
+        }
+
+        let disabled = AgentEvent::AgentEnabledChanged {
+            agent: "ops".into(),
+            enabled: false,
+        };
+        assert_eq!(disabled.operator_summary().as_deref(), Some("ops disabled"));
+        let stored =
+            serde_json::json!({"event": "operator.provider_key.set", "provider": "openai"});
+        assert_eq!(
+            operator_summary_of(&stored).as_deref(),
+            Some("openai key stored")
+        );
     }
 
     #[test]
@@ -745,6 +976,52 @@ mod tests {
     }
 
     #[test]
+    fn an_approval_recorded_before_notes_existed_still_reads() {
+        let approval_id = ApprovalId::new();
+        let granted: AgentEvent = serde_json::from_value(serde_json::json!({
+            "event": "approval.granted",
+            "approval_id": approval_id,
+            "tool": "email.send",
+            "waited_ms": 1200,
+        }))
+        .unwrap();
+        assert_eq!(
+            granted,
+            AgentEvent::ApprovalGranted {
+                approval_id,
+                tool: "email.send".into(),
+                waited_ms: 1200,
+                note: None,
+            }
+        );
+    }
+
+    #[test]
+    fn operator_events_carry_no_key_material() {
+        // The provider events are the only ones a credential passes near. Their
+        // serialised form is pinned to the tag and the provider id, so a field
+        // added later has to come through this test to get into the log.
+        for event in [
+            AgentEvent::ProviderKeySet {
+                provider: "anthropic".into(),
+            },
+            AgentEvent::ProviderKeyRemoved {
+                provider: "anthropic".into(),
+            },
+        ] {
+            let json = serde_json::to_value(&event).unwrap();
+            let mut fields: Vec<&str> = json
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            fields.sort_unstable();
+            assert_eq!(fields, vec!["event", "provider"]);
+        }
+    }
+
+    #[test]
     fn the_stored_classification_agrees_with_the_live_one() {
         // The desktop classifies stored records by kind and live events by
         // variant. If the two disagree, the same event is flagged in one view
@@ -774,6 +1051,11 @@ mod tests {
             vec![
                 "agent.taint.raised",
                 "approval.denied",
+                "operator.agent.created",
+                "operator.agent.enabled_changed",
+                "operator.policy.changed",
+                "operator.provider_key.removed",
+                "operator.provider_key.set",
                 "permission.denied",
                 "permission.escalated_by_taint",
                 "tool.arguments.rejected",

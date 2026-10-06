@@ -41,6 +41,22 @@ risk: string,
  */
 reason: string, 
 /**
+ * What the policy would have decided had the run read nothing untrusted.
+ *
+ * `allow` here means the policy itself permits the action and taint alone
+ * is why a person is being asked; `ask` means the operator wanted this
+ * asked regardless. The two call for different readings of the same card.
+ */
+effect_before_taint: string, 
+/**
+ * How many approvals this run has requested, this one included.
+ */
+asked_this_run: number, 
+/**
+ * The most approvals the policy lets one run request, when it sets a limit.
+ */
+approval_budget: number | null, 
+/**
  * Plain-language description of what will happen.
  */
 explanation: string, 
@@ -69,6 +85,6 @@ requested_at: string,
  */
 decided_at: string | null, 
 /**
- * The human's note.
+ * The note the person left with their decision, whichever way it went.
  */
 note: string | null, };

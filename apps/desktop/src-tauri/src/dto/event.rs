@@ -1,4 +1,4 @@
-//! Audit events and the dashboard that gathers them.
+//! Audit events as the feed shows them, and the dashboard.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -29,6 +29,10 @@ pub struct EventView {
 }
 
 /// The dashboard.
+///
+/// Polled every few seconds while the window is visible, so it holds only what
+/// is cheap to read and changes on that timescale. The audit chain's health is
+/// deliberately not here: it has its own command on its own slower schedule.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../src/bindings/")]
 pub struct DashboardView {
@@ -38,13 +42,11 @@ pub struct DashboardView {
     pub running_tasks: Vec<TaskSummary>,
     /// Approvals waiting on a human.
     pub pending_approvals: Vec<ApprovalView>,
-    /// The most recent activity.
-    pub recent_events: Vec<EventView>,
     /// Recent tool calls that were refused.
     pub recent_refusals: Vec<ExecutionView>,
-    /// How many events the audit log holds.
-    #[ts(type = "number")]
-    pub audit_events: i64,
-    /// Whether the audit chain verifies.
-    pub audit_intact: bool,
+    /// Recent tasks whose latest attempt failed, or that were abandoned.
+    ///
+    /// The run's failure text and identity travel on `latest_run`; a task the
+    /// scheduler abandoned before it ever ran has none.
+    pub recent_failures: Vec<TaskSummary>,
 }

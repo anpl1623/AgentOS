@@ -87,6 +87,33 @@ impl TaskRepository {
         rows.iter().map(hydrate).collect()
     }
 
+    /// Recent tasks in one status, most recently settled into it first.
+    ///
+    /// Selected by the store, so a rare status is found however many tasks in
+    /// other states were created since. Ordered by when the task last reached
+    /// a terminal status rather than when it was created: a retry of an old
+    /// task that failed again today is today's failure. A task in a status
+    /// that is not terminal has no such time and sorts by its creation.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Sql`] on failure.
+    pub async fn list_with_status(
+        &self,
+        status: TaskStatus,
+        limit: i64,
+    ) -> Result<Vec<Task>, DbError> {
+        let rows = sqlx::query(
+            "SELECT * FROM tasks WHERE status = ?1
+              ORDER BY COALESCE(completed_at, created_at) DESC LIMIT ?2",
+        )
+        .bind(status.as_str())
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(hydrate).collect()
+    }
+
     /// Recent tasks for one agent, newest first.
     ///
     /// # Errors
@@ -309,6 +336,74 @@ mod tests {
         assert_eq!(done.started_at.unwrap(), first_start);
         assert!(done.completed_at.is_some());
         assert_eq!(done.status, TaskStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn tasks_in_a_status_are_found_behind_newer_ones() {
+        let (db, agent_id) = seeded().await;
+        let failed = Task::new(agent_id, "the one that failed");
+        db.tasks().insert(&failed).await.unwrap();
+        db.tasks()
+            .set_status(failed.id, TaskStatus::Failed)
+            .await
+            .unwrap();
+        for i in 0..5 {
+            db.tasks()
+                .insert(&Task::new(agent_id, format!("later {i}")))
+                .await
+                .unwrap();
+        }
+
+        // Out of reach of the newest few tasks of every status.
+        assert!(
+            db.tasks()
+                .list(5)
+                .await
+                .unwrap()
+                .iter()
+                .all(|task| task.id != failed.id)
+        );
+        let found = db
+            .tasks()
+            .list_with_status(TaskStatus::Failed, 5)
+            .await
+            .unwrap();
+        assert_eq!(
+            found.iter().map(|task| task.id).collect::<Vec<_>>(),
+            vec![failed.id]
+        );
+
+        // Five newer tasks fail, and then the old one fails again on a retry.
+        // That is the freshest failure, and is listed first.
+        let later: Vec<TaskId> = db
+            .tasks()
+            .list(5)
+            .await
+            .unwrap()
+            .iter()
+            .map(|task| task.id)
+            .collect();
+        for id in &later {
+            db.tasks()
+                .set_status(*id, TaskStatus::Failed)
+                .await
+                .unwrap();
+        }
+        db.tasks()
+            .set_status(failed.id, TaskStatus::Running)
+            .await
+            .unwrap();
+        db.tasks()
+            .set_status(failed.id, TaskStatus::Failed)
+            .await
+            .unwrap();
+        let found = db
+            .tasks()
+            .list_with_status(TaskStatus::Failed, 5)
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 5);
+        assert_eq!(found[0].id, failed.id);
     }
 
     #[tokio::test]

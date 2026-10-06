@@ -15,6 +15,8 @@
 
 import { useSyncExternalStore } from "react";
 
+import type { Route } from "../routes/route";
+
 /**
  * How loud an alert is.
  *
@@ -28,12 +30,28 @@ export type AlertLevel = "info" | "warn" | "error";
 /** Every level, for code and tests that must cover them all. */
 export const ALERT_LEVELS: readonly AlertLevel[] = ["info", "warn", "error"];
 
+/**
+ * Somewhere an alert offers to take a person.
+ *
+ * A route rather than a callback, so an alert can only navigate: nothing in the
+ * corner of the window can approve, retry or change anything.
+ */
+export interface AlertLink {
+  label: string;
+  route: Route;
+}
+
 /** An alert on screen. */
 export interface Alert {
   /** Identity. Raising again with the same id replaces this alert. */
   id: string;
   level: AlertLevel;
+  /** The headline. */
   message: string;
+  /** What follows the headline, when there is more to say. */
+  detail: string | null;
+  /** Where the card offers to go besides being dismissed. */
+  link: AlertLink | null;
   /** Stays until dismissed; never expires and is never evicted to make room. */
   sticky: boolean;
 }
@@ -47,6 +65,8 @@ export interface AlertInput {
   id?: string;
   level: AlertLevel;
   message: string;
+  detail?: string | null;
+  link?: AlertLink | null;
   /** Keep until dismissed. Errors are always kept, whatever this says. */
   sticky?: boolean;
 }
@@ -61,7 +81,7 @@ export interface AlertInput {
 export const ALERT_CAP = 4;
 
 /** How long a non-sticky alert stays before it leaves by itself. */
-export const ALERT_TTL_MS = 8000;
+export const ALERT_TTL_MS = 6000;
 
 /**
  * Normalise an input into an alert.
@@ -74,6 +94,8 @@ export function toAlert(input: AlertInput, fallbackId: string): Alert {
     id: input.id ?? fallbackId,
     level: input.level,
     message: input.message,
+    detail: input.detail ?? null,
+    link: input.link ?? null,
     sticky: input.level === "error" || input.sticky === true,
   };
 }

@@ -2,7 +2,7 @@
 
 use agentos_providers::provider_ids;
 use agentos_secrets::{
-    ChainSecretStore, EnvSecretStore, KeychainStatus, KeyringStore, SecretStore, provider_key,
+    ChainSecretStore, EnvSecretStore, KeychainStatus, KeyringStore, provider_key,
 };
 use tauri::State;
 
@@ -79,9 +79,14 @@ pub async fn settings(state: State<'_, AppState>) -> Answer<SettingsView> {
 ///
 /// Refuses when there is no keychain rather than pretending to succeed: on such
 /// a machine the credential belongs in the environment, and saying so is more
-/// use than a generic failure.
+/// use than a generic failure. The store itself goes through the runtime,
+/// which records that a key was set, naming the provider and nothing else.
 #[tauri::command]
-pub async fn set_provider_key(provider: String, key: String) -> Answer<()> {
+pub async fn set_provider_key(
+    state: State<'_, AppState>,
+    provider: String,
+    key: String,
+) -> Answer<()> {
     if let KeychainStatus::Unavailable { reason } = KeyringStore::status() {
         let variable = EnvSecretStore::variables_for(&provider_key(&provider))
             .last()
@@ -94,17 +99,15 @@ pub async fn set_provider_key(provider: String, key: String) -> Answer<()> {
         )));
     }
 
-    let key = key.trim();
-    if key.is_empty() {
-        return Err(DesktopError::Rejected("no key was provided".to_owned()));
-    }
-    KeyringStore::new().set(&provider_key(&provider), key)?;
+    state.runtime.set_provider_key(&provider, &key).await?;
     Ok(())
 }
 
 /// Remove a stored provider credential.
+///
+/// Through the runtime, which records the removal.
 #[tauri::command]
-pub async fn remove_provider_key(provider: String) -> Answer<()> {
-    KeyringStore::new().delete(&provider_key(&provider))?;
+pub async fn remove_provider_key(state: State<'_, AppState>, provider: String) -> Answer<()> {
+    state.runtime.remove_provider_key(&provider).await?;
     Ok(())
 }

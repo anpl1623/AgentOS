@@ -31,6 +31,55 @@ it is technically a breaking change.
 - **Manifest drift is audited.** A tool that plans a capability its manifest does not declare is
   recorded as `tool.manifest_exceeded`. The call is not failed — the policy engine evaluates the real
   plan either way — but the drift is now in the audit chain rather than only in a log line.
+- **Operator changes are audited.** Creating an agent, installing a policy, enabling or disabling an
+  agent, and storing or removing a provider key are recorded in the hash chain as `operator.*`
+  events, from the CLI and the desktop alike, and are security-relevant. A policy record carries the
+  whole document, so a policy widened before a bad action and narrowed after it leaves a trace. A
+  provider record names the provider and never the key.
+- **A run may ask a person at most ten times by default.** The eleventh request in a run is denied
+  without being shown to anyone. Set the limit with `max_per_run` in the policy's new
+  `approval_budget` block, or lift it with `max_per_run: ~`. A request past the budget is recorded as
+  denied with the count and the budget in its note, and its `approval.denied` record carries
+  `over_budget: true`, so the chain tells the budget's refusal from a person's. Requests the CLI's
+  `--auto-approve-up-to` settles without a prompt do not count. There is no bulk approve.
+- **A search is bound by every rule inside its root.** `filesystem.search` asks the policy about each
+  path it walks into, with the request shape that authorised the call, and only an outright allow
+  lets it name or read that path. A deny on a subdirectory therefore binds the walk, and an approved
+  search does not reach paths an `ask` rule covers. Symlinked directories are never entered, and a
+  file is read only if the handle opened is the file that was admitted, so a path swapped for a link
+  mid-search is skipped; on Windows that check is weaker, as `SECURITY.md` says.
+- **Approvals left by a crashed run are closed.** At startup a pending request whose run has ended is
+  marked expired with a note, rather than waiting in the queue forever. Requests of reaped runs are
+  now expired rather than cancelled.
+- **A live run is never reaped by another process.** The desktop at launch and `agentos doctor` used
+  to fail every unfinished run, including one waiting at a terminal in another process, and a yes
+  given there afterwards was still acted on. A process driving runs now holds a lock in the data
+  directory (`runs.lock`), and nothing is reaped while any process holds it. Independently, an
+  approval whose decision cannot be recorded, because the request was closed meanwhile or the write
+  failed, is not acted on.
+- **A log missing its oldest records no longer verifies.** `agentos audit verify`, `agentos doctor`
+  and the desktop required nothing of the first record, so deleting the head of the chain passed.
+  The first record must now be sequence 1 and name the genesis hash. The desktop's full verification
+  also checks the records since its last routine check against what that check proved, and its
+  verdict no longer clears a break the routine check found.
+- **Decision notes are bounded.** A note is stripped of control characters other than line breaks,
+  terminal escape sequences included, and cut to 2,000 characters before it reaches the approvals
+  table or the audit chain, from any client. The desktop refuses a longer note rather than cutting
+  it.
+
+### Added
+
+- `filesystem.search`, by name glob and by content, with depth, result and byte caps and a count of
+  everything skipped and why. New agents get it with `filesystem.read` and `filesystem.list`.
+- `filesystem.read` takes `offset` (from 1) and `limit` for a range of lines.
+- An approval can carry a note either way it is answered, kept with the decision and in the audit
+  record. The approval card says what the policy alone would have decided, and where the run is in
+  its budget.
+- Desktop: every screen has an address, back and forward work, a command palette (Cmd/Ctrl+K) and
+  screen shortcuts (Cmd/Ctrl+1–7), none of which can answer an approval. Leaving unsaved work asks
+  first, a screen returned to opens where it was left, and a failed run raises an alert that opens
+  it. The dock badge counts waiting approvals, and a new request asks for attention when the window
+  is behind another.
 
 ### Changed
 
@@ -38,6 +87,16 @@ it is technically a breaking change.
   `agent.task.abandoned`, matching every other event and their own `kind`. Records written under the
   old tags are still read.
 - The scheduler abandons a whole dead dependency chain in one tick, rather than one layer per tick.
+- `agentos audit tail --security` selects security records in the query, so it shows the most recent
+  of them rather than those among the newest `--limit` records.
+- The desktop checks the audit chain incrementally, verifying only records written since its last
+  check; the first check after launch covers the whole chain, and the full verification in Settings
+  is unchanged. When a check fails, the dashboard says so instead of keeping its last verdict up. The
+  runtime refuses provider keys for unknown providers.
+- The dashboard lists failed tasks by when they last failed, so a retry that failed again today is
+  not hidden behind newer tasks that failed earlier.
+- The minimum supported Rust version is 1.94, which the database driver already required; the
+  stated 1.85 was out of date.
 
 ## [0.2.0]
 

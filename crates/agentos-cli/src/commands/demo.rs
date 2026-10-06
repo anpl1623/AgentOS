@@ -120,8 +120,6 @@ pub async fn run(args: DemoArgs, config: &RuntimeConfig) -> Result<()> {
     std::fs::create_dir_all(&workspace)?;
     let workspace = std::fs::canonicalize(&workspace)?;
     runtime
-        .database()
-        .agents()
         .set_policy(agent.id, &agentos_demo::policy(crm.base_url(), &workspace))
         .await?;
 

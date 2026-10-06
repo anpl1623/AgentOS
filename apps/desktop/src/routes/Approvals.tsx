@@ -15,7 +15,14 @@ import { useAsync } from "../sdk/useAsync";
  * decision needs is on the card, because an approval that sends someone hunting
  * through other screens is an approval that gets clicked without being read.
  */
-export function Approvals({ onResolved }: { onResolved: () => void }) {
+export function Approvals({
+  onResolved,
+}: {
+  /** Called after each answer. The badge reads the shared queue, so the shell passes none. */
+  onResolved?: (() => void) | undefined;
+  /** One pending approval to bring into view; read once the queue screen is rebuilt. */
+  focus?: string | undefined;
+}) {
   const pending = useAsync(() => api.listPendingApprovals(), []);
   const { reload } = pending;
 
@@ -63,7 +70,7 @@ export function Approvals({ onResolved }: { onResolved: () => void }) {
           approval={approval}
           onResolved={() => {
             reload();
-            onResolved();
+            onResolved?.();
           }}
         />
       ))}

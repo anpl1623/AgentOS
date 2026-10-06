@@ -11,7 +11,19 @@ use super::{Answer, DesktopError, parse_id, task_summaries};
 use crate::dto::{
     ApprovalView, ExecutionView, RunSummary, StartedTask, StepView, TaskSummary, TraceView,
 };
-use crate::state::{AppState, DesktopApprovalGate};
+use crate::state::{AppState, ApprovalBridge, DesktopApprovalGate};
+
+/// The approval gate every desktop run is given.
+///
+/// The one place a desktop gate is built. Two call sites constructing one by
+/// hand is how one of them comes to hand a run a different gate.
+pub(crate) fn desktop_gate(
+    app: AppHandle,
+    approvals: ApprovalBridge,
+    objective: String,
+) -> Arc<dyn ApprovalGate> {
+    Arc::new(DesktopApprovalGate::new(app, approvals, objective))
+}
 
 /// Recent tasks.
 #[tauri::command]
@@ -43,11 +55,7 @@ pub async fn start_task(
     let runtime = &state.runtime;
     let task = runtime.create_task(id, &objective).await?;
 
-    let gate: Arc<dyn ApprovalGate> = Arc::new(DesktopApprovalGate::new(
-        app,
-        state.approvals.clone(),
-        objective,
-    ));
+    let gate = desktop_gate(app, state.approvals.clone(), objective);
     let (run_id, _handle) = runtime
         .start_task(&task, gate, CancellationToken::new())
         .await?;

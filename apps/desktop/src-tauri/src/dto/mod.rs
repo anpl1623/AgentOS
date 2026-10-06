@@ -23,13 +23,17 @@ use agentos_core::task::{Task, TaskRun};
 
 mod agent;
 mod approval;
+mod audit;
 mod event;
+mod insight;
 mod settings;
 mod task;
 
 pub use agent::*;
 pub use approval::*;
+pub use audit::*;
 pub use event::*;
+pub use insight::*;
 pub use settings::*;
 pub use task::*;
 
@@ -54,6 +58,11 @@ pub fn summarise_event(payload: &serde_json::Value) -> String {
         payload.get("to").and_then(serde_json::Value::as_str),
     ) {
         return format!("{from} → {to}");
+    }
+
+    // An operator change carries no tool, objective or reason to read.
+    if let Some(line) = agentos_core::event::operator_summary_of(payload) {
+        return line;
     }
 
     // A manifest drift names the tool and what it planned beyond its manifest;
@@ -135,6 +144,19 @@ mod tests {
         assert_eq!(
             summarise_event(&drift),
             "terminal.exec planned undeclared filesystem.read, network.request"
+        );
+
+        // An operator change would otherwise be read for a model or nothing.
+        let created = serde_json::json!({
+            "event": "operator.agent.created",
+            "agent": "ops",
+            "provider": "anthropic",
+            "model": "claude-opus-5",
+            "tools": ["filesystem.read"],
+        });
+        assert_eq!(
+            summarise_event(&created),
+            "ops created on anthropic/claude-opus-5"
         );
 
         assert_eq!(summarise_event(&serde_json::json!({})), "");

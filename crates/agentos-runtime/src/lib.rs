@@ -13,6 +13,8 @@ pub mod agent_loop;
 pub mod config;
 pub mod error;
 pub mod gate;
+mod liveness;
+pub mod operator;
 pub mod prompt;
 pub mod scheduler;
 pub mod state;
@@ -20,10 +22,12 @@ pub mod state;
 use std::sync::Arc;
 
 use agentos_audit::AuditLog;
-use agentos_core::agent::{Agent, ModelConfig};
+use agentos_core::agent::Agent;
 use agentos_core::ids::{AgentId, TaskId, TaskRunId};
 use agentos_core::task::{Task, TaskRun, TaskState, TaskStatus, TaskTrigger};
-use agentos_permissions::{DenyAllEngine, PermissionEngine, PolicyDocument, PolicyEngine};
+use agentos_permissions::{
+    ApprovalPolicy, DenyAllEngine, PermissionEngine, Policy, PolicyDocument, PolicyEngine,
+};
 use agentos_persistence::Database;
 use agentos_secrets::{ChainSecretStore, SecretStore};
 use agentos_tools::{ApprovalGate, TaintTracker, ToolContext, ToolPipeline, ToolRegistry};
@@ -53,6 +57,10 @@ pub struct Runtime {
     /// Cancellation tokens for runs currently in flight, so the operator can
     /// stop an agent that is already working.
     running: Arc<Mutex<std::collections::HashMap<TaskRunId, CancellationToken>>>,
+    /// Tells other processes on this data directory that this one drives
+    /// runs, so none of them reaps a run that is still alive here. Absent for
+    /// an in-memory runtime, whose database no other process can see.
+    runs_lock: Option<Arc<liveness::RunsLock>>,
 }
 
 impl Runtime {
@@ -90,6 +98,7 @@ impl Runtime {
             registry: build_registry(&config),
             providers: Arc::new(SecretBackedProviderFactory::new(secrets.clone())),
             secrets,
+            runs_lock: Some(Arc::new(liveness::RunsLock::in_directory(&config.data_dir))),
             config,
             running: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
@@ -117,6 +126,7 @@ impl Runtime {
             secrets,
             config,
             running: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            runs_lock: None,
         })
     }
 
@@ -165,34 +175,6 @@ impl Runtime {
 
     // -- Agents -------------------------------------------------------------
 
-    /// Create an agent with a starter policy scoped to its own workspace.
-    ///
-    /// The starter policy is deliberately close to useless: read-only inside one
-    /// directory. Widening it is an explicit act by the operator.
-    ///
-    /// # Errors
-    ///
-    /// [`RuntimeError::Database`] if the name is taken or the write fails.
-    pub async fn create_agent(
-        &self,
-        name: &str,
-        instructions: &str,
-        model: ModelConfig,
-        tools: Vec<String>,
-    ) -> Result<Agent, RuntimeError> {
-        let agent = Agent::new(name, instructions, model).with_tools(tools);
-        self.database.agents().insert(&agent).await?;
-
-        let workspace = self.config.workspace_for(name);
-        std::fs::create_dir_all(&workspace).map_err(|source| {
-            RuntimeError::io(format!("creating {}", workspace.display()), source)
-        })?;
-
-        let policy = agentos_permissions::starter_policy_yaml(&workspace);
-        self.database.agents().set_policy(agent.id, &policy).await?;
-        Ok(agent)
-    }
-
     /// Look up an agent by name.
     ///
     /// # Errors
@@ -218,12 +200,16 @@ impl Runtime {
         &self,
         agent_id: AgentId,
     ) -> Result<Arc<dyn PermissionEngine>, RuntimeError> {
+        Ok(engine_from(self.policy_for(agent_id).await?))
+    }
+
+    /// The agent's compiled policy, or `None` when it has none stored.
+    async fn policy_for(&self, agent_id: AgentId) -> Result<Option<Policy>, RuntimeError> {
         match self.database.agents().policy(agent_id).await? {
-            None => Ok(Arc::new(DenyAllEngine)),
-            Some(stored) => {
-                let policy = PolicyDocument::from_yaml(&stored.document)?.compile()?;
-                Ok(Arc::new(PolicyEngine::new(policy)))
-            }
+            None => Ok(None),
+            Some(stored) => Ok(Some(
+                PolicyDocument::from_yaml(&stored.document)?.compile()?,
+            )),
         }
     }
 
@@ -512,7 +498,21 @@ impl Runtime {
         }
 
         let provider = self.providers.build(&agent.name, &agent.model)?;
-        let engine = self.engine_for(agent.id).await?;
+        // Before the run exists, so no reaper elsewhere can see it without
+        // also seeing that this process is alive to drive it.
+        if let Some(lock) = &self.runs_lock {
+            lock.hold().await?;
+        }
+        // One compilation feeds both the engine and the gate, so the budget
+        // a run is held to comes from the same document as its rules. An
+        // agent with no policy is denied everything and never asks, so the
+        // budget it gets is moot; it gets the default all the same.
+        let policy = self.policy_for(agent.id).await?;
+        let budget = policy
+            .as_ref()
+            .map_or_else(ApprovalPolicy::default, |policy| policy.approvals)
+            .max_per_run;
+        let engine = engine_from(policy);
 
         let attempt = self.database.runs().next_attempt(task.id).await?;
         let mut run = TaskRun::new(task.id, attempt);
@@ -530,11 +530,10 @@ impl Runtime {
             self.audit.clone(),
         ));
 
-        let gate: Arc<dyn ApprovalGate> = Arc::new(RunApprovalGate::new(
-            approvals,
-            self.database.clone(),
-            machine.clone(),
-        ));
+        let gate: Arc<dyn ApprovalGate> = Arc::new(
+            RunApprovalGate::new(approvals, self.database.clone(), machine.clone())
+                .with_budget(budget),
+        );
 
         let pipeline = ToolPipeline::new(self.registry.clone(), engine, gate, self.audit.clone());
 
@@ -639,17 +638,54 @@ impl Runtime {
         self.running.lock().await.keys().copied().collect()
     }
 
-    /// Mark runs abandoned by a previous process as failed.
+    /// Mark runs abandoned by a previous process as failed, and close the
+    /// approval requests they left behind.
     ///
     /// Called at startup: a run that was executing when the process died is not
     /// executing now, and leaving it looking alive would misreport the system's
     /// state indefinitely.
     ///
+    /// Its pending requests are the same lie in the approvals queue, and the
+    /// more dangerous one: a card a person can still answer, for a run that will
+    /// never act on the answer. Every pending request whose run has ended —
+    /// those reaped here, and any an earlier crash left on a run that had
+    /// already finished — is marked expired, with a note saying why.
+    ///
+    /// An unfinished run is only abandoned if no process is driving it, and
+    /// the desktop application, a terminal run and `agentos doctor` can all
+    /// share one data directory. So nothing is reaped while any process,
+    /// this one included, holds the data directory's run lock; the call
+    /// returns zero and the runs are left to whoever is driving them. A run
+    /// this process is driving is never reaped either way.
+    ///
     /// # Errors
     ///
-    /// [`RuntimeError::Database`] on failure.
+    /// [`RuntimeError::Database`] on failure, [`RuntimeError::Io`] if the run
+    /// lock cannot be consulted.
     pub async fn reap_abandoned_runs(&self) -> Result<usize, RuntimeError> {
-        let abandoned = self.database.runs().list_unfinished().await?;
+        // Held until the reap is done, so no run can start meanwhile.
+        let _exclusive = match &self.runs_lock {
+            Some(lock) => match lock.try_exclusive()? {
+                Some(exclusive) => Some(exclusive),
+                None => {
+                    tracing::info!(
+                        "another process is driving runs; leaving unfinished runs to it"
+                    );
+                    return Ok(0);
+                }
+            },
+            None => None,
+        };
+
+        let live = self.running_runs().await;
+        let abandoned: Vec<TaskRun> = self
+            .database
+            .runs()
+            .list_unfinished()
+            .await?
+            .into_iter()
+            .filter(|run| !live.contains(&run.id))
+            .collect();
         let count = abandoned.len();
 
         for mut run in abandoned {
@@ -673,11 +709,18 @@ impl Runtime {
                 .tasks()
                 .set_status(run.task_id, TaskStatus::Failed)
                 .await?;
-            let _ = self
-                .database
-                .approvals()
-                .cancel_pending_for_run(run.id)
-                .await;
+        }
+
+        let expired = self
+            .database
+            .approvals()
+            .expire_for_finished_runs(
+                "the run that asked had ended, so nobody could act on an answer; most often \
+                 the process exited while this request was waiting",
+            )
+            .await?;
+        if expired > 0 {
+            tracing::warn!(expired, "closed approval requests left by runs that ended");
         }
 
         Ok(count)
@@ -702,7 +745,10 @@ impl Runtime {
         })
     }
 
-    /// Verify the audit chain.
+    /// Verify the audit chain, rehashing every record from genesis.
+    ///
+    /// A log whose oldest records were removed does not verify: the first
+    /// record left must be the first record written.
     ///
     /// # Errors
     ///
@@ -710,6 +756,42 @@ impl Runtime {
     pub async fn verify_audit(&self) -> Result<agentos_audit::ChainVerification, RuntimeError> {
         let records = self.database.audit_sink().all().await?;
         Ok(agentos_audit::verify_chain(&records))
+    }
+
+    /// Verify only the records written since an earlier verification.
+    ///
+    /// Rehashing the whole chain is the most expensive thing the runtime can
+    /// be asked to do, and a screen that polls cannot afford it. This checks
+    /// each new record's own hash, that the records follow one another, and
+    /// that the first of them points at the checkpoint — so the new part is
+    /// proved to extend the part already proved.
+    ///
+    /// What it cannot see is a change to a record before the checkpoint made
+    /// after that record was verified. That is what [`Self::verify_audit`] is
+    /// for, and why it stays a deliberate act rather than a poll.
+    ///
+    /// The checkpoint returned is advanced only past an intact stretch, so a
+    /// break goes on being reported until somebody looks at it.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Database`] on failure.
+    pub async fn verify_audit_from(
+        &self,
+        checkpoint: Option<&AuditCheckpoint>,
+    ) -> Result<(agentos_audit::ChainVerification, AuditCheckpoint), RuntimeError> {
+        let start = checkpoint.cloned().unwrap_or_else(AuditCheckpoint::genesis);
+        let records = self.database.audit_sink().after(start.sequence).await?;
+        let verification = agentos_audit::verify_chain_from(&records, start.sequence, &start.hash);
+
+        let next = match records.last() {
+            Some(last) if verification.is_intact() => AuditCheckpoint {
+                sequence: last.sequence,
+                hash: last.hash.clone(),
+            },
+            _ => start,
+        };
+        Ok((verification, next))
     }
 
     /// The most recent task for an agent, if any.
@@ -734,6 +816,39 @@ impl Runtime {
     /// [`RuntimeError::Database`] if it does not exist.
     pub async fn task(&self, task_id: TaskId) -> Result<Task, RuntimeError> {
         Ok(self.database.tasks().get(task_id).await?)
+    }
+}
+
+/// Where a verification of the audit chain got to.
+///
+/// Held by a client between calls to [`Runtime::verify_audit_from`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditCheckpoint {
+    /// The last record verified; zero before any.
+    pub sequence: u64,
+    /// Its hash, which the next record must name as its predecessor.
+    pub hash: String,
+}
+
+impl AuditCheckpoint {
+    /// Before the first record.
+    #[must_use]
+    pub fn genesis() -> Self {
+        Self {
+            sequence: 0,
+            hash: agentos_audit::GENESIS_HASH.to_owned(),
+        }
+    }
+}
+
+/// The engine for a compiled policy, or one that denies everything.
+///
+/// An agent with no stored policy gets [`DenyAllEngine`]. Absence of a policy
+/// must never mean absence of restriction.
+fn engine_from(policy: Option<Policy>) -> Arc<dyn PermissionEngine> {
+    match policy {
+        None => Arc::new(DenyAllEngine),
+        Some(policy) => Arc::new(PolicyEngine::new(policy)),
     }
 }
 

@@ -17,7 +17,7 @@
 //! ask         → put an approval to a human, wait
 //! allow       → proceed
 //!         ↓
-//! execute with a timeout and a cancellation token
+//! execute with a timeout, a cancellation token and a policy probe
 //!         ↓
 //! capture output as untrusted, raise taint from its provenance
 //!         ↓
@@ -62,7 +62,7 @@ use tokio_util::sync::CancellationToken;
 use crate::approval::{ApprovalGate, ApprovalOutcome};
 use crate::error::ToolError;
 use crate::taint::TaintTracker;
-use crate::tool::{ToolContext, ToolPlan, ToolRegistry, plan_exceeds_manifest};
+use crate::tool::{PolicyProbe, ToolContext, ToolPlan, ToolRegistry, plan_exceeds_manifest};
 
 /// Everything that happened during one tool invocation.
 #[derive(Debug, Clone)]
@@ -287,13 +287,14 @@ impl ToolPipeline {
                 let waited = Instant::now();
                 let outcome = self.approvals.request(&request, cancel.clone()).await;
                 match outcome {
-                    ApprovalOutcome::Approved => {
+                    ApprovalOutcome::Approved { note } => {
                         self.emit(
                             context,
                             AgentEvent::ApprovalGranted {
                                 approval_id: request.id,
                                 tool: call.tool.clone(),
                                 waited_ms: millis(waited),
+                                note,
                             },
                         )
                         .await;
@@ -305,10 +306,24 @@ impl ToolPipeline {
                                 approval_id: request.id,
                                 tool: call.tool.clone(),
                                 note: note.clone(),
+                                over_budget: false,
                             },
                         )
                         .await;
                         return builder.failure(ToolError::ApprovalDenied { note });
+                    }
+                    ApprovalOutcome::OverBudget { note } => {
+                        self.emit(
+                            context,
+                            AgentEvent::ApprovalDenied {
+                                approval_id: request.id,
+                                tool: call.tool.clone(),
+                                note: Some(note.clone()),
+                                over_budget: true,
+                            },
+                        )
+                        .await;
+                        return builder.failure(ToolError::ApprovalDenied { note: Some(note) });
                     }
                     ApprovalOutcome::Cancelled => {
                         return builder.failure(ToolError::Cancelled);
@@ -322,7 +337,18 @@ impl ToolPipeline {
             return builder.failure(ToolError::Cancelled);
         }
 
-        // 6. Execute.
+        // 6. Execute. A tool that discovers resources as it runs — a search
+        //    walking a tree it was authorised to list from the root — asks the
+        //    probe about each one. The probe answers from the same engine with
+        //    the same request shape that authorised the call, so a narrower
+        //    deny inside an allowed root binds the walk as it would bind a
+        //    direct call.
+        let context = &context.clone().with_policy(Arc::new(CallProbe {
+            engine: Arc::clone(&self.engine),
+            tool: call.tool.clone(),
+            risk: plan.risk,
+            tainted,
+        }));
         self.emit(
             context,
             AgentEvent::ToolExecutionStarted {
@@ -518,7 +544,19 @@ impl ToolPipeline {
                 }
             }
 
-            combined = Some(match combined {
+            // What the policy alone would have said is judged over the whole
+            // call too. If one capability asks on its own rules and another
+            // asks only because of taint, the call would be put to a person
+            // with or without the taint, and must not be presented as asking
+            // because of it.
+            let before_taint = combined
+                .as_ref()
+                .map_or(decision.effect_before_taint, |existing| {
+                    existing
+                        .effect_before_taint
+                        .stricter(decision.effect_before_taint)
+                });
+            let mut chosen = match combined {
                 None => decision,
                 Some(existing)
                     if decision.effect.stricter(existing.effect) == decision.effect
@@ -527,7 +565,9 @@ impl ToolPipeline {
                     decision
                 }
                 Some(existing) => existing,
-            });
+            };
+            chosen.effect_before_taint = before_taint;
+            combined = Some(chosen);
         }
 
         combined.unwrap_or_else(|| {
@@ -725,6 +765,12 @@ fn build_approval_request(
         arguments: arguments.clone(),
         capability,
         risk: plan.risk,
+        effect_before_taint: decision.effect_before_taint,
+        // The run's gate counts and stamps these: it is the one place every
+        // request in a run passes through, and the place the budget is
+        // enforced, so the number a person is shown is the number enforced.
+        asked_this_run: 0,
+        approval_budget: None,
         reason,
         explanation: plan.summary.clone(),
         affected_resources: plan.affected_resources.clone(),
@@ -734,6 +780,33 @@ fn build_approval_request(
         requested_at: agentos_core::now(),
         decided_at: None,
         decision_note: None,
+    }
+}
+
+/// The policy as one executing call may consult it.
+///
+/// Fixed to the request shape that authorised the call — its tool, its planned
+/// risk and the taint state at the moment of authorisation — so that asking
+/// about a path the tool found is asking exactly the question the pipeline
+/// would have asked had the model named that path itself.
+///
+/// Only an outright allow is a yes. An `ask` was put to a person for the call
+/// as planned; they did not see, and so did not approve, the paths it finds
+/// later. Nothing here is written to the audit log: a walk may consult the
+/// probe thousands of times, and what the tool skipped it reports itself.
+#[derive(Debug)]
+struct CallProbe {
+    engine: Arc<dyn PermissionEngine>,
+    tool: String,
+    risk: RiskLevel,
+    tainted: bool,
+}
+
+impl PolicyProbe for CallProbe {
+    fn permits(&self, capability: &Capability) -> bool {
+        let request = PermissionRequest::new(self.tool.clone(), capability.clone(), self.risk)
+            .tainted(self.tainted);
+        self.engine.evaluate(&request).effect == Effect::Allow
     }
 }
 

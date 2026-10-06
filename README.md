@@ -3,7 +3,7 @@
 [![CI](https://github.com/anpl1623/AgentOS/actions/workflows/ci.yml/badge.svg)](https://github.com/anpl1623/AgentOS/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/anpl1623/AgentOS?sort=semver)](https://github.com/anpl1623/AgentOS/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://rustup.rs)
+[![Rust 1.94+](https://img.shields.io/badge/rust-1.94%2B-orange.svg)](https://rustup.rs)
 ![Platforms: macOS, Windows, Linux](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)
 
 > **An open-source AI operating system for running your business from your computer.**
@@ -71,7 +71,10 @@ You
 
 The dashboard is the operator's view of the machine: what is running, what is waiting on a
 decision, and what was refused. The `audit chain` tile reports whether the hash chain
-verifies, which is the same check `agentos audit verify` runs from the CLI.
+verifies. Its first check after launch covers the whole chain; after that it checks only
+the records written since, each linked onto the last record it proved, so a record changed
+before that point is not noticed until the next launch. Settings' check and
+`agentos audit verify` rehash the whole chain every time.
 
 ![An approval request, escalated because the run read untrusted data](docs/images/approvals.png)
 
@@ -719,7 +722,7 @@ sha256sum -c agentos-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 
 ## Requirements
 
-- [Rust](https://rustup.rs) 1.85 or newer: for the runtime and the CLI
+- [Rust](https://rustup.rs) 1.94 or newer: for the runtime and the CLI
 - [Node](https://nodejs.org) 20 or newer: only for the desktop application
 
 The database is embedded, and the test suite needs no network, no API key and no external service.
@@ -880,6 +883,11 @@ max_risk: high
 taint_escalation:
   enabled: true
   escalate_at_or_above: medium
+
+# How many times one run may ask a person. Past it, a request is refused
+# without asking anyone. `max_per_run: ~` removes the limit.
+approval_budget:
+  max_per_run: 10
 
 permissions:
   filesystem:

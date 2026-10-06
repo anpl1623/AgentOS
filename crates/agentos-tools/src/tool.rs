@@ -33,6 +33,24 @@ pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 /// stopping at the pipeline rather than at the provider.
 pub const DEFAULT_MAX_IMAGES: usize = 4;
 
+/// The policy, asked about one capability while a call is already executing.
+///
+/// Authorisation happens once, against the plan, and a plan names what a call
+/// will touch before it touches anything. A tool that discovers what it touches
+/// as it goes, such as a recursive search, can only name its root, and path
+/// rules match by prefix: a policy that allows a directory and denies a
+/// directory inside it authorises the root and says nothing about the inner
+/// one. The probe lets such a tool ask the same policy about each path it finds,
+/// so a narrower deny binds the walk as well as the plan.
+///
+/// The pipeline supplies one evaluated with exactly the request shape it used to
+/// authorise the call. It answers `true` only for an outright allow: a person
+/// who approved the call approved it as planned, not each path it later finds.
+pub trait PolicyProbe: Send + Sync + fmt::Debug {
+    /// Whether the policy allows `capability`, without asking anyone.
+    fn permits(&self, capability: &Capability) -> bool;
+}
+
 /// Everything a tool needs to know about the run it is executing inside.
 #[derive(Debug, Clone)]
 pub struct ToolContext {
@@ -57,6 +75,11 @@ pub struct ToolContext {
     pub max_image_edge: u32,
     /// Cap on the encoded size of each returned image.
     pub max_image_bytes: usize,
+    /// The policy, for a tool that must check what it finds during execution.
+    ///
+    /// `None` outside the pipeline. A tool that depends on it refuses to run
+    /// without it rather than fall back to what the plan alone authorised.
+    pub policy: Option<Arc<dyn PolicyProbe>>,
 }
 
 impl ToolContext {
@@ -73,7 +96,15 @@ impl ToolContext {
             max_images: DEFAULT_MAX_IMAGES,
             max_image_edge: crate::vision::DEFAULT_MAX_IMAGE_EDGE,
             max_image_bytes: crate::vision::DEFAULT_MAX_IMAGE_BYTES,
+            policy: None,
         }
+    }
+
+    /// Attach the policy probe.
+    #[must_use]
+    pub fn with_policy(mut self, policy: Arc<dyn PolicyProbe>) -> Self {
+        self.policy = Some(policy);
+        self
     }
 
     /// Override the time budget.

@@ -12,6 +12,9 @@
 //!   enabled: true
 //!   escalate_at_or_above: medium
 //!
+//! approval_budget:
+//!   max_per_run: 10                    # after this many requests, refuse instead of asking
+//!
 //! permissions:
 //!   computer:
 //!     screenshot: ask
@@ -71,7 +74,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::PolicyError;
 use crate::path::{expand_home, resolve_secure};
 use crate::pattern::{GlobKind, ResourcePattern};
-use crate::policy::{Policy, PolicyRule, TaintPolicy};
+use crate::policy::{
+    ApprovalPolicy, DEFAULT_MAX_APPROVALS_PER_RUN, Policy, PolicyRule, TaintPolicy,
+};
 
 /// The YAML document, before it is compiled into a [`Policy`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -89,6 +94,9 @@ pub struct PolicyDocument {
     /// Taint escalation settings.
     #[serde(default)]
     pub taint_escalation: Option<TaintDocument>,
+    /// How many approvals one run may ask for.
+    #[serde(default)]
+    pub approval_budget: Option<ApprovalBudgetDocument>,
     /// Domain -> action -> specification.
     ///
     /// `BTreeMap` rather than `HashMap` so compilation is deterministic and rule
@@ -126,6 +134,30 @@ impl From<TaintDocument> for TaintPolicy {
         Self {
             enabled: doc.enabled,
             escalate_at_or_above: doc.escalate_at_or_above,
+        }
+    }
+}
+
+/// The approval budget as written in YAML.
+///
+/// Leaving `max_per_run` out keeps the default budget; writing `max_per_run: ~`
+/// removes the limit, which is a decision somebody has to type.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalBudgetDocument {
+    /// The most requests one run may raise.
+    #[serde(default = "default_max_per_run")]
+    pub max_per_run: Option<u32>,
+}
+
+const fn default_max_per_run() -> Option<u32> {
+    Some(DEFAULT_MAX_APPROVALS_PER_RUN)
+}
+
+impl From<ApprovalBudgetDocument> for ApprovalPolicy {
+    fn from(doc: ApprovalBudgetDocument) -> Self {
+        Self {
+            max_per_run: doc.max_per_run,
         }
     }
 }
@@ -197,6 +229,7 @@ impl PolicyDocument {
             max_risk: self.max_risk,
             rules: Vec::new(),
             taint: self.taint_escalation.map(Into::into).unwrap_or_default(),
+            approvals: self.approval_budget.map(Into::into).unwrap_or_default(),
         };
 
         for (domain, actions) in &self.permissions {
@@ -362,6 +395,10 @@ pub fn starter_policy_yaml(workspace: &Path) -> String {
          taint_escalation:\n\
          \x20 enabled: true\n\
          \x20 escalate_at_or_above: medium\n\
+         \n\
+         # After this many approval requests in one run, refuse instead of asking.\n\
+         approval_budget:\n\
+         \x20 max_per_run: 10\n\
          \n\
          permissions:\n\
          \x20 filesystem:\n\
@@ -707,6 +744,42 @@ permissions:
     }
 
     #[test]
+    fn the_approval_budget_is_read_beside_taint() {
+        let yaml = "approval_budget:\n  max_per_run: 3\npermissions: {}\n";
+        let policy = PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap();
+        assert_eq!(policy.approvals.max_per_run, Some(3));
+    }
+
+    #[test]
+    fn the_approval_budget_defaults_to_ten_and_is_lifted_only_explicitly() {
+        let omitted = PolicyDocument::from_yaml("permissions: {}\n")
+            .unwrap()
+            .compile()
+            .unwrap();
+        assert_eq!(omitted.approvals.max_per_run, Some(10));
+
+        let empty_block = PolicyDocument::from_yaml("approval_budget: {}\n")
+            .unwrap()
+            .compile()
+            .unwrap();
+        assert_eq!(empty_block.approvals.max_per_run, Some(10));
+
+        let lifted = PolicyDocument::from_yaml("approval_budget:\n  max_per_run: ~\n")
+            .unwrap()
+            .compile()
+            .unwrap();
+        assert_eq!(lifted.approvals.max_per_run, None);
+    }
+
+    #[test]
+    fn an_hourly_approval_budget_is_not_accepted() {
+        // Nothing enforces one. A field that parses and is not enforced reads
+        // to its author as a control that exists.
+        let err = PolicyDocument::from_yaml("approval_budget:\n  max_per_hour: 5\n").unwrap_err();
+        assert!(matches!(err, PolicyError::Yaml(_)));
+    }
+
+    #[test]
     fn default_is_deny_when_unspecified() {
         let policy = PolicyDocument::from_yaml("permissions: {}\n")
             .unwrap()
@@ -763,6 +836,7 @@ permissions:
         let policy = PolicyDocument::from_yaml(&yaml).unwrap().compile().unwrap();
         assert_eq!(policy.default_effect, Effect::Deny);
         assert_eq!(policy.max_risk, Some(RiskLevel::Medium));
+        assert_eq!(policy.approvals.max_per_run, Some(10));
 
         let engine = PolicyEngine::new(policy);
         let exec = PermissionRequest::new(

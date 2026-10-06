@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use agentos_core::approval::ApprovalRequest;
 use agentos_core::ids::ApprovalId;
-use agentos_runtime::Runtime;
+use agentos_runtime::{AuditCheckpoint, Runtime};
 use agentos_tools::{ApprovalGate, ApprovalOutcome};
 use async_trait::async_trait;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager, UserAttentionType};
 use tokio::sync::{Mutex, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -121,6 +121,8 @@ impl ApprovalGate for DesktopApprovalGate {
             };
         }
 
+        announce_waiting(&self.app, self.bridge.waiting_ids().await.len(), true);
+
         let outcome = tokio::select! {
             () = cancel.cancelled() => ApprovalOutcome::Cancelled,
             answer = receiver => answer.unwrap_or(ApprovalOutcome::Cancelled),
@@ -128,7 +130,76 @@ impl ApprovalGate for DesktopApprovalGate {
 
         self.bridge.forget(request.id).await;
         let _ = self.app.emit(APPROVAL_RESOLVED, &request.id.to_string());
+        announce_waiting(&self.app, self.bridge.waiting_ids().await.len(), false);
         outcome
+    }
+}
+
+/// The dock or taskbar badge for a number of waiting approvals.
+///
+/// No badge at zero, rather than a zero: a badge is a call to act, and one that
+/// is always present stops being read.
+#[must_use]
+pub fn badge_count(waiting: usize) -> Option<i64> {
+    (waiting > 0).then(|| i64::try_from(waiting).unwrap_or(i64::MAX))
+}
+
+/// Show how many approvals are waiting where a person can see it with the
+/// window behind another.
+///
+/// The loop this application exists for stalls when nobody notices an agent is
+/// waiting, and the in-window surfaces are invisible to someone working in
+/// another application. So the badge always follows the count, and a new
+/// request asks for attention when no window is in front. Both are best effort:
+/// a platform without a badge (Windows has none) or a window manager that
+/// ignores the request is not a reason to fail an approval, so failures are
+/// logged and dropped. These are calls from Rust, which the webview's
+/// capability grants do not govern.
+fn announce_waiting(app: &AppHandle, waiting: usize, asking: bool) {
+    for window in app.webview_windows().values() {
+        if let Err(error) = window.set_badge_count(badge_count(waiting)) {
+            tracing::debug!(%error, "could not set the window badge");
+        }
+        if asking
+            && !window.is_focused().unwrap_or(false)
+            && let Err(error) =
+                window.request_user_attention(Some(UserAttentionType::Informational))
+        {
+            tracing::debug!(%error, "could not request attention for the window");
+        }
+    }
+}
+
+/// How far this process has verified the audit chain, and what it found.
+///
+/// Verifying the whole chain rehashes every record the log has ever held, so
+/// the routine health check verifies only what was written since it last
+/// looked, through [`Runtime::verify_audit_from`]; that call owns the anchoring
+/// of each new stretch onto the last record proved. A record older than the
+/// checkpoint is not rehashed again by this check; the full verification in
+/// Settings remains the deliberate way to do that, and its answer is folded in
+/// here so the two never disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditWatch {
+    /// The last record proved to extend an intact chain.
+    ///
+    /// The runtime does not move it past a break, so a broken stretch is
+    /// verified, and reported, again on every check until it is looked at.
+    pub verified: AuditCheckpoint,
+    /// Whether everything verified so far is intact.
+    ///
+    /// Sticky: a chain is only as trustworthy as its worst link, so a break
+    /// stays reported however many good records follow it. Only a full
+    /// verification sets it again.
+    pub intact: bool,
+}
+
+impl Default for AuditWatch {
+    fn default() -> Self {
+        Self {
+            verified: AuditCheckpoint::genesis(),
+            intact: true,
+        }
     }
 }
 
@@ -139,6 +210,16 @@ pub struct AppState {
     pub runtime: Runtime,
     /// Routes approval answers back to waiting runs.
     pub approvals: ApprovalBridge,
+    /// How far the audit chain has been verified.
+    ///
+    /// Held across each check, so two checks arriving together verify the
+    /// same records once rather than racing to move the checkpoint.
+    pub audit: Mutex<AuditWatch>,
+    /// Held while a retry decides whether a task may run again and starts it.
+    ///
+    /// Without it, two clicks on Retry can both see a failed attempt and both
+    /// start one, interleaving two traces under a single objective.
+    pub retrying: Mutex<()>,
 }
 
 impl AppState {
@@ -148,6 +229,8 @@ impl AppState {
         Self {
             runtime,
             approvals: ApprovalBridge::new(),
+            audit: Mutex::new(AuditWatch::default()),
+            retrying: Mutex::new(()),
         }
     }
 }
@@ -200,7 +283,7 @@ mod tests {
         let bridge = ApprovalBridge::new();
         assert!(
             !bridge
-                .resolve(ApprovalId::new(), ApprovalOutcome::Approved)
+                .resolve(ApprovalId::new(), ApprovalOutcome::Approved { note: None })
                 .await
         );
     }
@@ -212,13 +295,24 @@ mod tests {
         let receiver = bridge.register(id).await;
 
         assert_eq!(bridge.waiting_ids().await, vec![id]);
-        assert!(bridge.resolve(id, ApprovalOutcome::Approved).await);
-        assert_eq!(receiver.await.ok(), Some(ApprovalOutcome::Approved));
+        assert!(
+            bridge
+                .resolve(id, ApprovalOutcome::Approved { note: None })
+                .await
+        );
+        assert_eq!(
+            receiver.await.ok(),
+            Some(ApprovalOutcome::Approved { note: None })
+        );
 
         // And it is no longer waiting, so a second click is a no-op rather than
         // a second decision.
         assert!(bridge.waiting_ids().await.is_empty());
-        assert!(!bridge.resolve(id, ApprovalOutcome::Approved).await);
+        assert!(
+            !bridge
+                .resolve(id, ApprovalOutcome::Approved { note: None })
+                .await
+        );
     }
 
     #[tokio::test]
@@ -254,5 +348,12 @@ mod tests {
         // The sender is gone, so the waiting run sees a closed channel and
         // treats it as a cancellation rather than hanging forever.
         assert!(receiver.await.is_err());
+    }
+
+    #[test]
+    fn the_badge_disappears_at_zero_rather_than_reading_zero() {
+        assert_eq!(badge_count(0), None);
+        assert_eq!(badge_count(1), Some(1));
+        assert_eq!(badge_count(12), Some(12));
     }
 }

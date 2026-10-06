@@ -36,7 +36,7 @@ pub use agents::AgentRepository;
 pub use approvals::ApprovalRepository;
 pub use audit_sink::SqliteAuditSink;
 pub use error::DbError;
-pub use executions::{ExecutionRepository, ToolExecutionRecord};
+pub use executions::{ExecutionRepository, ToolExecutionRecord, ToolUsage};
 pub use memories::MemoryRepository;
 pub use runs::RunRepository;
 pub use settings::SettingsRepository;

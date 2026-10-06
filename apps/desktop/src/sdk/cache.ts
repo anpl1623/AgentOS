@@ -11,7 +11,7 @@
  * an agent is waiting.
  */
 
-import { type RefObject, useEffect, useLayoutEffect } from "react";
+import { type RefObject, useLayoutEffect } from "react";
 
 import { type Async, useAsync } from "./useAsync";
 
@@ -89,6 +89,26 @@ export function useAsyncCached<T>(
 
 const scrollPositions = new Map<string, number>();
 
+/** How long a restore keeps trying while a screen's content arrives. */
+export const SCROLL_RESTORE_MS = 3_000;
+
+/** The part of an element a restore touches. */
+export interface Scrollable {
+  scrollTop: number;
+}
+
+/**
+ * Put `element` back at `target`, as far as its content now allows.
+ *
+ * Returns whether it got there. A screen returned to is drawn from its loading
+ * state, which is too short to hold the old offset, so the browser clamps the
+ * assignment; the caller tries again as the content grows.
+ */
+export function applyScroll(element: Scrollable, target: number): boolean {
+  element.scrollTop = target;
+  return Math.abs(element.scrollTop - target) <= 1;
+}
+
 /**
  * Remember how far an element was scrolled under `key`, and restore it.
  *
@@ -97,19 +117,45 @@ const scrollPositions = new Map<string, number>();
  * The position is recorded as it changes, not on the way out, because by the
  * time a cleanup runs the next screen's content may already have shortened the
  * element and clamped its offset.
+ *
+ * Restoring is retried each time the content changes, until the offset holds,
+ * the person scrolls or presses a key, or {@link SCROLL_RESTORE_MS} passes.
+ * Until then the scroll events the retries cause are not recorded, so a clamped
+ * first attempt does not overwrite the position being restored.
  */
 export function useScrollMemory(key: string, ref: RefObject<HTMLElement | null>): void {
   useLayoutEffect(() => {
     const element = ref.current;
     if (element === null) return;
-    element.scrollTop = scrollPositions.get(key) ?? 0;
-  }, [key, ref]);
+    const target = scrollPositions.get(key) ?? 0;
+    let restoring = !applyScroll(element, target);
 
-  useEffect(() => {
-    const element = ref.current;
-    if (element === null) return;
-    const record = () => scrollPositions.set(key, element.scrollTop);
+    const record = () => {
+      if (!restoring) scrollPositions.set(key, element.scrollTop);
+    };
     element.addEventListener("scroll", record, { passive: true });
-    return () => element.removeEventListener("scroll", record);
+    if (!restoring) return () => element.removeEventListener("scroll", record);
+
+    const stop = () => {
+      if (!restoring) return;
+      restoring = false;
+      observer.disconnect();
+      clearTimeout(timer);
+      for (const kind of INTERRUPTIONS) element.removeEventListener(kind, stop);
+    };
+    const observer = new MutationObserver(() => {
+      if (applyScroll(element, target)) stop();
+    });
+    observer.observe(element, { childList: true, subtree: true, characterData: true });
+    const timer = setTimeout(stop, SCROLL_RESTORE_MS);
+    for (const kind of INTERRUPTIONS) element.addEventListener(kind, stop, { passive: true });
+
+    return () => {
+      stop();
+      element.removeEventListener("scroll", record);
+    };
   }, [key, ref]);
 }
+
+/** What a person does that means the position is theirs now. */
+const INTERRUPTIONS = ["wheel", "touchstart", "pointerdown", "keydown"] as const;

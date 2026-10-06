@@ -58,11 +58,20 @@ Being explicit about the gaps is more useful than implying there are none:
 - **A permissive policy.** If you grant `terminal.exec` on `*`, an agent can do whatever your user
   account can. The starter policy is deliberately restrictive; widening it is your decision.
 - **Approval fatigue.** An operator who approves without reading has defeated the approval system.
-  The card shows what will happen and flags tainted runs precisely to make reading worthwhile.
+  The card shows what will happen and flags tainted runs precisely to make reading worthwhile, and a
+  run that asks more than its policy's `approval_budget` (ten by default) is refused without asking
+  anyone. The budget bounds how often a run can ask; it cannot make anyone read. Requests the CLI's
+  `--auto-approve-up-to` settles without a prompt do not count against it, because nobody was asked.
 - **The model provider.** Conversations — including untrusted content the agent read — are sent to
   whichever provider you configured. Use a local one if that matters to you.
 - **Local disk access.** An attacker who can write to `~/.agentos` can rewrite the whole audit log.
   The hash chain detects partial edits; it does not prevent a wholesale rewrite.
+- **A path that changes while a search reads it.** `filesystem.search` resolves each entry, checks it
+  against the root and the policy, and then opens it; a directory swapped for a link in between would
+  be followed by the open. On Unix the opened file must be the one admitted, by device and inode, or it
+  is skipped. On Windows the standard library has no stable file identity, so the check compares size
+  and timestamps instead, which narrows the window without closing it. Exploiting it needs a process
+  writing inside the search root while the search runs; an agent's own calls run one at a time.
 - **Side channels within an allowed scope.** An agent permitted to write to a directory you sync to
   the cloud can exfiltrate through it. Scope grants to what the task needs.
 - **Synthetic input is not scopable to an action, and the check on it is racy.** Naming the target

@@ -28,6 +28,18 @@ pub struct ApprovalView {
     pub risk: String,
     /// Why the runtime is asking.
     pub reason: String,
+    /// What the policy would have decided had the run read nothing untrusted.
+    ///
+    /// `allow` here means the policy itself permits the action and taint alone
+    /// is why a person is being asked; `ask` means the operator wanted this
+    /// asked regardless. The two call for different readings of the same card.
+    pub effect_before_taint: String,
+    /// How many approvals this run has requested, this one included.
+    #[ts(type = "number")]
+    pub asked_this_run: u32,
+    /// The most approvals the policy lets one run request, when it sets a limit.
+    #[ts(type = "number | null")]
+    pub approval_budget: Option<u32>,
     /// Plain-language description of what will happen.
     pub explanation: String,
     /// Resources the action touches.
@@ -42,7 +54,7 @@ pub struct ApprovalView {
     pub requested_at: String,
     /// When it was answered.
     pub decided_at: Option<String>,
-    /// The human's note.
+    /// The note the person left with their decision, whichever way it went.
     pub note: Option<String>,
 }
 
@@ -61,6 +73,9 @@ impl ApprovalView {
                 .unwrap_or_else(|_| request.arguments.to_string()),
             risk: request.risk.as_str().to_owned(),
             reason: request.reason.clone(),
+            effect_before_taint: request.effect_before_taint.as_str().to_owned(),
+            asked_this_run: request.asked_this_run,
+            approval_budget: request.approval_budget,
             explanation: request.explanation.clone(),
             affected_resources: request.affected_resources.clone(),
             tainted: request.tainted,
@@ -81,6 +96,10 @@ pub struct ApprovalDecisionInput {
     pub approval_id: String,
     /// Yes or no.
     pub approved: bool,
-    /// An optional note, recorded in the audit log.
+    /// An optional note, recorded with the decision and in the audit log.
+    ///
+    /// Carried for an approval as well as a denial: the chain can prove a
+    /// person allowed a high-risk action, and this is the only place it can
+    /// say why.
     pub note: Option<String>,
 }

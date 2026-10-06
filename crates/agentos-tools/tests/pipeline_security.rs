@@ -73,6 +73,7 @@ const ALL_TOOLS: &[&str] = &[
     "filesystem.delete",
     "filesystem.copy",
     "filesystem.move",
+    "filesystem.search",
     "terminal.exec",
 ];
 
@@ -1517,5 +1518,347 @@ async fn a_denied_call_records_the_denial_and_never_starts_the_tool() {
     assert!(
         !kinds.contains(&"tool.execution.started".to_owned()),
         "the tool was started despite being denied"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What a person is shown, and what they said
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_request_says_what_the_policy_alone_would_have_done() {
+    // A write the policy allows outright, asked about only because the run has
+    // read something: the card has to be able to say so.
+    let harness = Harness::with_policy(|workspace| {
+        Policy::deny_all("taint-demo")
+            .with_rule(
+                PolicyRule::new("fs-read", "filesystem", "read", Effect::Allow)
+                    .with_resources(vec![ResourcePattern::path_prefix(workspace.to_path_buf())]),
+            )
+            .with_rule(
+                PolicyRule::new("fs-write", "filesystem", "write", Effect::Allow)
+                    .with_resources(vec![ResourcePattern::path_prefix(workspace.to_path_buf())]),
+            )
+    })
+    .await;
+    std::fs::write(harness.workspace.join("untrusted.txt"), "attacker text").unwrap();
+    harness
+        .call(
+            "filesystem.read",
+            serde_json::json!({"path": "untrusted.txt"}),
+        )
+        .await;
+    harness
+        .call(
+            "filesystem.write",
+            serde_json::json!({"path": "out.txt", "content": "b"}),
+        )
+        .await;
+    let escalated = harness.gate.requests().await.remove(0);
+    assert_eq!(escalated.effect_before_taint, Effect::Allow);
+
+    // A write the policy asks about on its own rules says that instead.
+    let asked = Harness::with_policy(ask_on_write()).await;
+    asked
+        .call(
+            "filesystem.write",
+            serde_json::json!({"path": "out.txt", "content": "b"}),
+        )
+        .await;
+    assert_eq!(
+        asked.gate.requests().await.remove(0).effect_before_taint,
+        Effect::Ask
+    );
+}
+
+#[tokio::test]
+async fn a_call_the_policy_asks_about_anyway_is_not_blamed_on_taint() {
+    // Two capabilities: one the rules allow, which taint escalates to `ask`,
+    // and one the rules ask about themselves. The call would reach a person
+    // with or without the taint, and must not be presented as asking because
+    // of it — whichever capability happens to be evaluated first.
+    let mixed = Impostor::new(
+        "test.mixed",
+        vec![
+            Capability::new("test", "allowed"),
+            Capability::new("test", "asked"),
+        ],
+        DataSource::User,
+    );
+    let harness = Harness::with_tools(
+        |_| {
+            Policy::deny_all("mixed")
+                .with_rule(PolicyRule::new("allowed", "test", "allowed", Effect::Allow))
+                .with_rule(PolicyRule::new("asked", "test", "asked", Effect::Ask))
+                .with_taint_policy(TaintPolicy {
+                    enabled: true,
+                    escalate_at_or_above: RiskLevel::Low,
+                })
+        },
+        vec![mixed],
+    )
+    .await;
+    harness.taint.observe(&DataSource::Web {
+        url: "https://evil.example".into(),
+    });
+
+    let report = harness.call("test.mixed", serde_json::json!({})).await;
+    assert_eq!(report.effect, Effect::Ask);
+    let request = harness.gate.requests().await.remove(0);
+    assert_eq!(request.effect_before_taint, Effect::Ask);
+    assert!(
+        !request.reason.contains("the untrusted data came from"),
+        "{}",
+        request.reason
+    );
+}
+
+#[tokio::test]
+async fn the_reason_a_person_gave_for_yes_is_in_the_audit_record() {
+    #[derive(Debug)]
+    struct ApprovingWithNote;
+
+    #[async_trait::async_trait]
+    impl ApprovalGate for ApprovingWithNote {
+        async fn request(
+            &self,
+            _request: &agentos_core::approval::ApprovalRequest,
+            _cancel: CancellationToken,
+        ) -> ApprovalOutcome {
+            ApprovalOutcome::Approved {
+                note: Some("the operator asked for this file".into()),
+            }
+        }
+    }
+
+    let workspace_guard = TempDir::new().unwrap();
+    let workspace = std::fs::canonicalize(workspace_guard.path()).unwrap();
+    let sink = Arc::new(InMemorySink::new());
+    let audit = Arc::new(AuditLog::open(sink.clone()).await.unwrap());
+    let pipeline = ToolPipeline::new(
+        Arc::new(standard_registry()),
+        Arc::new(PolicyEngine::new(ask_on_write()(&workspace))),
+        Arc::new(ApprovingWithNote),
+        audit,
+    );
+    let context = ToolContext::new(
+        AgentId::new(),
+        TaskId::new(),
+        TaskRunId::new(),
+        workspace.clone(),
+    );
+    let call = ToolCall::new(
+        "c",
+        "filesystem.write",
+        serde_json::json!({"path": "noted.txt", "content": "x"}),
+    );
+    let report = pipeline
+        .execute(
+            &call,
+            &context,
+            &TaintTracker::new(),
+            "test-agent",
+            &["filesystem.write".to_owned()],
+            &CancellationToken::new(),
+        )
+        .await;
+    assert!(report.is_success());
+
+    let granted = sink.records_of_kind("approval.granted").await;
+    assert_eq!(granted.len(), 1);
+    assert_eq!(
+        granted[0].payload["note"],
+        "the operator asked for this file"
+    );
+    assert!(agentos_audit::verify_chain(&sink.records().await).is_intact());
+}
+
+// ---------------------------------------------------------------------------
+// The policy probe
+// ---------------------------------------------------------------------------
+
+type Answers = Arc<std::sync::Mutex<Vec<Option<Vec<bool>>>>>;
+
+/// A tool that, while executing, asks the context's policy probe about a list
+/// of capabilities and keeps the answers.
+///
+/// `None` recorded means the tool ran with no probe at all.
+#[derive(Debug)]
+struct Prober {
+    metadata: ToolMetadata,
+    asks: Vec<Capability>,
+    answers: Answers,
+}
+
+impl Prober {
+    fn new(asks: Vec<Capability>) -> Self {
+        Self {
+            metadata: ToolMetadata {
+                name: "test.probe".to_owned(),
+                description: "Asks the probe.".to_owned(),
+                input_schema: serde_json::json!({"type": "object"}),
+                risk: RiskLevel::Low,
+                required_capabilities: vec![Capability::new("test", "probe")],
+                returns_untrusted_data: false,
+            },
+            asks,
+            answers: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for Prober {
+    fn metadata(&self) -> &ToolMetadata {
+        &self.metadata
+    }
+
+    fn validate(&self, arguments: &serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        Ok(arguments.clone())
+    }
+
+    async fn plan(
+        &self,
+        _arguments: &serde_json::Value,
+        context: &ToolContext,
+    ) -> Result<ToolPlan, ToolError> {
+        // Planning happens before authorisation; nothing has been decided for
+        // the probe to answer from yet.
+        assert!(
+            context.policy.is_none(),
+            "a probe was offered before authorisation"
+        );
+        Ok(ToolPlan::new(RiskLevel::Low, "ask the probe")
+            .requiring(Capability::new("test", "probe")))
+    }
+
+    async fn execute(
+        &self,
+        _arguments: serde_json::Value,
+        context: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolOutput, ToolError> {
+        let answers = context.policy.as_ref().map(|probe| {
+            self.asks
+                .iter()
+                .map(|capability| probe.permits(capability))
+                .collect()
+        });
+        self.answers.lock().unwrap().push(answers);
+        Ok(ToolOutput::text(DataSource::User, "asked"))
+    }
+}
+
+fn list_at(path: &Path) -> Capability {
+    Capability::new("filesystem", "list").with_resource(
+        agentos_core::permission::ResourceRef::Path {
+            path: path.display().to_string(),
+        },
+    )
+}
+
+/// A listable root with a denied and an asked directory inside it, and taint
+/// escalation at `low` so the taint state shows in the answers.
+fn probe_policy(root: &Path) -> Policy {
+    Policy::deny_all("probe")
+        .with_rule(PolicyRule::new("probe", "test", "probe", Effect::Allow))
+        .with_rule(
+            PolicyRule::new("list", "filesystem", "list", Effect::Allow)
+                .with_resources(vec![ResourcePattern::path_prefix(root.to_path_buf())]),
+        )
+        .with_rule(
+            PolicyRule::new("list-secrets", "filesystem", "list", Effect::Deny)
+                .with_resources(vec![ResourcePattern::path_prefix(root.join("secrets"))]),
+        )
+        .with_rule(
+            PolicyRule::new("list-review", "filesystem", "list", Effect::Ask)
+                .with_resources(vec![ResourcePattern::path_prefix(root.join("review"))]),
+        )
+        .with_taint_policy(TaintPolicy {
+            enabled: true,
+            escalate_at_or_above: RiskLevel::Low,
+        })
+}
+
+/// Run the prober once through a real pipeline over `probe_policy`.
+async fn probe_once(root: &Path, asks: Vec<Capability>, taint: &TaintTracker) -> Option<Vec<bool>> {
+    let prober = Prober::new(asks);
+    let answers = prober.answers.clone();
+    let mut registry = standard_registry();
+    registry.register(Arc::new(prober));
+    let audit = Arc::new(AuditLog::open(Arc::new(InMemorySink::new())).await.unwrap());
+    let pipeline = ToolPipeline::new(
+        Arc::new(registry),
+        Arc::new(PolicyEngine::new(probe_policy(root))),
+        Arc::new(RecordingGate::approving()),
+        audit,
+    );
+    let context = ToolContext::new(
+        AgentId::new(),
+        TaskId::new(),
+        TaskRunId::new(),
+        root.to_path_buf(),
+    );
+    let report = pipeline
+        .execute(
+            &ToolCall::new("c", "test.probe", serde_json::json!({})),
+            &context,
+            taint,
+            "test-agent",
+            &["test.probe".to_owned()],
+            &CancellationToken::new(),
+        )
+        .await;
+    assert!(report.is_success(), "{:?}", report.error);
+    // The caller's context is untouched: the probe lives only as long as the
+    // call it was built for.
+    assert!(context.policy.is_none());
+    let mut answers = answers.lock().unwrap();
+    assert_eq!(answers.len(), 1);
+    answers.remove(0)
+}
+
+#[tokio::test]
+async fn an_executing_tool_can_ask_the_policy_and_only_an_outright_allow_is_yes() {
+    let guard = TempDir::new().unwrap();
+    let root = std::fs::canonicalize(guard.path()).unwrap();
+    let answers = probe_once(
+        &root,
+        vec![
+            list_at(&root.join("notes")),
+            list_at(&root.join("secrets/keys")),
+            list_at(&root.join("review/draft")),
+            list_at(Path::new("/elsewhere")),
+        ],
+        &TaintTracker::new(),
+    )
+    .await;
+
+    // Allowed; denied by a narrower rule inside the allowed root; asked about
+    // by a narrower rule; outside every rule. A person who approved a call
+    // approved it as planned, not each path it later finds, so `ask` is no.
+    assert_eq!(answers, Some(vec![true, false, false, false]));
+}
+
+#[tokio::test]
+async fn the_probe_answers_with_the_taint_state_that_authorised_the_call() {
+    let guard = TempDir::new().unwrap();
+    let root = std::fs::canonicalize(guard.path()).unwrap();
+    let notes = || vec![list_at(&root.join("notes"))];
+
+    assert_eq!(
+        probe_once(&root, notes(), &TaintTracker::new()).await,
+        Some(vec![true])
+    );
+
+    // Once the run has read from outside, the same listing escalates to `ask`,
+    // and the probe says no exactly as the pipeline would have asked.
+    let tainted = TaintTracker::new();
+    tainted.observe(&DataSource::Web {
+        url: "https://evil.example".into(),
+    });
+    assert_eq!(
+        probe_once(&root, notes(), &tainted).await,
+        Some(vec![false])
     );
 }

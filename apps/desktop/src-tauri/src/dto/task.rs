@@ -41,6 +41,11 @@ pub struct RunSummary {
     pub state: String,
     /// Whether it has read untrusted data.
     pub tainted: bool,
+    /// Where that data came from, labelled.
+    ///
+    /// Includes what an attempt inherited from the attempts before it, which is
+    /// the only way a retry that started tainted can say why.
+    pub taint_sources: Vec<String>,
     /// Model turns consumed.
     pub steps: u32,
     /// The agent's final report.
@@ -71,6 +76,11 @@ impl From<&TaskRun> for RunSummary {
             attempt: run.attempt,
             state: run.state.as_str().to_owned(),
             tainted: run.tainted,
+            taint_sources: run
+                .taint_sources
+                .iter()
+                .map(agentos_core::trust::DataSource::label)
+                .collect(),
             steps: run.steps_taken,
             result: run.result.clone(),
             failure: run.failure.as_ref().map(ToString::to_string),
@@ -122,6 +132,9 @@ impl From<&TaskStep> for StepView {
 pub struct ExecutionView {
     /// Identity.
     pub id: String,
+    /// The run that made the call, so a refusal listed on its own can open
+    /// the trace it belongs to.
+    pub run_id: String,
     /// The tool.
     pub tool: String,
     /// The model's call identifier.
@@ -153,6 +166,7 @@ impl From<&ToolExecutionRecord> for ExecutionView {
     fn from(record: &ToolExecutionRecord) -> Self {
         Self {
             id: record.id.to_string(),
+            run_id: record.run_id.to_string(),
             tool: record.tool.clone(),
             call_id: record.call_id.clone(),
             arguments: record.arguments.to_string(),

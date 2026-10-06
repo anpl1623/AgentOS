@@ -6,6 +6,7 @@ import { api, events } from "../sdk/client";
 import { clock } from "../sdk/format";
 import { subscribe } from "../sdk/transport";
 import { useAsync } from "../sdk/useAsync";
+import type { Navigate } from "./route";
 
 /** How many events to keep on screen before dropping the oldest. */
 const WINDOW = 500;
@@ -17,7 +18,11 @@ const WINDOW = 500;
  * feed is the one place where seeing the moment something occurred is the point.
  * The durable log remains the source of truth; this is a view onto it.
  */
-export function Activity() {
+export function Activity(_props: {
+  /** One run to narrow the feed to; read once the feed screen is rebuilt. */
+  runId?: string | undefined;
+  navigate?: Navigate | undefined;
+}) {
   const history = useAsync(() => api.activity(200), []);
   const [live, setLive] = useState<EventView[]>([]);
   const [securityOnly, setSecurityOnly] = useState(false);

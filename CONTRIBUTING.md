@@ -5,7 +5,7 @@ are stricter than you might expect. They are all there for a reason, and the rea
 
 ## Getting set up
 
-Requires [Rust](https://rustup.rs) 1.85 or newer. There is nothing else to install — the database is
+Requires [Rust](https://rustup.rs) 1.94 or newer. There is nothing else to install — the database is
 embedded and the test suite needs no network, no API key and no external service.
 
 ```bash

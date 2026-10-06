@@ -1,6 +1,6 @@
 //! `agentos audit` — read and verify the audit log.
 
-use agentos_core::event::is_security_kind;
+use agentos_core::event::{SECURITY_KINDS, is_security_kind};
 use agentos_runtime::RuntimeConfig;
 use anyhow::Result;
 use clap::Subcommand;
@@ -32,10 +32,14 @@ pub async fn run(command: AuditCommand, config: &RuntimeConfig) -> Result<()> {
 
     match command {
         AuditCommand::Tail { limit, security } => {
-            let mut records = runtime.database().audit_sink().tail(limit).await?;
-            if security {
-                records.retain(|record| is_security_kind(&record.kind));
-            }
+            // Selected by the store, so `--security` shows the most recent
+            // security records rather than those among the newest `limit`.
+            let sink = runtime.database().audit_sink();
+            let mut records = if security {
+                sink.tail_of_kinds(SECURITY_KINDS, limit).await?
+            } else {
+                sink.tail(limit).await?
+            };
             if records.is_empty() {
                 println!("{}", style.dim("Nothing recorded yet."));
                 return Ok(());
@@ -104,6 +108,11 @@ fn summarise(payload: &serde_json::Value) -> String {
         payload.get("to").and_then(serde_json::Value::as_str),
     ) {
         return format!("{from} → {to}");
+    }
+
+    // An operator change carries no tool, objective or reason to read.
+    if let Some(line) = agentos_core::event::operator_summary_of(payload) {
+        return truncate(&line, 60);
     }
 
     // A manifest drift names what the tool planned beyond its manifest.

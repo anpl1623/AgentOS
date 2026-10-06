@@ -2,9 +2,11 @@ import { useCallback, useState } from "react";
 
 import { ErrorBanner, Loading, Risk } from "../components/common";
 import { api, describeError } from "../sdk/client";
+import { useUnsavedGuard } from "../sdk/drafts";
 import { useAsync } from "../sdk/useAsync";
+import type { Navigate } from "./route";
 
-export function Settings() {
+export function Settings(_props: { navigate?: Navigate | undefined }) {
   const settings = useAsync(() => api.settings(), []);
   const [verification, setVerification] = useState<string[] | null>(null);
   const [verifying, setVerifying] = useState(false);
@@ -144,6 +146,10 @@ function ProviderRow({
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useUnsavedGuard(
+    editing && key.trim() !== "",
+    `A ${provider.id} key has been typed and not stored.`,
+  );
 
   const save = useCallback(async () => {
     setBusy(true);

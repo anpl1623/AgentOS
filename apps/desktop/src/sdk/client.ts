@@ -15,14 +15,18 @@ import type { AgentDetail } from "../bindings/AgentDetail";
 import type { AgentSummary } from "../bindings/AgentSummary";
 import type { ApprovalDecisionInput } from "../bindings/ApprovalDecisionInput";
 import type { ApprovalView } from "../bindings/ApprovalView";
+import type { AuditHealth } from "../bindings/AuditHealth";
+import type { AuditRecordView } from "../bindings/AuditRecordView";
 import type { CreateAgentInput } from "../bindings/CreateAgentInput";
 import type { DashboardView } from "../bindings/DashboardView";
 import type { EventView } from "../bindings/EventView";
 import type { PolicyCheck } from "../bindings/PolicyCheck";
 import type { PolicyView } from "../bindings/PolicyView";
+import type { RunSummary } from "../bindings/RunSummary";
 import type { SettingsView } from "../bindings/SettingsView";
 import type { StartedTask } from "../bindings/StartedTask";
 import type { TaskSummary } from "../bindings/TaskSummary";
+import type { ToolUsageView } from "../bindings/ToolUsageView";
 import type { ToolView } from "../bindings/ToolView";
 import type { TraceView } from "../bindings/TraceView";
 
@@ -54,12 +58,34 @@ export const api = {
   cancelRun: (runId: string) => call<boolean>("cancel_run", { runId }),
   getTrace: (runId: string) => call<TraceView>("get_trace", { runId }),
   getTaskTrace: (taskId: string) => call<TraceView>("get_task_trace", { taskId }),
+  /** Every attempt at a task, oldest first. */
+  listRuns: (taskId: string) => call<RunSummary[]>("list_runs", { taskId }),
+  /** Start another attempt. Refused unless the latest one failed or was cancelled. */
+  retryTask: (taskId: string) => call<StartedTask>("retry_task", { taskId }),
 
   listPendingApprovals: () => call<ApprovalView[]>("list_pending_approvals"),
+  /** Answered approvals, most recently decided first; 20 unless given. */
+  listRecentApprovals: (limit?: number) =>
+    call<ApprovalView[]>("list_recent_approvals", { limit: limit ?? null }),
   resolveApproval: (input: ApprovalDecisionInput) => call<boolean>("resolve_approval", { input }),
 
-  activity: (limit?: number) => call<EventView[]>("activity", { limit: limit ?? null }),
+  /**
+   * Recent audit events, oldest first. With `securityOnly`, the runtime keeps
+   * only refusals, escalations and rejections, and `limit` counts those.
+   */
+  activity: (limit?: number, securityOnly?: boolean) =>
+    call<EventView[]>("activity", { limit: limit ?? null, securityOnly: securityOnly ?? null }),
+  /** Rehash the whole chain. Deliberate and slow; Settings offers it as a button. */
   verifyAudit: () => call<string[]>("verify_audit"),
+  /** The chain's health, verifying only records written since the last check. */
+  auditHealth: () => call<AuditHealth>("audit_health"),
+  /** One audit record in full, hashes and payload included. */
+  auditRecord: (eventId: string) => call<AuditRecordView>("audit_record", { eventId }),
+  /** Every audit record a run wrote, in chain order. */
+  auditForRun: (runId: string) => call<AuditRecordView[]>("audit_for_run", { runId }),
+
+  /** Each tool's calls over the last `days` days (7 unless given), busiest first. */
+  toolUsage: (days?: number) => call<ToolUsageView[]>("tool_usage", { days: days ?? null }),
 
   listTools: () => call<ToolView[]>("list_tools"),
   settings: () => call<SettingsView>("settings"),

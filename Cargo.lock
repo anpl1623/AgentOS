@@ -256,6 +256,7 @@ dependencies = [
  "agentos-core",
  "agentos-permissions",
  "async-trait",
+ "globset",
  "image",
  "schemars 1.2.2",
  "serde",

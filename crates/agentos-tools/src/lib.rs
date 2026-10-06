@@ -25,8 +25,8 @@ pub use error::ToolError;
 pub use pipeline::{ExecutionReport, ToolPipeline};
 pub use taint::TaintTracker;
 pub use tool::{
-    DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT, Tool, ToolContext, ToolOutput, ToolPlan,
-    ToolRegistry, metadata_for, parse_arguments, plan_exceeds_manifest,
+    DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT, PolicyProbe, Tool, ToolContext, ToolOutput,
+    ToolPlan, ToolRegistry, metadata_for, parse_arguments, plan_exceeds_manifest,
 };
 pub use vision::{
     DEFAULT_MAX_IMAGE_BYTES, DEFAULT_MAX_IMAGE_EDGE, PreparedImage, VisionError, prepare,
@@ -67,6 +67,7 @@ mod tests {
                 "filesystem.list",
                 "filesystem.move",
                 "filesystem.read",
+                "filesystem.search",
                 "filesystem.write",
                 "terminal.exec",
             ]
@@ -102,7 +103,12 @@ mod tests {
     #[test]
     fn tools_that_read_the_outside_world_are_catalogued_as_such() {
         let registry = standard_registry();
-        for name in ["filesystem.read", "filesystem.list", "terminal.exec"] {
+        for name in [
+            "filesystem.read",
+            "filesystem.list",
+            "filesystem.search",
+            "terminal.exec",
+        ] {
             let tool = registry.get(name).unwrap();
             assert!(
                 tool.metadata().returns_untrusted_data,

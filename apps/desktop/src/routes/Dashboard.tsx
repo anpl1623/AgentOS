@@ -4,14 +4,19 @@ import {
   ErrorBanner,
   Loading,
   Risk,
+  Stale,
   Stat,
   State,
   Tainted,
 } from "../components/common";
 import { api } from "../sdk/client";
 import { ago, tokens } from "../sdk/format";
+import { useVisibleInterval } from "../sdk/live";
 import { useAsync, useRefresh } from "../sdk/useAsync";
 import type { Navigate } from "./route";
+
+/** How often the audit chain's health is re-checked while the window is visible. */
+const AUDIT_HEALTH_MS = 60_000;
 
 /**
  * What is happening right now.
@@ -23,6 +28,10 @@ import type { Navigate } from "./route";
 export function Dashboard({ navigate }: { navigate: Navigate }) {
   const view = useAsync(() => api.dashboard(), []);
   useRefresh(view.reload);
+  // The chain's health on its own, slower schedule: it changes only when
+  // records are written, and the dashboard's poll should not pay for it.
+  const health = useAsync(() => api.auditHealth(), []);
+  useVisibleInterval(health.reload, AUDIT_HEALTH_MS);
 
   if (view.loading && !view.data) return <Loading what="the dashboard" />;
 
@@ -35,7 +44,10 @@ export function Dashboard({ navigate }: { navigate: Navigate }) {
       <p className="page-sub">Your agents, and what they are doing on this machine.</p>
 
       {view.error ? <ErrorBanner message={view.error} /> : null}
-      {data && !data.audit_intact ? (
+      {health.error ? (
+        <ErrorBanner message={`The audit chain could not be checked: ${health.error}`} />
+      ) : null}
+      {health.data && !health.data.intact ? (
         <div className="banner error">
           The audit log does not verify. Its contents are unreliable from the first break onwards —
           see Settings.
@@ -143,13 +155,35 @@ export function Dashboard({ navigate }: { navigate: Navigate }) {
               label="awaiting you"
               {...(data.pending_approvals.length > 0 ? { tone: "warn" as const } : {})}
             />
-            <Stat value={tokens(data.audit_events)} label="audit events" />
-            <Stat
-              value={data.audit_intact ? "intact" : "broken"}
-              label="audit chain"
-              tone={data.audit_intact ? "ok" : "danger"}
-            />
+            {health.data ? (
+              <>
+                <Stat value={tokens(health.data.events)} label="audit events" />
+                {/* An "intact" from a check that has since failed is not shown
+                    as current: a reassurance nothing is confirming is the one
+                    thing a failed check must not leave up. A "broken" stands. */}
+                {!health.data.intact ? (
+                  <Stat value="broken" label="audit chain" tone="danger" />
+                ) : health.stale ? (
+                  <Stat value="unknown" label="audit chain" tone="warn" />
+                ) : (
+                  <Stat value="intact" label="audit chain" tone="ok" />
+                )}
+              </>
+            ) : health.error ? (
+              <Stat value="unknown" label="audit chain" tone="warn" />
+            ) : null}
           </div>
+          {health.data ? (
+            <p className="muted">
+              The chain is checked in full once per launch, then as records are written; Settings
+              rehashes all of it.{" "}
+              {health.stale ? (
+                <Stale since={health.data.checked_at} />
+              ) : (
+                <>Last checked {ago(health.data.checked_at)}.</>
+              )}
+            </p>
+          ) : null}
         </>
       ) : null}
     </>
