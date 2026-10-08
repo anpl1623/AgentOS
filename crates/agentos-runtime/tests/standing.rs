@@ -328,13 +328,13 @@ async fn the_grant_report_reads_the_policy_as_the_engine_does() {
         "default: deny\n\
          permissions:\n\
          \x20 filesystem:\n\
-         \x20   read: [\"{}\"]\n\
+         \x20   read: [{}]\n\
          \x20 browser:\n\
          \x20   screenshot: allow\n\
          \x20   read: allow\n\
          \x20 terminal:\n\
          \x20   exec: deny\n",
-        workspace.display()
+        agentos_permissions::quote_scalar(&workspace.display().to_string())
     );
     runtime.set_policy(agent.id, &policy).await.unwrap();
 

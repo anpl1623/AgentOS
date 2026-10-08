@@ -179,16 +179,30 @@ async fn a_page_that_moves_itself_as_it_loads_is_left_and_named() {
     }
 
     let elsewhere = serve(|_| page("<title>Elsewhere</title><p>not authorised</p>"));
-    let target = elsewhere.clone();
-    let authorised = serve(move |path| match path {
-        "/meta" => page(&format!(
-            "<meta http-equiv=refresh content='0;url={target}/landed'><title>m</title>"
-        )),
-        "/onload" => page(&format!(
-            "<title>o</title><script>addEventListener('load', () => \
-             {{ location = '{target}/landed'; }})</script>"
-        )),
-        _ => page("<title>Home</title>"),
+    // A destination that answers seconds after the page sets off for it. The
+    // page's address does not change until then, so a navigation watched only
+    // by its address reports this page as still home. A loaded CI runner did
+    // that to the prompt destination above.
+    let slow = serve(|_| {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        page("<title>Slow</title><p>not authorised</p>")
+    });
+    let (prompt, late) = (elsewhere.clone(), slow.clone());
+    let authorised = serve(move |path| {
+        let (path, target) = match path.strip_suffix("-slow") {
+            Some(path) => (path, &late),
+            None => (path, &prompt),
+        };
+        match path {
+            "/meta" => page(&format!(
+                "<meta http-equiv=refresh content='0;url={target}/landed'><title>m</title>"
+            )),
+            "/onload" => page(&format!(
+                "<title>o</title><script>addEventListener('load', () => \
+                 {{ location = '{target}/landed'; }})</script>"
+            )),
+            _ => page("<title>Home</title>"),
+        }
     });
 
     let profiles = std::env::temp_dir().join(format!("agentos-onload-{}", std::process::id()));
@@ -197,7 +211,12 @@ async fn a_page_that_moves_itself_as_it_loads_is_left_and_named() {
     let run_id = TaskRunId::new();
     let context = ToolContext::new(AgentId::new(), TaskId::new(), run_id, profiles.clone());
 
-    for path in ["/meta", "/onload"] {
+    for (path, destination) in [
+        ("/meta", &elsewhere),
+        ("/onload", &elsewhere),
+        ("/meta-slow", &slow),
+        ("/onload-slow", &slow),
+    ] {
         let refused = navigate
             .execute(
                 serde_json::json!({"url": format!("{authorised}{path}")}),
@@ -208,7 +227,7 @@ async fn a_page_that_moves_itself_as_it_loads_is_left_and_named() {
         let Err(ToolError::Failed(message)) = refused else {
             panic!("{path}: a page that moved itself on load must fail, got {refused:?}");
         };
-        assert!(message.contains(&elsewhere), "{path}: {message}");
+        assert!(message.contains(destination.as_str()), "{path}: {message}");
         let current = match pool.existing_session(run_id).await {
             Some(session) => session.current_url().await,
             None => None,

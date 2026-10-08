@@ -167,9 +167,11 @@ fn outranks(rule: &PolicyRule, governing: &PolicyRule) -> bool {
 mod tests {
     use std::path::PathBuf;
 
+    use tempfile::TempDir;
+
     use super::*;
     use crate::pattern::{GlobKind, ResourcePattern};
-    use crate::yaml::PolicyDocument;
+    use crate::yaml::{PolicyDocument, quote_scalar};
 
     fn capability(name: &str) -> Capability {
         let (domain, action) = name.split_once('.').unwrap();
@@ -178,6 +180,24 @@ mod tests {
 
     fn compiled(yaml: &str) -> Policy {
         PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap()
+    }
+
+    /// A directory a policy can scope a rule to on any platform.
+    ///
+    /// A policy's roots must be absolute, and `/tmp` is not absolute on
+    /// Windows, which wants a drive, so a document naming it fails to compile
+    /// there before the reach is asked anything. The directory is canonical
+    /// because roots are compared after resolution, and macOS reaches its
+    /// temporary directory through a symlink.
+    fn canonical_temp() -> (TempDir, PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        (dir, root)
+    }
+
+    /// `root` as a scalar a policy document can carry.
+    fn scalar(root: &std::path::Path) -> String {
+        quote_scalar(&root.display().to_string())
     }
 
     #[test]
@@ -233,7 +253,11 @@ mod tests {
 
     #[test]
     fn a_path_scoped_allow_is_scoped() {
-        let policy = compiled("default: deny\npermissions:\n  filesystem:\n    read: [\"/tmp\"]\n");
+        let (_guard, root) = canonical_temp();
+        let policy = compiled(&format!(
+            "default: deny\npermissions:\n  filesystem:\n    read: [{}]\n",
+            scalar(&root)
+        ));
         assert_eq!(
             policy.reach(&capability("filesystem.read"), RiskLevel::Low),
             Reach::Scoped
@@ -337,10 +361,14 @@ mod tests {
     fn a_resource_on_the_capability_asked_about_is_ignored() {
         // The question is about every resource; asking it about one would
         // report a scoped grant as everywhere or nowhere.
-        let policy = compiled("default: deny\npermissions:\n  filesystem:\n    read: [\"/tmp\"]\n");
+        let (_guard, root) = canonical_temp();
+        let policy = compiled(&format!(
+            "default: deny\npermissions:\n  filesystem:\n    read: [{}]\n",
+            scalar(&root)
+        ));
         let scoped = Capability::new("filesystem", "read").with_resource(
             agentos_core::permission::ResourceRef::Path {
-                path: "/tmp/a".into(),
+                path: root.join("a").display().to_string(),
             },
         );
         assert_eq!(policy.reach(&scoped, RiskLevel::Low), Reach::Scoped);
@@ -362,9 +390,10 @@ mod tests {
             Effect::Ask => assert!(reach != Reach::Denied, "denied for an asked call"),
             Effect::Deny => {}
         };
+        let (_guard, root) = canonical_temp();
         let path = |capability: Capability| {
             capability.with_resource(ResourceRef::Path {
-                path: "/tmp/a".into(),
+                path: root.join("a").display().to_string(),
             })
         };
 
@@ -401,9 +430,10 @@ mod tests {
 
         // And the property the report exists for, over every shape here and
         // the ordinary ones: nothing the engine grants is reported as denied.
-        let policy = compiled(
-            "default: deny\nmax_risk: high\npermissions:\n  filesystem:\n    read: ['/tmp']\n    write: {effect: allow, max_risk: medium}\n  email:\n    send: ask\n  computer:\n    click: allow\n",
-        );
+        let policy = compiled(&format!(
+            "default: deny\nmax_risk: high\npermissions:\n  filesystem:\n    read: [{}]\n    write: {{effect: allow, max_risk: medium}}\n  email:\n    send: ask\n  computer:\n    click: allow\n",
+            scalar(&root)
+        ));
         let engine = PolicyEngine::new(policy.clone());
         for (name, baseline) in [
             ("filesystem.read", RiskLevel::Low),

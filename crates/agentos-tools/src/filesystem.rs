@@ -1590,6 +1590,10 @@ mod tests {
         );
     }
 
+    // Unix only: Windows collapses `..` without asking whether `missing`
+    // exists, so there this path resolves, and the test below holds it to
+    // the directory it reaches instead.
+    #[cfg(unix)]
     #[tokio::test]
     async fn dot_dot_past_what_exists_is_refused() {
         let tree = Tree::new();
@@ -1602,6 +1606,38 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, ToolError::Path(_)), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_search_that_climbs_out_is_planned_where_it_lands() {
+        // What holds on every platform: a path that climbs out of the
+        // workspace is planned as the directory the walk would really start
+        // in, never as the workspace it left, so the policy decides about the
+        // right place.
+        let tree = Tree::new();
+        let tool = SearchFiles::new();
+        let parent = ResourceRef::Path {
+            path: tree.root.parent().unwrap().display().to_string(),
+        };
+        let mut climbs = vec!["..", "src/../.."];
+        // Windows collapses `..` lexically, so there a climb past a directory
+        // that does not exist resolves too, and to the same place.
+        if cfg!(windows) {
+            climbs.push("missing/../..");
+        }
+        for path in climbs {
+            let arguments = tool
+                .validate(&serde_json::json!({"path": path, "name": "*"}))
+                .unwrap();
+            let plan = tool
+                .plan(&arguments, &tree.context(Probe::default()))
+                .await
+                .unwrap();
+            assert!(!plan.capabilities.is_empty(), "{path}");
+            for capability in &plan.capabilities {
+                assert_eq!(capability.resource.as_ref(), Some(&parent), "{path}");
+            }
+        }
     }
 
     #[tokio::test]

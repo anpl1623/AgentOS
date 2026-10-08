@@ -227,7 +227,9 @@ it is technically a breaking change.
 - `ToolContext` carries the capabilities a call was authorised against.
 - Browser tools that act on the current page refuse to run outside the tool pipeline, which is what
   tells them the origin they were authorised for.
-- `browser.navigate` watches a page for half a second after it loads before it returns.
+- `browser.navigate` watches a page for half a second after it loads before it returns. A navigation
+  the page starts for another origin in that time fails as it starts, however long the destination
+  takes to answer.
 
 ## [0.2.0]
 

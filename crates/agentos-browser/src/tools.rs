@@ -46,6 +46,9 @@ use agentos_tools::{
 };
 use async_trait::async_trait;
 use chromiumoxide::Page;
+use chromiumoxide::cdp::browser_protocol::page::{EventFrameStartedNavigating, FrameId};
+use chromiumoxide::listeners::EventStream;
+use futures::{FutureExt, StreamExt};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -70,10 +73,13 @@ const VISION_ACTION: &str = "vision";
 /// How long a page that has loaded is watched for a navigation of its own.
 ///
 /// A meta refresh with no delay and a script run from the load event both move
-/// the page after the load `browser.navigate` waits for. Waiting this long
+/// the page after the load `browser.navigate` waits for. Watching this long
 /// catches them in the navigation that caused them, so its result names where
-/// the page really is. A redirect on a longer timer is caught by the next tool
-/// to act on the page instead (see [`authorised_page`]).
+/// the page really is. Only the start of such a navigation has to fall inside
+/// the window: one that sets off for another origin is refused as it starts,
+/// however long its destination takes to answer (see [`departure`]). A
+/// redirect on a longer timer is caught by the next tool to act on the page
+/// instead (see [`authorised_page`]).
 const SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// How often the page's address is read while it settles.
@@ -262,12 +268,20 @@ impl Tool for Navigate {
             .map_err(ToolError::from)?;
         let page = session.page().await;
 
+        // Watched from before the page is sent anywhere, so that a navigation
+        // it starts while it is still loading is seen as well as one it starts
+        // after.
+        let mut starts = page
+            .event_listener::<EventFrameStartedNavigating>()
+            .await
+            .map_err(|error| command_error("watching the page's navigations", &error))?;
         page.goto(&args.url)
             .await
             .map_err(|error| command_error("navigation", &error))?;
         page.wait_for_navigation()
             .await
             .map_err(|error| command_error("waiting for navigation", &error))?;
+        let main_frame = page.mainframe().await.ok().flatten();
 
         // Where the page ended, not where it was sent, read until it has had
         // a moment to move itself. A URL that cannot be read is treated as a
@@ -275,7 +289,10 @@ impl Tool for Navigate {
         // assuming the answer this check exists to find.
         let settled = tokio::time::Instant::now() + SETTLE;
         let landed = loop {
-            let landed = page.url().await.ok().flatten();
+            let landed = match departure(&mut starts, main_frame.as_ref(), &authorised) {
+                Some(destination) => Some(destination),
+                None => page.url().await.ok().flatten(),
+            };
             match landed.as_deref().map(normalise_origin) {
                 Some(Ok(origin)) if origin == authorised => {}
                 elsewhere => {
@@ -1285,6 +1302,31 @@ async fn leave(pool: &BrowserPool, context: &ToolContext, page: &Page) {
 /// How long leaving an unauthorised page may take before the session is closed
 /// instead.
 const LEAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Where the page's main frame has set off for since `starts` was last read,
+/// if that is anywhere other than `authorised`.
+///
+/// A page's address changes when the next page commits, not when it sets off
+/// for it, and a destination that is slow to answer, under load or by design,
+/// can put the commit off past any window spent watching the address. The
+/// start is the page's own doing and comes at once. A navigation that sets off
+/// counts whether or not it arrives: its request has gone to the other origin
+/// either way. Frames inside the page go where they like; only the main frame
+/// is the page.
+fn departure(
+    starts: &mut EventStream<EventFrameStartedNavigating>,
+    main_frame: Option<&FrameId>,
+    authorised: &str,
+) -> Option<String> {
+    while let Some(Some(start)) = starts.next().now_or_never() {
+        if main_frame == Some(&start.frame_id)
+            && normalise_origin(&start.url).ok().as_deref() != Some(authorised)
+        {
+            return Some(start.url.clone());
+        }
+    }
+    None
+}
 
 /// The path of an absolute URL, still percent-encoded: everything after the
 /// authority and before any query or fragment.
