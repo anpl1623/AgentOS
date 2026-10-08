@@ -13,6 +13,7 @@
 //! the origin a run will actually be matched against, not the one they typed.
 
 use agentos_runtime::Runtime;
+use agentos_runtime::integrations::BoundAccount;
 use agentos_secrets::{KeychainStatus, KeyringStore};
 use tauri::State;
 
@@ -72,14 +73,27 @@ pub async fn remove_network_credential(
 }
 
 /// The stored credentials as views, in the runtime's order: by origin, then
-/// name.
+/// name, each with the account it is the token of, if any.
 pub(crate) async fn listed(runtime: &Runtime) -> Answer<Vec<NetworkCredentialView>> {
+    let accounts = runtime.list_integrations().await?;
     Ok(runtime
         .list_network_credentials()
         .await?
         .into_iter()
-        .map(|(origin, name)| NetworkCredentialView { origin, name })
+        .map(|(origin, name)| NetworkCredentialView {
+            account: account_using(&accounts, &origin, &name),
+            origin,
+            name,
+        })
         .collect())
+}
+
+/// The bound account whose token is the credential at `origin` under `name`.
+fn account_using(accounts: &[BoundAccount], origin: &str, name: &str) -> Option<String> {
+    accounts
+        .iter()
+        .find(|bound| bound.uses_credential(origin, name))
+        .map(BoundAccount::describe)
 }
 
 /// Store a credential through the runtime, answering with where it is bound.
@@ -95,10 +109,15 @@ pub(crate) async fn store(
     match runtime.set_network_credential(origin, name, &secret).await {
         // The runtime answers with the origin it normalised; the name it only
         // trims, so trimming here names the credential it stored.
-        Ok(origin) => Ok(NetworkCredentialView {
-            origin,
-            name: name.trim().to_owned(),
-        }),
+        Ok(origin) => {
+            let name = name.trim().to_owned();
+            let account = account_using(&runtime.list_integrations().await?, &origin, &name);
+            Ok(NetworkCredentialView {
+                origin,
+                name,
+                account,
+            })
+        }
         Err(error) => Err(DesktopError::Rejected(without_secret(
             &error.to_string(),
             &secret,

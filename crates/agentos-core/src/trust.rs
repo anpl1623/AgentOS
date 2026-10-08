@@ -94,9 +94,49 @@ pub enum DataSource {
         /// What was captured — an application name, or a display.
         target: String,
     },
+    /// A response from a SaaS API, read as an operator-bound account.
+    ///
+    /// Attacker-controlled in exactly the way a webpage is: an issue body is a
+    /// text field a stranger can type into. It is not labelled [`Self::Web`],
+    /// because the approval card for the write that follows has to say whose
+    /// account read it and from which endpoint. "The agent read something from
+    /// GitHub" is not enough to decide on that write.
+    ///
+    /// `endpoint` is the path only, never the query, which can carry a search
+    /// term the operator would not want written into the audit chain. Build it
+    /// with [`DataSource::integration`], which drops the query for the caller.
+    Integration {
+        /// The integration, e.g. `github`.
+        integration: String,
+        /// The label of the bound account the call acted as.
+        account: String,
+        /// The API path that was read, e.g. `/repos/acme/widgets/issues/412`.
+        endpoint: String,
+    },
 }
 
 impl DataSource {
+    /// An [`Self::Integration`] source, with anything after the path dropped.
+    ///
+    /// A query or fragment in `endpoint` is cut off here, so that a caller
+    /// handing over the request target it built does not put a search term
+    /// into every record that names this source.
+    #[must_use]
+    pub fn integration(
+        integration: impl Into<String>,
+        account: impl Into<String>,
+        endpoint: &str,
+    ) -> Self {
+        let path = endpoint
+            .split_once(['?', '#'])
+            .map_or(endpoint, |(path, _)| path);
+        Self::Integration {
+            integration: integration.into(),
+            account: account.into(),
+            endpoint: path.to_owned(),
+        }
+    }
+
     /// Short human- and model-readable description, used in the envelope header.
     #[must_use]
     pub fn label(&self) -> String {
@@ -108,6 +148,11 @@ impl DataSource {
             Self::File { path } => format!("file:{path}"),
             Self::Terminal { program } => format!("terminal:{program}"),
             Self::Screen { target } => format!("screen:{target}"),
+            Self::Integration {
+                integration,
+                account,
+                endpoint,
+            } => format!("{integration}:{account}@{endpoint}"),
         }
     }
 
@@ -125,7 +170,8 @@ impl DataSource {
             | Self::Web { .. }
             | Self::File { .. }
             | Self::Terminal { .. }
-            | Self::Screen { .. } => true,
+            | Self::Screen { .. }
+            | Self::Integration { .. } => true,
         }
     }
 }
@@ -749,6 +795,37 @@ mod tests {
         assert_eq!(screen.label(), "screen:Mail");
         assert!(!DataSource::User.is_externally_influenced());
         assert!(!DataSource::Runtime.is_externally_influenced());
+    }
+
+    #[test]
+    fn an_integration_source_names_the_account_and_the_path_and_taints() {
+        let source = DataSource::integration("github", "work", "/repos/acme/widgets/issues/412");
+        assert!(source.is_externally_influenced());
+        assert_eq!(source.label(), "github:work@/repos/acme/widgets/issues/412");
+
+        // The query is the part an operator would not want in the chain.
+        let searched = DataSource::integration(
+            "github",
+            "work",
+            "/repos/acme/widgets/issues?labels=security&q=cve#top",
+        );
+        assert_eq!(
+            searched,
+            DataSource::Integration {
+                integration: "github".into(),
+                account: "work".into(),
+                endpoint: "/repos/acme/widgets/issues".into(),
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&searched).unwrap(),
+            serde_json::json!({
+                "kind": "integration",
+                "integration": "github",
+                "account": "work",
+                "endpoint": "/repos/acme/widgets/issues",
+            })
+        );
     }
 
     fn screenshot() -> UntrustedImage {

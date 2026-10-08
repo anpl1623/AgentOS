@@ -1,17 +1,21 @@
-//! The AgentOS demonstration: a local mock CRM and the scenario run against it.
+//! The AgentOS demonstration: a local mock CRM and the scenario run against it,
+//! and a local mock GitHub for the integration's hostile test.
 //!
 //! The point of the demo is not that an agent can read a webpage. It is that one
 //! of the records it reads is trying to hijack it, and that this changes nothing
-//! about what the agent is permitted to do.
+//! about what the agent is permitted to do. The GitHub mock makes the same point
+//! about an API reached with the operator's token.
 //!
-//! Everything is local. No account, no API key for the CRM, no real customer,
-//! and nothing that leaves the machine.
+//! Everything is local. No account, no real API key, no real customer or
+//! repository, and nothing that leaves the machine.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod crm;
+pub mod github;
 pub mod server;
 
 pub use crm::{CUSTOMERS, Customer, FOLLOW_UP_THRESHOLD_DAYS, INJECTION_PAYLOAD};
+pub use github::{GITHUB_INJECTION_PAYLOAD, MockGitHub};
 pub use server::MockCrm;
 
 /// The objective given to the agent.

@@ -445,3 +445,91 @@ fn a_credential_is_never_taken_from_the_command_line() {
     assert!(!security.contains("operator.credential"), "{security}");
     assert!(!security.contains("EXAMPLESECRET"), "{security}");
 }
+
+#[test]
+fn an_integration_token_is_never_taken_from_the_command_line() {
+    // As for a network credential: a token typed as an argument is in the
+    // shell's history and in `ps`. There is no position or flag for one, and
+    // everything else that can refuse is refused before a token is asked for,
+    // so none of these reaches the keychain.
+    let guard = TempDir::new().unwrap();
+    let home = guard.path();
+
+    for args in [
+        &["integration", "add", "github", "ghp_EXAMPLETOKEN0123456789"][..],
+        &[
+            "integration",
+            "add",
+            "github",
+            "--token",
+            "ghp_EXAMPLETOKEN0123456789",
+        ],
+    ] {
+        let output = agentos(home, args);
+        assert!(!output.status.success(), "{args:?}");
+        let message = String::from_utf8_lossy(&output.stderr);
+        assert!(message.contains("unexpected argument"), "{message}");
+    }
+
+    // A label that is not one is refused without being quoted back: it may
+    // be the token, pasted into the wrong place.
+    let pasted = agentos(
+        home,
+        &[
+            "integration",
+            "add",
+            "github",
+            "--label",
+            "ghp_EXAMPLETOKEN0123456789",
+        ],
+    );
+    assert!(!pasted.status.success());
+    let message = String::from_utf8_lossy(&pasted.stderr);
+    assert!(message.contains("account label"), "{message}");
+    assert!(!message.contains("EXAMPLETOKEN"), "{message}");
+
+    let not_a_host = agentos(
+        home,
+        &[
+            "integration",
+            "add",
+            "github",
+            "--host",
+            "ftp://ghe.example",
+        ],
+    );
+    assert!(!not_a_host.status.success());
+
+    let unknown = agentos(home, &["integration", "add", "gitlab"]);
+    assert!(!unknown.status.success());
+    let message = String::from_utf8_lossy(&unknown.stderr);
+    assert!(message.contains("invalid value"), "{message}");
+
+    let listing = run_ok(home, &["integration", "list"]);
+    assert!(listing.contains("No integration accounts"), "{listing}");
+    let tail = run_ok(home, &["audit", "tail", "--limit", "1000"]);
+    assert!(!tail.contains("operator.integration"), "{tail}");
+    assert!(!tail.contains("operator.credential"), "{tail}");
+    assert!(!tail.contains("EXAMPLETOKEN"), "{tail}");
+}
+
+#[test]
+fn github_is_offered_before_an_account_is_bound_and_says_how_to_bind_one() {
+    let guard = TempDir::new().unwrap();
+    let home = guard.path();
+
+    // The catalogue does not depend on what is bound.
+    let tools = run_ok(home, &["tools"]);
+    assert!(tools.contains("github.issues.list"), "{tools}");
+    assert!(tools.contains("github.pulls.merge"), "{tools}");
+
+    for command in ["test", "remove"] {
+        let output = agentos(home, &["integration", command, "github"]);
+        assert!(!output.status.success(), "{command}");
+        let message = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            message.contains("agentos integration add github"),
+            "{command}: {message}"
+        );
+    }
+}

@@ -15,6 +15,7 @@ pub mod credentials;
 pub mod error;
 pub mod gate;
 pub mod grants;
+pub mod integrations;
 mod liveness;
 pub mod operator;
 pub mod prompt;
@@ -27,11 +28,13 @@ use agentos_audit::AuditLog;
 use agentos_core::agent::Agent;
 use agentos_core::ids::{AgentId, TaskId, TaskRunId};
 use agentos_core::task::{Task, TaskRun, TaskState, TaskStatus, TaskTrigger};
+use agentos_integrations::account::{AccountDirectory, InMemoryDirectory};
 use agentos_permissions::{
     ApprovalPolicy, DenyAllEngine, PermissionEngine, Policy, PolicyDocument, PolicyEngine,
 };
 use agentos_persistence::Database;
 use agentos_secrets::{ChainSecretStore, SecretStore};
+use agentos_tools::egress::{AddressPolicy, Egress};
 use agentos_tools::{ApprovalGate, TaintTracker, ToolContext, ToolPipeline, ToolRegistry};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -47,6 +50,7 @@ pub use credentials::SecretStoreResolver;
 pub use error::RuntimeError;
 pub use gate::RunApprovalGate;
 pub use grants::{CapabilityGrant, ToolGrant};
+pub use integrations::SqliteAccountDirectory;
 pub use scheduler::{
     MIN_TICK_SECONDS, Scheduler, SchedulerOptions, SchedulerPreference, SchedulerTransition,
     TickReport,
@@ -60,6 +64,9 @@ pub struct Runtime {
     database: Database,
     audit: Arc<AuditLog>,
     registry: Arc<ToolRegistry>,
+    /// The bound integration accounts, over this runtime's own database. The
+    /// registry's integration tools hold the same directory.
+    accounts: Arc<SqliteAccountDirectory>,
     secrets: Arc<dyn SecretStore>,
     providers: Arc<dyn ProviderFactory>,
     /// Cancellation tokens for runs currently in flight, so the operator can
@@ -99,11 +106,13 @@ impl Runtime {
         config.ensure_directories()?;
         let database = Database::open(&config.database_path).await?;
         let audit = Arc::new(AuditLog::open(Arc::new(database.audit_sink())).await?);
+        let accounts = Arc::new(SqliteAccountDirectory::new(database.clone()));
 
         Ok(Self {
             database,
             audit,
-            registry: build_registry(&config),
+            registry: build_registry_for(&config, accounts.clone()),
+            accounts,
             providers: Arc::new(SecretBackedProviderFactory::new(secrets.clone())),
             secrets,
             runs_lock: Some(Arc::new(liveness::RunsLock::in_directory(&config.data_dir))),
@@ -125,11 +134,15 @@ impl Runtime {
         let audit = Arc::new(AuditLog::open(Arc::new(database.audit_sink())).await?);
         let mut config = RuntimeConfig::rooted_at(workspace.clone());
         config.workspace = workspace;
+        // Over the database just opened: an in-memory one cannot be found
+        // again by a path.
+        let accounts = Arc::new(SqliteAccountDirectory::new(database.clone()));
 
         Ok(Self {
             database,
             audit,
-            registry: build_registry(&config),
+            registry: build_registry_for(&config, accounts.clone()),
+            accounts,
             providers: Arc::new(SecretBackedProviderFactory::new(secrets.clone())),
             secrets,
             config,
@@ -160,6 +173,18 @@ impl Runtime {
     #[must_use]
     pub fn registry(&self) -> &Arc<ToolRegistry> {
         &self.registry
+    }
+
+    /// The bound integration accounts, as the registry's integration tools
+    /// read them.
+    ///
+    /// For composing a registry around this runtime's accounts, as
+    /// [`compose_registry`] does. Binding and unbinding go through
+    /// [`Self::bind_integration`] and [`Self::unbind_integration`], which
+    /// record them; this is for reading.
+    #[must_use]
+    pub fn integration_accounts(&self) -> Arc<dyn AccountDirectory> {
+        self.accounts.clone()
     }
 
     /// The secret store.
@@ -695,7 +720,7 @@ fn engine_from(policy: Option<Policy>) -> Arc<dyn PermissionEngine> {
 }
 
 /// Build the registry every client gets: the built-in tools, the browser,
-/// computer control, and the network.
+/// computer control, the network and the integrations.
 ///
 /// The composition root owns this so that the CLI and the desktop application
 /// cannot end up offering different tools for the same installation — and so
@@ -704,36 +729,68 @@ fn engine_from(policy: Option<Policy>) -> Arc<dyn PermissionEngine> {
 ///
 /// Public and free of side effects: listing the tools should not create a
 /// database, launch a browser, or ask macOS for the Accessibility permission.
+/// The integrations' accounts are read from the configuration's database the
+/// first time a tool asks for one, which listing never does.
 #[must_use]
 pub fn build_registry(config: &RuntimeConfig) -> Arc<ToolRegistry> {
-    build_registry_with(agentos_browser::BrowserOptions::new(
-        config.browser_profiles(),
-    ))
+    build_registry_for(
+        config,
+        Arc::new(SqliteAccountDirectory::at(&config.database_path)),
+    )
 }
 
-/// The same registry, with the browser configured differently.
+/// The same registry, with the integrations reading `accounts`.
 ///
-/// The demonstration runs headed so that a human can watch it work. That is the
-/// only reason this exists — a second registry composed by hand is how the
-/// catalogue and the runtime drift apart, which has happened here before.
+/// What a [`Runtime`] builds for itself, around the database it already has
+/// open.
 #[must_use]
-pub fn build_registry_with(browser: agentos_browser::BrowserOptions) -> Arc<ToolRegistry> {
-    build_registry_sharing(&Arc::new(agentos_browser::BrowserPool::new(browser)))
+pub fn build_registry_for(
+    config: &RuntimeConfig,
+    accounts: Arc<dyn AccountDirectory>,
+) -> Arc<ToolRegistry> {
+    compose_registry(
+        &Arc::new(agentos_browser::BrowserPool::new(
+            agentos_browser::BrowserOptions::new(config.browser_profiles()),
+        )),
+        accounts,
+    )
 }
 
 /// The same registry again, around a browser pool the caller already holds.
 ///
 /// Only a test needs this: to assert that a run released its browser it has to
 /// be looking at the same pool the tools are using, and a second pool would make
-/// the assertion pass by being empty.
-///
-/// This is where every tool is registered, the network among them, and the
-/// only place: a tool added anywhere else is how the CLI and the desktop end up
-/// offering different catalogues. `network.request` is built here with the
-/// strict address policy, public addresses only, and nothing a caller passes
-/// can loosen it.
+/// the assertion pass by being empty. No accounts are bound in it, so an
+/// integration tool called through it answers that none is.
 #[must_use]
 pub fn build_registry_sharing(pool: &Arc<agentos_browser::BrowserPool>) -> Arc<ToolRegistry> {
+    compose_registry(pool, Arc::new(InMemoryDirectory::default()))
+}
+
+/// The registry itself, around a browser pool and the integrations' accounts.
+///
+/// This is where every tool is registered, the network and the integrations
+/// among them, and the only place: a tool added anywhere else is how the CLI
+/// and the desktop end up offering different catalogues. A caller composes one
+/// directly only to change the browser — the demonstration runs it headed, so
+/// that a human can watch — and passes its runtime's
+/// [`Runtime::integration_accounts`], so that nothing else differs.
+/// `network.request` is built here with the strict address policy, public
+/// addresses only, and nothing a caller passes can loosen it.
+///
+/// Each integration is registered once, whatever is bound, holding `accounts`
+/// and resolving the account it acts as inside each call. So `agentos tools`
+/// lists `github.issues.list` whether or not a token is bound; calling it with
+/// none bound fails cleanly, naming `agentos integration add github`; and
+/// binding a second account later changes nothing registered here. The
+/// address policy a GitHub call connects under is the account's, which only
+/// the operator sets when binding it; the transport handed over here is
+/// strict, and nothing a tool argument says reaches either.
+#[must_use]
+pub fn compose_registry(
+    pool: &Arc<agentos_browser::BrowserPool>,
+    accounts: Arc<dyn AccountDirectory>,
+) -> Arc<ToolRegistry> {
     let mut registry = agentos_tools::standard_registry();
     for tool in agentos_browser::browser_tools(Arc::clone(pool)) {
         registry.register(tool);
@@ -742,6 +799,9 @@ pub fn build_registry_sharing(pool: &Arc<agentos_browser::BrowserPool>) -> Arc<T
         registry.register(tool);
     }
     for tool in agentos_tools::network::all() {
+        registry.register(tool);
+    }
+    for tool in agentos_integrations::github::build(Egress::new(AddressPolicy::Strict), accounts) {
         registry.register(tool);
     }
     Arc::new(registry)

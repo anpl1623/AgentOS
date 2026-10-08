@@ -67,6 +67,10 @@ enum Command {
     #[command(subcommand)]
     Credential(commands::credential::CredentialCommand),
 
+    /// Accounts the runtime may act as at a service, such as GitHub.
+    #[command(subcommand)]
+    Integration(commands::integration::IntegrationCommand),
+
     /// Standing instructions, and the loop that acts on them.
     #[command(subcommand)]
     Schedule(commands::schedule::ScheduleCommand),
@@ -96,6 +100,7 @@ async fn main() -> Result<()> {
         Command::Audit(command) => commands::audit::run(command, &config).await,
         Command::Provider(command) => commands::provider::run(command, &config).await,
         Command::Credential(command) => commands::credential::run(command, &config).await,
+        Command::Integration(command) => commands::integration::run(command, &config).await,
         Command::Schedule(command) => commands::schedule::run(command, &config).await,
         Command::Demo(args) => commands::demo::run(args, &config).await,
         Command::Tools => commands::tools::run(&config).await,

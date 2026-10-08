@@ -63,17 +63,23 @@
 //! host is literal or a glob: `https://*.example.com` does not admit
 //! `https://a.example.com:8443`. Write `:*` for any port, as
 //! `http://localhost:*` above does.
+//!
+//! Repository names are lower-cased at load time for the same reason, in a
+//! `github` block and in a `"*"` block alike: GitHub reads `Acme/Widgets` and
+//! `acme/widgets` as one repository, and its tools ask about it in lower case.
+//! Under `"*"` they are lower-cased for `github` alone; every other domain
+//! still reads its names as they were written.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use agentos_core::permission::Effect;
+use agentos_core::permission::{Effect, permission_domains};
 use agentos_core::risk::RiskLevel;
 use serde::{Deserialize, Serialize};
 
 use crate::error::PolicyError;
 use crate::path::{expand_home, resolve_secure};
-use crate::pattern::{GlobKind, ResourcePattern};
+use crate::pattern::{GlobKind, NamePattern, ResourcePattern};
 use crate::policy::{
     ApprovalPolicy, DEFAULT_MAX_APPROVALS_PER_RUN, Policy, PolicyRule, TaintPolicy,
 };
@@ -260,26 +266,46 @@ fn compile_rule(
         ActionSpec::Detailed(detailed) => detailed.clone(),
     };
 
-    let mut patterns = Vec::new();
-    for raw in &detailed.paths {
-        patterns.push(compile_path(rule_id, raw)?);
-    }
-    for (kind, values) in [
-        (GlobKind::Program, &detailed.programs),
-        (GlobKind::Origin, &detailed.origins),
-        (GlobKind::Application, &detailed.applications),
-        (GlobKind::Named, &detailed.names),
-    ] {
-        for raw in values {
-            patterns.push(ResourcePattern::glob(kind, raw).map_err(|source| {
-                PolicyError::Pattern {
-                    pattern: raw.clone(),
-                    rule: rule_id.to_owned(),
-                    source,
-                }
-            })?);
+    let compile = |names: &[String]| -> Result<Vec<ResourcePattern>, PolicyError> {
+        let mut patterns = Vec::new();
+        for raw in &detailed.paths {
+            patterns.push(compile_path(rule_id, raw)?);
         }
-    }
+        for (kind, values) in [
+            (GlobKind::Program, &detailed.programs[..]),
+            (GlobKind::Origin, &detailed.origins[..]),
+            (GlobKind::Application, &detailed.applications[..]),
+            (GlobKind::Named, names),
+        ] {
+            for raw in values {
+                patterns.push(ResourcePattern::glob(kind, raw).map_err(|source| {
+                    PolicyError::Pattern {
+                        pattern: raw.clone(),
+                        rule: rule_id.to_owned(),
+                        source,
+                    }
+                })?);
+            }
+        }
+        Ok(patterns)
+    };
+    let patterns = compile(&detailed.names)?;
+    // GitHub resolves `owner/name` whatever its case, and its tools ask about
+    // the repository in lower case. A rule that can apply to `github` is
+    // compared with it in the same spelling, or a deny written `Acme/Secret`
+    // would match nothing and leave `acme/secret` to an allow of `acme/*`.
+    // That holds for a rule under `"*"` as much as for one under `github`;
+    // the folded names are kept apart so that such a rule's other domains
+    // still read its names as written.
+    let folded: Vec<String> = detailed
+        .names
+        .iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
+    let github_patterns = (folded != detailed.names
+        && NamePattern::parse(domain).matches(permission_domains::GITHUB))
+    .then(|| compile(&folded))
+    .transpose()?;
 
     // Listing resources without an effect means "allow, but only here". Listing
     // neither means the effect must be explicit.
@@ -294,6 +320,9 @@ fn compile_rule(
     };
 
     let mut rule = PolicyRule::new(rule_id, domain, action, effect).with_resources(patterns);
+    if let Some(github_patterns) = github_patterns {
+        rule = rule.with_github_resources(github_patterns);
+    }
     if let Some(max_risk) = detailed.max_risk {
         rule = rule.with_max_risk(max_risk);
     }
@@ -384,9 +413,9 @@ pub fn quote_scalar(value: &str) -> String {
 /// everything else denied. Deliberately close to useless until an operator
 /// widens it — the default must never be the permissive one.
 ///
-/// The `network` block is there to be read, not obeyed: it ships commented
-/// out, so a new agent reaches no server through `network.request`. What it
-/// shows is the vocabulary, and the one interaction an operator would
+/// The `network` and `github` blocks are there to be read, not obeyed: they
+/// ship commented out, so a new agent reaches no server and no repository.
+/// What they show is the vocabulary, and the one interaction an operator would
 /// otherwise learn by trial — the starter ceiling of `medium` refuses every
 /// high-risk request, which is every write and every credentialed call.
 #[must_use]
@@ -434,7 +463,23 @@ pub fn starter_policy_yaml(workspace: &Path) -> String {
          \x20 #     origins: [\"https://api.example.com\"]\n\
          \x20 #   credential:\n\
          \x20 #     effect: ask\n\
-         \x20 #     names: [\"https://api.example.com/*\"]\n"
+         \x20 #     names: [\"https://api.example.com/*\"]\n\
+         \x20 # GitHub, once you have run `agentos integration add github`. A rule here lets\n\
+         \x20 # the agent act as the bound account on the repositories it names; the token's\n\
+         \x20 # own scopes can narrow that, never widen it.\n\
+         \x20 # Reads are allowed; writes are `ask`. Note that `max_risk: medium` above\n\
+         \x20 # denies every write outright: raise it to `high` only when you want the\n\
+         \x20 # approval card to be the thing standing between the agent and a repo.\n\
+         \x20 # Reads are medium risk too, so once a run has read an issue, its later reads ask.\n\
+         \x20 # github:\n\
+         \x20 #   repos.read:  [\"your-org/*\"]\n\
+         \x20 #   issues.read: [\"your-org/*\"]\n\
+         \x20 #   pulls.read:  [\"your-org/*\"]\n\
+         \x20 #   checks.read: [\"your-org/*\"]\n\
+         \x20 #   issues.write:\n\
+         \x20 #     effect: ask\n\
+         \x20 #     names: [\"your-org/sandbox\"]\n\
+         \x20 #   pulls.merge: deny\n"
     )
 }
 
@@ -859,7 +904,7 @@ permissions:
             !policy
                 .rules
                 .iter()
-                .any(|rule| rule.id.starts_with("network."))
+                .any(|rule| rule.id.starts_with("network.") || rule.id.starts_with("github."))
         );
 
         let engine = PolicyEngine::new(policy);
@@ -889,14 +934,15 @@ permissions:
         )
     }
 
-    /// The starter policy with its `network` block uncommented, as an operator
-    /// would: the `# network:` line and every line indented beneath it.
-    fn with_network_uncommented(starter: &str) -> String {
+    /// The starter policy with one of its example blocks uncommented, as an
+    /// operator would: the `# <domain>:` line and every line indented beneath it.
+    fn with_block_uncommented(starter: &str, domain: &str) -> String {
+        let opening = format!("  # {domain}:");
         let mut inside = false;
         starter
             .lines()
             .map(|line| {
-                if line == "  # network:" {
+                if line == opening {
                     inside = true;
                 } else if inside && !line.starts_with("  #   ") {
                     inside = false;
@@ -914,7 +960,7 @@ permissions:
     #[test]
     fn the_starter_network_block_shows_the_ceiling_refusing_a_send() {
         let (_guard, root) = canonical_temp();
-        let yaml = with_network_uncommented(&starter_policy_yaml(&root));
+        let yaml = with_block_uncommented(&starter_policy_yaml(&root), "network");
         assert!(yaml.contains("\n  network:\n"), "nothing was uncommented");
         let policy = PolicyDocument::from_yaml(&yaml).unwrap().compile().unwrap();
         let engine = PolicyEngine::new(policy);
@@ -962,6 +1008,152 @@ permissions:
             RiskLevel::High,
         );
         assert_eq!(engine.evaluate(&foreign).effect, Effect::Deny);
+    }
+
+    /// A call to a GitHub tool as its plan prices it: one capability, scoped
+    /// to the repository by name.
+    fn github_request(action: &str, repo: &str, risk: RiskLevel) -> PermissionRequest {
+        PermissionRequest::new(
+            format!("github.{action}"),
+            Capability::new("github", action).with_resource(ResourceRef::Named {
+                name: repo.to_owned(),
+            }),
+            risk,
+        )
+    }
+
+    /// The block as shipped, with no change to the parser: `repos.read` and
+    /// the rest are ordinary action names, and an unknown domain's shorthand
+    /// already scopes by name. If this needs a parser change to pass, the
+    /// GitHub plans have stopped matching the vocabulary the block teaches.
+    #[test]
+    fn the_starter_github_block_compiles_without_a_parser_change_and_scopes_by_repository() {
+        let (_guard, root) = canonical_temp();
+        let yaml = with_block_uncommented(&starter_policy_yaml(&root), "github");
+        assert!(yaml.contains("\n  github:\n"), "nothing was uncommented");
+        let document = PolicyDocument::from_yaml(&yaml).unwrap();
+        let engine = PolicyEngine::new(document.compile().unwrap());
+
+        // A read of a repository under the listed owner is what the block grants.
+        let read = github_request("issues.read", "your-org/x", RiskLevel::Medium);
+        let decision = engine.evaluate(&read);
+        assert_eq!(decision.effect, Effect::Allow);
+        assert_eq!(decision.matched_rule.as_deref(), Some("github.issues.read"));
+        // Another owner is not listed.
+        let foreign = github_request("issues.read", "someone-else/x", RiskLevel::Medium);
+        assert_eq!(engine.evaluate(&foreign).effect, Effect::Deny);
+
+        // Under the starter ceiling every write is refused before the rule
+        // that would have asked is consulted, which the block's comment says.
+        let write = github_request("issues.write", "your-org/sandbox", RiskLevel::High);
+        let decision = engine.evaluate(&write);
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("policy:max_risk"));
+
+        // With the ceiling raised as the comment describes, a write to the
+        // named repository asks, and a write anywhere else is still refused.
+        let mut raised = document.clone();
+        raised.max_risk = Some(RiskLevel::High);
+        let engine = PolicyEngine::new(raised.compile().unwrap());
+        assert_eq!(engine.evaluate(&write).effect, Effect::Ask);
+        let elsewhere = github_request("issues.write", "your-org/other", RiskLevel::High);
+        assert_eq!(engine.evaluate(&elsewhere).effect, Effect::Deny);
+
+        // Taint. A tainted write asks, as it did untainted: the card is in
+        // front of it either way. A tainted read is escalated as well,
+        // because GitHub reads are medium risk and the starter escalates from
+        // medium; the block's comment says so, and this is what holds it to it.
+        let decision = engine.evaluate(&write.clone().tainted(true));
+        assert_eq!(decision.effect, Effect::Ask);
+        assert_eq!(
+            engine.evaluate(&read.clone().tainted(false)).effect,
+            Effect::Allow
+        );
+        let decision = engine.evaluate(&read.tainted(true));
+        assert_eq!(decision.effect_before_taint, Effect::Allow);
+        assert_eq!(decision.effect, Effect::Ask);
+        assert!(decision.was_escalated_by_taint());
+        assert!(decision.reason.contains("untrusted"), "{}", decision.reason);
+
+        // A merge is refused by the ceiling, and refused by its own rule once
+        // the ceiling is out of the way: raising `max_risk` does not make the
+        // block's `deny` a suggestion.
+        let merge = github_request("pulls.merge", "your-org/sandbox", RiskLevel::Critical);
+        assert_eq!(engine.evaluate(&merge).effect, Effect::Deny);
+        let mut unbounded = document;
+        unbounded.max_risk = Some(RiskLevel::Critical);
+        let engine = PolicyEngine::new(unbounded.compile().unwrap());
+        let decision = engine.evaluate(&merge);
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("github.pulls.merge"));
+    }
+
+    #[test]
+    fn a_repository_rule_binds_however_it_was_spelled() {
+        // The tools ask in lower case. Compared as written, the deny matched
+        // nothing they would ever send, and `acme/secret` fell to the allow.
+        let yaml = "permissions:\n  github:\n    \"*\": {effect: allow, names: [\"acme/*\"]}\n    issues.read: {effect: deny, names: [\"Acme/Secret\"]}\n    pulls.read: [\"ACME/Widgets\"]\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+
+        let secret = github_request("issues.read", "acme/secret", RiskLevel::Medium);
+        let decision = engine.evaluate(&secret);
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("github.issues.read"));
+
+        let widgets = github_request("pulls.read", "acme/widgets", RiskLevel::Medium);
+        let decision = engine.evaluate(&widgets);
+        assert_eq!(decision.effect, Effect::Allow);
+        assert_eq!(decision.matched_rule.as_deref(), Some("github.pulls.read"));
+
+        // A rule under `"*"`, which covers github, binds it the same way.
+        // This is the shape that failed open: a default-allow policy with a
+        // deny under `"*"` naming the repository in capitals. A domain is `*`
+        // or a name, never a glob, so `git*` is a domain of its own that no
+        // GitHub capability is in, and is left as it is.
+        let yaml = "default: allow\npermissions:\n  \"*\":\n    issues.read: {effect: deny, names: [\"Acme/Secret\"]}\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+        let decision = engine.evaluate(&secret);
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("*.issues.read"));
+
+        // Folded for github alone. Under the same `"*"`, a network credential
+        // is still named in the case it was written in, as credential names
+        // are compared: the deny binds `Work` and not `work`.
+        let yaml = "default: allow\npermissions:\n  \"*\":\n    credential: {effect: deny, names: [\"https://api.example.com/Work\"]}\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+        let credential = |name: &str| {
+            PermissionRequest::new(
+                "network.request",
+                Capability::new("network", "credential").with_resource(ResourceRef::Named {
+                    name: format!("https://api.example.com/{name}"),
+                }),
+                RiskLevel::High,
+            )
+        };
+        assert_eq!(engine.evaluate(&credential("Work")).effect, Effect::Deny);
+        assert_eq!(engine.evaluate(&credential("work")).effect, Effect::Allow);
+
+        // Only the github domain is folded: another domain's names are
+        // compared as they were written.
+        let yaml = "permissions:\n  email:\n    send: [\"Ops@Example.com\"]\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+        let send = |name: &str| {
+            PermissionRequest::new(
+                "email.send",
+                Capability::new("email", "send").with_resource(ResourceRef::Named {
+                    name: name.to_owned(),
+                }),
+                RiskLevel::Low,
+            )
+        };
+        assert_eq!(
+            engine.evaluate(&send("Ops@Example.com")).effect,
+            Effect::Allow
+        );
+        assert_eq!(
+            engine.evaluate(&send("ops@example.com")).effect,
+            Effect::Deny
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Policy documents and the rules inside them.
 
-use agentos_core::permission::{Capability, Effect};
+use agentos_core::permission::{Capability, Effect, permission_domains};
 use agentos_core::risk::RiskLevel;
 
 use crate::pattern::{NamePattern, ResourcePattern};
@@ -17,6 +17,17 @@ pub struct PolicyRule {
     pub action: NamePattern,
     /// Which resources this applies to. Empty means [`ResourcePattern::Any`].
     pub resources: Vec<ResourcePattern>,
+    /// The resources as a `github` capability is compared with them, when that
+    /// differs from [`Self::resources`]: repository names lower-cased, since
+    /// GitHub reads `Acme/Widgets` and `acme/widgets` as one repository and
+    /// its tools ask in lower case.
+    ///
+    /// Kept beside the names as written rather than in place of them, so that
+    /// a rule under the `*` domain, which covers `github` and every other
+    /// domain alike, folds its names for `github` alone. Another domain's
+    /// names, a network credential's among them, keep the case they were
+    /// written in.
+    pub github_resources: Option<Vec<ResourcePattern>>,
     /// What to do when it matches.
     pub effect: Effect,
     /// Risk ceiling for this rule. Actions above it are denied even if the
@@ -33,8 +44,25 @@ impl PolicyRule {
             domain: NamePattern::parse(domain),
             action: NamePattern::parse(action),
             resources: Vec::new(),
+            github_resources: None,
             effect,
             max_risk: None,
+        }
+    }
+
+    /// Compare `github` capabilities with `resources` instead of
+    /// [`Self::resources`]. See [`Self::github_resources`].
+    #[must_use]
+    pub fn with_github_resources(mut self, resources: Vec<ResourcePattern>) -> Self {
+        self.github_resources = Some(resources);
+        self
+    }
+
+    /// The resources `capability` is compared with.
+    fn resources_for(&self, capability: &Capability) -> &[ResourcePattern] {
+        match &self.github_resources {
+            Some(folded) if capability.domain == permission_domains::GITHUB => folded,
+            _ => &self.resources,
         }
     }
 
@@ -58,10 +86,11 @@ impl PolicyRule {
         if !self.domain.matches(&capability.domain) || !self.action.matches(&capability.action) {
             return false;
         }
-        if self.resources.is_empty() {
+        let resources = self.resources_for(capability);
+        if resources.is_empty() {
             return true;
         }
-        self.resources
+        resources
             .iter()
             .any(|pattern| pattern.matches(capability.resource.as_ref()))
     }
@@ -73,7 +102,7 @@ impl PolicyRule {
     #[must_use]
     pub fn specificity(&self, capability: &Capability) -> (u32, u32, u32) {
         let resource = self
-            .resources
+            .resources_for(capability)
             .iter()
             .filter(|pattern| pattern.matches(capability.resource.as_ref()))
             .map(ResourcePattern::specificity)

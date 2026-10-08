@@ -9,6 +9,7 @@ members = [
     "crates/agentos-tools",
     "crates/agentos-providers",
     "crates/agentos-browser",
+    "crates/agentos-integrations",
     "crates/agentos-computer",
     "crates/agentos-runtime",
     "crates/agentos-demo",
@@ -30,6 +31,7 @@ agentos-secrets = { path = "crates/agentos-secrets", version = "0.2.0" }
 agentos-persistence = { path = "crates/agentos-persistence", version = "0.2.0" }
 agentos-audit = { path = "crates/agentos-audit", version = "0.2.0" }
 agentos-browser = { path = "crates/agentos-browser", version = "0.2.0" }
+agentos-integrations = { path = "crates/agentos-integrations", version = "0.2.0" }
 agentos-computer = { path = "crates/agentos-computer", version = "0.2.0" }
 agentos-demo = { path = "crates/agentos-demo", version = "0.2.0" }
 agentos-permissions = { path = "crates/agentos-permissions", version = "0.2.0" }

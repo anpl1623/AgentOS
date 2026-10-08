@@ -113,6 +113,11 @@ define_id!(
     ScheduleId,
     "schedule"
 );
+define_id!(
+    /// Identifies an operator-bound account of an integration.
+    IntegrationAccountId,
+    "integration_account"
+);
 
 #[cfg(test)]
 mod tests {

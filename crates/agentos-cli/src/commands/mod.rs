@@ -5,6 +5,7 @@ pub mod audit;
 pub mod credential;
 pub mod demo;
 pub mod doctor;
+pub mod integration;
 pub mod policy;
 pub mod provider;
 pub mod schedule;

@@ -16,4 +16,13 @@ origin: string,
 /**
  * The name a request uses to ask for it.
  */
-name: string, };
+name: string, 
+/**
+ * The integration account whose token this is, as `GitHub account work`,
+ * or `None` for a credential no account uses.
+ *
+ * One secret is reachable from two sections of the screen. Replacing or
+ * removing this credential replaces or removes that account's token, and
+ * the screen says so before it does either.
+ */
+account: string | null, };

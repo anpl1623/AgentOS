@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
 
+use crate::egress::CredentialRef;
 use crate::error::ToolError;
 
 /// Default per-call time budget.
@@ -450,6 +451,19 @@ pub struct ToolPlan {
     pub summary: String,
     /// Resources touched, for display.
     pub affected_resources: Vec<String>,
+    /// Stored credentials the call will spend on the strength of its other
+    /// capabilities, with no `network.credential` of their own.
+    ///
+    /// For a tool whose grant is itself the grant to act as an account, such as
+    /// an integration's `github.issues.write` on one repository: the operator
+    /// bound that account to its credential, and a policy that lets the agent
+    /// act as it has said everything there is to say about spending it. The
+    /// pipeline releases these, and the credentials a `network.credential`
+    /// capability names, and nothing else; every release is recorded and
+    /// redacted the same way whichever named it. A tool whose arguments choose
+    /// the credential, as `network.request`'s do, names it as a capability
+    /// instead, so that the policy is asked.
+    pub credentials: Vec<CredentialRef>,
 }
 
 impl ToolPlan {
@@ -461,7 +475,21 @@ impl ToolPlan {
             risk,
             summary: summary.into(),
             affected_resources: Vec::new(),
+            credentials: Vec::new(),
         }
+    }
+
+    /// Declare a stored credential the call will spend under its other
+    /// capabilities. See [`Self::credentials`] for when that is right.
+    ///
+    /// It is shown with the affected resources, so the person approving the
+    /// call sees whose credential it is.
+    #[must_use]
+    pub fn spending(mut self, credential: CredentialRef) -> Self {
+        self.affected_resources
+            .push(format!("credential:{}", credential.resource()));
+        self.credentials.push(credential);
+        self
     }
 
     /// Add a required capability.

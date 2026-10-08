@@ -1,6 +1,8 @@
 import { type ReactNode, useCallback, useEffect, useId, useState } from "react";
 
 import type { AgentSummary } from "../bindings/AgentSummary";
+import type { IntegrationTestView } from "../bindings/IntegrationTestView";
+import type { IntegrationView } from "../bindings/IntegrationView";
 import type { ProviderView } from "../bindings/ProviderView";
 import type { SchedulerView } from "../bindings/SchedulerView";
 import type { ToolView } from "../bindings/ToolView";
@@ -14,18 +16,25 @@ import { useVisibleInterval } from "../sdk/live";
 import { useAsync } from "../sdk/useAsync";
 import type { Navigate } from "./route";
 import {
+  type AccountRow,
   type CatalogueEntry,
   type CredentialRow,
   type Verification,
+  accountRows,
+  bindReady,
   catalogue,
   countEntries,
   credentialReady,
   credentialRows,
   grantLine,
+  hostArgument,
+  labelProblem,
+  offersPrivateNetwork,
   readPacing,
   schedulerFacts,
   schedulerNotices,
   schedulerSummary,
+  testLine,
   verificationAnnouncement,
   verificationLine,
 } from "./settingsModel";
@@ -54,9 +63,9 @@ let lastVerification: Verification | null = null;
  * The machine-level controls, and the one question only this screen answers:
  * who on this machine has been granted each tool.
  *
- * Ordered by what an operator comes here to change. Secrets first, the model
- * providers' and then the ones bound to a network origin; then the browser
- * and the scheduler, which decide what can run at all; then the evidence and
+ * Ordered by what an operator comes here to change. Secrets first: the model
+ * providers', the integration accounts agents act as, and then the ones bound
+ * to a network origin; then the browser and the scheduler, which decide what can run at all; then the evidence and
  * where it is kept; then the catalogue.
  */
 export function Settings(_props: { navigate?: Navigate | undefined }) {
@@ -113,6 +122,7 @@ export function Settings(_props: { navigate?: Navigate | undefined }) {
         </Section>
       ) : null}
 
+      <Integrations keychain={data?.keychain_available ?? null} />
       <NetworkCredentials keychain={data?.keychain_available ?? null} />
 
       {data ? (
@@ -372,6 +382,415 @@ function ProviderRow({
 }
 
 // ---------------------------------------------------------------------------
+// Integrations
+// ---------------------------------------------------------------------------
+
+/**
+ * The accounts an integration's tools act as.
+ *
+ * Read on its own rather than with the settings, as the credentials are, so a
+ * bind or a removal reloads this list alone, and what is drawn is what the
+ * runtime reports afterwards rather than what this screen expected.
+ */
+function Integrations({ keychain }: { keychain: boolean | null }) {
+  const listed = useAsync(() => api.listIntegrations(), []);
+  const [done, setDone] = useState<string | null>(null);
+  const data = listed.data;
+
+  return (
+    <Section id="settings-integrations" title="Integrations">
+      {listed.error ? (
+        <ErrorBanner
+          message={
+            data
+              ? `Integrations could not be refreshed: ${listed.error}`
+              : `Integrations could not be read: ${listed.error}`
+          }
+        />
+      ) : null}
+      <p className="visually-hidden" role="status">
+        {done ?? ""}
+      </p>
+      {data === null ? (
+        listed.error ? null : (
+          <div className="panel">
+            <SkeletonRows count={1} />
+          </div>
+        )
+      ) : data.length === 0 ? (
+        <div className="panel">
+          <div className="empty">No integration is registered.</div>
+        </div>
+      ) : (
+        data.map((integration) => (
+          <Integration
+            key={integration.id}
+            integration={integration}
+            keychain={keychain}
+            onChanged={(message) => {
+              setDone(message);
+              listed.reload();
+            }}
+          />
+        ))
+      )}
+    </Section>
+  );
+}
+
+/**
+ * One integration: what binding an account to it would let an agent use, the
+ * accounts bound, and the form that binds another.
+ *
+ * The token field is plain state, never a draft, and is emptied the moment
+ * the call returns, bound or refused. Nothing comes back from the call; the
+ * list is read again.
+ */
+function Integration({
+  integration,
+  keychain,
+  onChanged,
+}: {
+  integration: IntegrationView;
+  keychain: boolean | null;
+  onChanged: (message: string) => void;
+}) {
+  const formId = useId();
+  const headingId = `${formId}-heading`;
+  const [adding, setAdding] = useState(false);
+  const [label, setLabel] = useState("");
+  const [host, setHost] = useState("");
+  const [privateNetwork, setPrivateNetwork] = useState(false);
+  const [scopes, setScopes] = useState("");
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<AccountRow | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const now = useNow();
+  useUnsavedGuard(
+    adding && token !== "",
+    `A ${integration.display_name} token has been typed and not stored.`,
+  );
+
+  const close = () => {
+    setAdding(false);
+    setToken("");
+    setError(null);
+  };
+
+  const bind = async () => {
+    setBusy(true);
+    setError(null);
+    const bound = label.trim();
+    try {
+      await api.bindIntegration(
+        integration.id,
+        bound,
+        hostArgument(host),
+        offersPrivate && privateNetwork,
+        scopes.trim() === "" ? null : scopes.trim(),
+        token,
+      );
+      setLabel("");
+      setHost("");
+      setPrivateNetwork(false);
+      setScopes("");
+      setAdding(false);
+      onChanged(`Bound ${bound} to ${integration.display_name}.`);
+    } catch (failure) {
+      setError(describeError(failure));
+    } finally {
+      // Bound or refused, the token has done its work in this window.
+      setToken("");
+      setBusy(false);
+    }
+  };
+
+  const unbind = async (row: AccountRow) => {
+    setRemoveError(null);
+    try {
+      await api.unbindIntegration(row.id);
+      onChanged(`Removed ${row.label} from ${integration.display_name}.`);
+    } catch (failure) {
+      setRemoveError(`${row.label} was not removed: ${describeError(failure)}`);
+    }
+  };
+
+  const rows = accountRows(integration.accounts, now);
+  const problem = labelProblem(label);
+  // Held while the host is the service's own, and sent only when offered.
+  const offersPrivate = offersPrivateNetwork(host, integration.default_host);
+  // Unknown while settings load; the runtime refuses for itself if it cannot store.
+  const canStore = keychain !== false;
+
+  return (
+    <section aria-labelledby={headingId}>
+      <h3 id={headingId}>{integration.display_name}</h3>
+      <p className="field-note">
+        An account lets an agent with a matching{" "}
+        <span className="mono">{integration.id}</span> rule use:
+      </p>
+      <div className="row-meta mono">
+        {integration.tools.map((tool) => (
+          <span key={tool}>{tool}</span>
+        ))}
+      </div>
+      {removeError ? <ErrorBanner message={removeError} /> : null}
+      <div className="panel reveal">
+        {rows.length === 0 ? (
+          <div className="empty">
+            No account is bound. From a terminal:{" "}
+            <span className="mono">agentos integration add {integration.id}</span>
+          </div>
+        ) : (
+          <List labelledBy={headingId}>
+            {rows.map((row) => (
+              <Item key={row.key}>
+                <AccountItem
+                  row={row}
+                  integration={integration.display_name}
+                  onRemove={() => setRemoving(row)}
+                />
+              </Item>
+            ))}
+          </List>
+        )}
+      </div>
+      {canStore ? (
+        <div className="inline reveal">
+          <button
+            type="button"
+            aria-expanded={adding}
+            aria-controls={adding ? formId : undefined}
+            onClick={() => (adding ? close() : setAdding(true))}
+          >
+            {adding ? "Cancel" : "Add account"}
+          </button>
+        </div>
+      ) : (
+        <p className="field-note">
+          With no keychain on this machine, an account cannot be bound from here.
+        </p>
+      )}
+      {adding ? (
+        <div className="panel reveal">
+          <div className="panel-body" id={formId}>
+            <div className="field">
+              <label htmlFor={`${formId}-label`}>
+                Label · lower-case letters, digits or -; what a call names the account by
+              </label>
+              <input
+                id={`${formId}-label`}
+                value={label}
+                autoComplete="off"
+                spellCheck={false}
+                aria-invalid={problem !== null}
+                aria-describedby={problem ? `${formId}-label-problem` : undefined}
+                onChange={(event) => setLabel(event.target.value)}
+              />
+              {problem ? (
+                <p className="field-note" id={`${formId}-label-problem`}>
+                  {problem}
+                </p>
+              ) : null}
+            </div>
+            <div className="field">
+              <label htmlFor={`${formId}-host`}>API host · optional</label>
+              <input
+                id={`${formId}-host`}
+                value={host}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder={integration.default_host}
+                onChange={(event) => setHost(event.target.value)}
+              />
+              <p className="field-note">
+                For GitHub Enterprise, the server&apos;s address ending in{" "}
+                <span className="mono">/api/v3</span>.
+              </p>
+            </div>
+            {offersPrivate ? (
+              <div className="field">
+                <label className={privateNetwork ? "check on" : "check"}>
+                  <input
+                    type="checkbox"
+                    checked={privateNetwork}
+                    onChange={(event) => setPrivateNetwork(event.target.checked)}
+                  />
+                  <span>
+                    Allow a private network address
+                    <span className="check-note">
+                      Lets this account&apos;s requests reach addresses on your own network,
+                      for a GitHub Enterprise server; loopback, link-local and cloud metadata
+                      addresses are still refused.
+                    </span>
+                  </span>
+                </label>
+              </div>
+            ) : null}
+            <div className="field">
+              <label htmlFor={`${formId}-scopes`}>
+                Scopes · optional; your note of what the token can do
+              </label>
+              <input
+                id={`${formId}-scopes`}
+                value={scopes}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setScopes(event.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor={`${formId}-token`}>Token</label>
+              <input
+                id={`${formId}-token`}
+                type="password"
+                value={token}
+                autoComplete="off"
+                onChange={(event) => setToken(event.target.value)}
+              />
+              <p className="field-note">
+                The token is kept in the system keychain, never in the AgentOS database, and an
+                agent acts with it only where a <span className="mono">{integration.id}</span>{" "}
+                rule allows, whatever its scopes, or where a{" "}
+                <span className="mono">network.credential</span> rule names it.
+              </p>
+            </div>
+            {error ? <ErrorBanner message={error} /> : null}
+            <button
+              type="button"
+              className="primary"
+              disabled={busy || !bindReady(label, token)}
+              onClick={() => void bind()}
+            >
+              {busy ? "Binding…" : "Bind account"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {removing ? (
+        <ConfirmDialog
+          title={`Remove the ${integration.display_name} account ${removing.label}?`}
+          message={
+            "The account is removed, then its token is deleted from this machine's keychain. " +
+            "A run that names it, or relies on it as the only account, will fail until one is " +
+            "bound again."
+          }
+          confirmLabel="Remove account"
+          cancelLabel="Keep it"
+          onAnswer={(confirmed) => {
+            const row = removing;
+            setRemoving(null);
+            if (confirmed) void unbind(row);
+          }}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * One bound account, with a connection test.
+ *
+ * An account whose token is gone is drawn as broken and says what to do, and
+ * is not offered a test: the runtime would refuse it before sending anything.
+ */
+function AccountItem({
+  row,
+  integration,
+  onRemove,
+}: {
+  row: AccountRow;
+  integration: string;
+  onRemove: () => void;
+}) {
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<IntegrationTestView | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
+
+  const test = async () => {
+    setTesting(true);
+    setResult(null);
+    setTestError(null);
+    try {
+      setResult(await api.testIntegration(row.id));
+    } catch (failure) {
+      setTestError(describeError(failure));
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const line = result ? testLine(result) : null;
+
+  return (
+    <div className="row stacked">
+      <div className="inline">
+        <div className="row-main">
+          <div className="row-title mono">{row.label}</div>
+          <div className="row-meta">
+            {row.meta.map((part) => (
+              <span key={part}>{part}</span>
+            ))}
+          </div>
+        </div>
+        {row.present ? (
+          <Fact tone="ok" noun="token">
+            Token stored
+          </Fact>
+        ) : (
+          <Fact tone="danger" noun="token">
+            No token
+          </Fact>
+        )}
+        {row.present ? (
+          <button type="button" className="ghost" disabled={testing} onClick={() => void test()}>
+            {testing ? "Testing…" : "Test"}
+            <span className="visually-hidden"> {row.label}</span>
+          </button>
+        ) : null}
+        <button type="button" className="ghost" onClick={onRemove}>
+          Remove
+          <span className="visually-hidden"> {row.label}</span>
+        </button>
+      </div>
+      {row.present ? null : (
+        <div className="banner error flush reveal">
+          The keychain holds no token for this account, so every {integration} call made as it
+          fails. Remove it and add it again with a token
+          {row.origin ? (
+            <>
+              , or store one under Network credentials as{" "}
+              <span className="mono">
+                {row.origin} / {row.label}
+              </span>
+            </>
+          ) : null}
+          .
+        </div>
+      )}
+      <div role="status" aria-live="polite" aria-busy={testing}>
+        {line ? (
+          <div className="inline reveal">
+            <Fact tone={line.tone} noun="connection">
+              {line.verdict}
+            </Fact>
+            <span className="muted">{line.detail}</span>
+          </div>
+        ) : null}
+      </div>
+      {testError ? (
+        <div className="reveal">
+          <ErrorBanner message={`The test could not run: ${testError}`} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Network credentials
 // ---------------------------------------------------------------------------
 
@@ -475,6 +894,11 @@ function NetworkCredentials({ keychain }: { keychain: boolean | null }) {
                     <div className="row-title mono" title={row.label}>
                       {row.label}
                     </div>
+                    {row.account ? (
+                      <div className="row-meta">
+                        <span>the token of {row.account}</span>
+                      </div>
+                    ) : null}
                   </div>
                   <button type="button" className="ghost" onClick={() => setRemoving(row)}>
                     Remove
@@ -542,7 +966,10 @@ function NetworkCredentials({ keychain }: { keychain: boolean | null }) {
                 autoComplete="off"
                 onChange={(event) => setSecret(event.target.value)}
               />
-              <p className="field-note">A name already stored for the same origin is replaced.</p>
+              <p className="field-note">
+                A name already stored for the same origin is replaced, an integration
+                account&apos;s token included.
+              </p>
             </div>
             {error ? <ErrorBanner message={error} /> : null}
             <button
@@ -564,7 +991,10 @@ function NetworkCredentials({ keychain }: { keychain: boolean | null }) {
           message={
             `${removing.label}\n\n` +
             "The secret is deleted from this machine's keychain. A run that needs it will have " +
-            "nothing to send until it is stored again."
+            "nothing to send until it is stored again." +
+            (removing.account
+              ? ` It is the token of ${removing.account}, which will have no token either.`
+              : "")
           }
           confirmLabel="Remove credential"
           cancelLabel="Keep it"

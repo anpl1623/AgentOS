@@ -70,6 +70,7 @@ use agentos_permissions::PermissionEngine;
 use tokio_util::sync::CancellationToken;
 
 use crate::approval::{ApprovalGate, ApprovalOutcome};
+use crate::egress::CredentialRef;
 use crate::error::ToolError;
 use crate::taint::TaintTracker;
 use crate::tool::{
@@ -760,7 +761,9 @@ fn model_facing_reason(reason: &str, capabilities: &[Capability]) -> String {
         })
 }
 
-/// The `{origin}/{name}` of every credential a plan asks to spend.
+/// The `{origin}/{name}` of every credential a plan asks to spend: those a
+/// `network.credential` capability names, and those it declared spending under
+/// its other capabilities.
 fn credentials_named(plan: &ToolPlan) -> Vec<String> {
     plan.capabilities
         .iter()
@@ -772,6 +775,7 @@ fn credentials_named(plan: &ToolPlan) -> Vec<String> {
             Some(ResourceRef::Named { name }) => Some(name.clone()),
             _ => None,
         })
+        .chain(plan.credentials.iter().map(CredentialRef::resource))
         .collect()
 }
 
@@ -848,8 +852,8 @@ fn redact_error(issued: &CredentialLedger, error: ToolError) -> ToolError {
 }
 
 /// A result with every credential the run released replaced, wherever in it
-/// the text could reach the model, a client or the log: the body, the URL it
-/// is labelled with, and the structured data beside it.
+/// the text could reach the model, a client or the log: the body, the URL or
+/// endpoint it is labelled with, and the structured data beside it.
 ///
 /// Scoped to what this run released rather than the whole store: it runs on
 /// every call, and a run can echo only what it was given.
@@ -860,10 +864,13 @@ fn redact_output(issued: &CredentialLedger, mut output: ToolOutput) -> ToolOutpu
     if let Some(body) = issued.redact(&output.content.body) {
         output.content.body = body;
     }
-    if let DataSource::Web { url } = &mut output.content.source
-        && let Some(redacted) = issued.redact(url)
+    if let DataSource::Web { url: target }
+    | DataSource::Integration {
+        endpoint: target, ..
+    } = &mut output.content.source
+        && let Some(redacted) = issued.redact(target)
     {
-        *url = redacted;
+        *target = redacted;
     }
     if let Some(structured) = &mut output.structured {
         redact_value(issued, structured);
@@ -1568,5 +1575,104 @@ mod tests {
         );
         assert_eq!(released.len(), 1);
         assert!(!format!("{credentials:?}").contains(TOKEN));
+    }
+
+    /// An integration's call acts as the account its grant names, and spends
+    /// that account's credential with no `network.credential` of its own.
+    fn integration_plan() -> ToolPlan {
+        ToolPlan::new(RiskLevel::Medium, "list issues in acme/widgets").requiring(
+            Capability::new("github", "issues.read").with_resource(ResourceRef::Named {
+                name: "acme/widgets".into(),
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_credential_a_plan_declares_is_released_and_recorded_like_a_named_one() {
+        let (audit, sink) = AuditLog::in_memory().await.unwrap();
+        let released = Arc::new(CredentialLedger::default());
+        let plan =
+            integration_plan().spending(CredentialRef::new("https://api.github.com", "work"));
+        assert!(
+            plan.affected_resources
+                .contains(&"credential:https://api.github.com/work".to_owned()),
+            "the person approving it sees whose credential it is: {:?}",
+            plan.affected_resources
+        );
+        let credentials = CallCredentials {
+            store: Arc::new(Careless),
+            authorised: credentials_named(&plan),
+            audit: Arc::new(audit),
+            spender: (AgentId::new(), TaskId::new(), TaskRunId::new()),
+            tool: "github.issues.list".into(),
+            released: Arc::clone(&released),
+        };
+        // Another account, and the same label at another host, are refused.
+        for (origin, name) in [
+            ("https://api.github.com", "home"),
+            ("https://ghe.example", "work"),
+        ] {
+            assert!(credentials.resolve(origin, name).await.is_none(), "{name}");
+        }
+        assert!(released.is_empty());
+        assert!(
+            credentials
+                .resolve("https://api.github.com", "work")
+                .await
+                .is_some()
+        );
+        let used = sink.records_of_kind("network.credential.used").await;
+        assert_eq!(used.len(), 1);
+        assert_eq!(used[0].payload["origin"], "https://api.github.com");
+        assert_eq!(used[0].payload["name"], "work");
+        assert_eq!(used[0].payload["tool"], "github.issues.list");
+        assert_eq!(released.len(), 1, "and it is redacted against from now on");
+    }
+
+    #[tokio::test]
+    async fn a_grant_to_act_on_a_repository_releases_no_credential_by_itself() {
+        // The declaration is what binds the call to an account. A plan that
+        // made none gets nothing, however broad its grant.
+        let (audit, sink) = AuditLog::in_memory().await.unwrap();
+        let released = Arc::new(CredentialLedger::default());
+        let credentials = CallCredentials {
+            store: Arc::new(Careless),
+            authorised: credentials_named(&integration_plan()),
+            audit: Arc::new(audit),
+            spender: (AgentId::new(), TaskId::new(), TaskRunId::new()),
+            tool: "github.issues.list".into(),
+            released: Arc::clone(&released),
+        };
+        assert!(
+            credentials
+                .resolve("https://api.github.com", "work")
+                .await
+                .is_none()
+        );
+        assert!(released.is_empty());
+        assert!(!sink.contains_kind("network.credential.used").await);
+    }
+
+    #[test]
+    fn an_integration_endpoint_is_redacted_like_a_url() {
+        let ledger = CredentialLedger::default();
+        ledger.record(Secret::new(TOKEN));
+        let output = ToolOutput::text(
+            DataSource::Integration {
+                integration: "github".into(),
+                account: "work".into(),
+                endpoint: format!("/repos/acme/{TOKEN}"),
+            },
+            "ok",
+        );
+        let redacted = redact_output(&ledger, output);
+        assert!(!redacted.content.source.label().contains(TOKEN));
+        assert!(
+            redacted
+                .content
+                .source
+                .label()
+                .ends_with(crate::REDACTED_CREDENTIAL)
+        );
     }
 }

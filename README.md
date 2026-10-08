@@ -668,7 +668,7 @@ alongside the execution loop rather than after it.
 
 ## Phase 6: Integrations
 
-- [ ] GitHub
+- [x] GitHub
 - [ ] Slack
 - [ ] Gmail
 - [ ] Google Calendar
@@ -962,6 +962,45 @@ raised.
 
 Redirects are not followed. The policy answered for one origin, and a `Location` pointing elsewhere is
 a second origin that needs its own decision, so the response goes back to the agent as it is.
+
+### GitHub
+
+GitHub's tools act as an account the operator binds, and a policy grants them by repository:
+
+```bash
+agentos integration add github --label work     # the token is read from a prompt or stdin
+agentos integration test github --label work    # one authenticated read: reachable, unauthorised or wrong host
+```
+
+```yaml
+permissions:
+  github:
+    repos.read:  ["your-org/*"]
+    issues.read: ["your-org/*"]
+    pulls.read:  ["your-org/*"]
+    checks.read: ["your-org/*"]
+    issues.write:
+      effect: ask
+      names: ["your-org/sandbox"]
+    pulls.merge: deny
+```
+
+A `github` rule is the grant to act as the bound account on the repositories it names. The token's
+own scopes can narrow that and never widen it: a token that can write to the whole organisation
+still writes only where a rule says. Reads are medium risk, writes high and `pulls.merge` critical,
+so the starter's `max_risk: medium` refuses every write until the ceiling is raised. An issue body is
+a text field a stranger can type into, so everything GitHub returns taints the run, and after the
+first read every call that would have been allowed asks instead.
+
+The token is a network credential for the account's API origin, named after its label, so spending
+it is recorded and redacted as `network.request`'s are. It follows that a `network.credential` rule
+naming that origin and label also lets `network.request` spend the token on any endpoint it can
+reach, outside every `github` rule; such a rule grants the whole token. The host comes from the
+bound account, never from a tool argument. An Enterprise server on a private address is reached only
+if the account was added with `--allow-private-network`, and loopback and link-local addresses are
+refused even then. `github.search.code` is left out on purpose: a search across an organisation
+reads outside any one repository, so no rule scoped to a repository could honestly describe what it
+read.
 
 ## Tests
 

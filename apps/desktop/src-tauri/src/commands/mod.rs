@@ -27,6 +27,7 @@ mod audit;
 mod credentials;
 mod graph;
 mod insights;
+mod integrations;
 mod memories;
 mod policies;
 mod runs;
@@ -43,6 +44,7 @@ pub use audit::*;
 pub use credentials::*;
 pub use graph::*;
 pub use insights::*;
+pub use integrations::*;
 pub use memories::*;
 pub use policies::*;
 pub use runs::*;
@@ -1889,6 +1891,7 @@ mod tests {
             crate::dto::NetworkCredentialView {
                 origin: "https://crm.example.com".to_owned(),
                 name: "default".to_owned(),
+                account: None,
             }
         );
         let key = agentos_secrets::network_key("https://crm.example.com", "default").unwrap();
@@ -1962,6 +1965,289 @@ mod tests {
             credentials::without_secret("naïve", "ï"),
             "na[redacted credential]ve"
         );
+    }
+
+    /// A runtime over a store this test can look into, with no agent.
+    async fn runtime_with_store() -> (tempfile::TempDir, Runtime, Arc<InMemorySecretStore>) {
+        let guard = tempfile::TempDir::new().unwrap();
+        let root = std::fs::canonicalize(guard.path()).unwrap();
+        let store = Arc::new(InMemorySecretStore::new());
+        let runtime = Runtime::in_memory(root, store.clone()).await.unwrap();
+        (guard, runtime, store)
+    }
+
+    /// A GitHub binding with the given label and host, private network off.
+    fn github<'a>(label: &'a str, host: Option<&'a str>) -> integrations::Binding<'a> {
+        integrations::Binding {
+            integration: "github",
+            label,
+            host,
+            private_network: false,
+            scopes: None,
+        }
+    }
+
+    /// The GitHub accounts the screen would list.
+    async fn github_accounts(runtime: &Runtime) -> Vec<crate::dto::IntegrationAccountView> {
+        integrations::views(runtime)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|view| view.id == "github")
+            .unwrap()
+            .accounts
+    }
+
+    /// Everything a binding could have left a token in: every audit record and
+    /// every summary of one.
+    async fn assert_nowhere_recorded(runtime: &Runtime, secret: &str) {
+        for record in runtime.database().audit_sink().all().await.unwrap() {
+            let payload = record.payload.to_string();
+            assert!(!payload.contains(secret), "{}: {payload}", record.kind);
+        }
+        for event in recent_events(runtime, 100, false).await.unwrap() {
+            assert!(!event.summary.contains(secret), "{}", event.summary);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_integration_lists_what_binding_grants_before_anything_is_bound() {
+        let (_guard, runtime, _store) = runtime_with_store().await;
+        let listed = integrations::views(&runtime).await.unwrap();
+        let github = listed.iter().find(|view| view.id == "github").unwrap();
+        assert_eq!(github.default_host, "https://api.github.com");
+        assert!(github.accounts.is_empty());
+        // The tools the screen names are the ones the registry holds, so what
+        // an operator reads before binding is what an agent could be given.
+        let registered: Vec<String> = runtime
+            .registry()
+            .all_metadata()
+            .iter()
+            .filter(|metadata| metadata.domain() == "github")
+            .map(|metadata| metadata.name.clone())
+            .collect();
+        let mut named = github.tools.clone();
+        named.sort();
+        let mut registered = registered;
+        registered.sort();
+        assert_eq!(named, registered);
+        assert_eq!(named.len(), 12, "{named:?}");
+    }
+
+    #[tokio::test]
+    async fn a_bound_token_is_stored_as_its_origins_credential_and_comes_back_nowhere() {
+        use agentos_secrets::SecretStore;
+
+        let (_guard, runtime, store) = runtime_with_store().await;
+        // Padded the way a paste arrives, and labelled the way people type.
+        integrations::bind(&runtime, &github(" work ", None), format!("  {SECRET}\n"))
+            .await
+            .unwrap();
+
+        let key = agentos_secrets::network_key("https://api.github.com", "work").unwrap();
+        assert_eq!(
+            store.get(&key).unwrap().expose(),
+            SECRET,
+            "stored trimmed, under the default host's origin and the label"
+        );
+
+        let listed = integrations::views(&runtime).await.unwrap();
+        let account = &listed
+            .iter()
+            .find(|view| view.id == "github")
+            .unwrap()
+            .accounts[0];
+        assert_eq!(account.label, "work");
+        assert_eq!(account.host, "https://api.github.com");
+        assert_eq!(account.origin.as_deref(), Some("https://api.github.com"));
+        assert!(account.credential_present);
+        assert!(!account.private_network);
+
+        let answer = serde_json::to_string(&listed).unwrap();
+        assert!(!answer.contains(SECRET), "{answer}");
+        assert!(!answer.contains(&SECRET[..8]), "{answer}");
+        assert_nowhere_recorded(&runtime, SECRET).await;
+        assert_eq!(records_of(&runtime, "operator.integration.bound").await, 1);
+        assert_eq!(records_of(&runtime, "operator.credential.set").await, 1);
+    }
+
+    #[tokio::test]
+    async fn an_account_whose_token_is_gone_is_listed_as_missing_not_dropped() {
+        let (_guard, runtime, _store) = runtime_with_store().await;
+        integrations::bind(&runtime, &github("work", None), SECRET.to_owned())
+            .await
+            .unwrap();
+        // Removing the credential where every credential is listed is enough
+        // to leave the account with nothing behind it.
+        runtime
+            .remove_network_credential("https://api.github.com", "work")
+            .await
+            .unwrap();
+
+        let accounts = github_accounts(&runtime).await;
+        let account = &accounts[0];
+        assert_eq!(account.label, "work");
+        assert!(!account.credential_present);
+
+        // And testing it sends nothing, and says why.
+        let id = parse_id("integration account", &account.id).unwrap();
+        let check = runtime.test_integration(id).await.unwrap();
+        let view = crate::dto::IntegrationTestView::from(&check);
+        assert_eq!(view.outcome, "unauthorised");
+        assert!(view.detail.contains("nothing was sent"), "{}", view.detail);
+    }
+
+    #[tokio::test]
+    async fn a_credential_an_account_depends_on_is_listed_as_that_accounts_token() {
+        let (_guard, runtime, _store) = runtime_with_store().await;
+        credentials::store(
+            &runtime,
+            "https://api.github.com",
+            "deploy",
+            SECRET.to_owned(),
+        )
+        .await
+        .unwrap();
+        integrations::bind(&runtime, &github("work", None), SECRET.to_owned())
+            .await
+            .unwrap();
+
+        // The account's token is named as its, so removing or replacing it
+        // under Network credentials is not done without knowing; the
+        // credential stored for `network.request` alone names no account.
+        let listed = credentials::listed(&runtime).await.unwrap();
+        let account_of = |name: &str| {
+            listed
+                .iter()
+                .find(|view| view.origin == "https://api.github.com" && view.name == name)
+                .unwrap()
+                .account
+                .clone()
+        };
+        assert_eq!(account_of("work").as_deref(), Some("GitHub account work"));
+        assert_eq!(account_of("deploy"), None);
+
+        // Storing over it from that section answers the same way.
+        let replaced =
+            credentials::store(&runtime, "https://api.github.com", "work", "ghp_new".into())
+                .await
+                .unwrap();
+        assert_eq!(replaced.account.as_deref(), Some("GitHub account work"));
+    }
+
+    #[tokio::test]
+    async fn a_refused_binding_quotes_no_token_and_stores_nothing() {
+        use agentos_secrets::SecretStore;
+
+        let (_guard, runtime, store) = runtime_with_store().await;
+        for (binding, token) in [
+            // A token pasted into the label field is the likeliest mistake.
+            (github(SECRET, None), "ghp_other_value_1234".to_owned()),
+            (github("Work", None), SECRET.to_owned()),
+            (github("work", Some("ftp://ghe.example")), SECRET.to_owned()),
+            (
+                integrations::Binding {
+                    integration: "gitlab",
+                    ..github("work", None)
+                },
+                SECRET.to_owned(),
+            ),
+            (github("work", None), "   ".to_owned()),
+        ] {
+            let error = integrations::bind(&runtime, &binding, token)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains(SECRET), "{error}");
+        }
+        let key = agentos_secrets::network_key("https://api.github.com", "work").unwrap();
+        assert!(!store.contains(&key).unwrap());
+        assert!(runtime.list_network_credentials().await.unwrap().is_empty());
+        assert!(github_accounts(&runtime).await.is_empty());
+        assert_eq!(records_of(&runtime, "operator.integration.bound").await, 0);
+        assert_eq!(records_of(&runtime, "operator.credential.set").await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_second_binding_under_a_bound_label_leaves_the_first_token_alone() {
+        use agentos_secrets::SecretStore;
+
+        let (_guard, runtime, store) = runtime_with_store().await;
+        integrations::bind(&runtime, &github("work", None), SECRET.to_owned())
+            .await
+            .unwrap();
+        let error = integrations::bind(&runtime, &github("work", None), "ghp_replacement".into())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("already bound"), "{error}");
+        assert!(!error.contains("ghp_replacement"), "{error}");
+        let key = agentos_secrets::network_key("https://api.github.com", "work").unwrap();
+        assert_eq!(store.get(&key).unwrap().expose(), SECRET);
+    }
+
+    #[tokio::test]
+    async fn only_the_bind_call_can_let_an_account_reach_a_private_network() {
+        let (_guard, runtime, _store) = runtime_with_store().await;
+        let binding = integrations::Binding {
+            private_network: true,
+            scopes: Some(" repo "),
+            ..github("ghe", Some("https://GHE.example/api/v3/"))
+        };
+        integrations::bind(&runtime, &binding, SECRET.to_owned())
+            .await
+            .unwrap();
+
+        let accounts = github_accounts(&runtime).await;
+        let account = &accounts[0];
+        assert!(account.private_network);
+        // Stored as the origin it is followed by its path, so the table's
+        // check, the token's origin and every request agree about it.
+        assert_eq!(account.host, "https://ghe.example/api/v3");
+        assert_eq!(account.origin.as_deref(), Some("https://ghe.example"));
+        assert_eq!(account.scopes.as_deref(), Some("repo"));
+
+        // The record of the binding says so, so the permission is attributable.
+        let bound = runtime
+            .database()
+            .audit_sink()
+            .all()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|record| record.kind == "operator.integration.bound")
+            .unwrap();
+        assert_eq!(bound.payload["private_network"], serde_json::json!(true));
+        assert_nowhere_recorded(&runtime, SECRET).await;
+    }
+
+    #[tokio::test]
+    async fn unbinding_removes_the_row_and_then_the_token() {
+        use agentos_secrets::SecretStore;
+
+        let (_guard, runtime, store) = runtime_with_store().await;
+        integrations::bind(&runtime, &github("work", None), SECRET.to_owned())
+            .await
+            .unwrap();
+        let id = parse_id(
+            "integration account",
+            &github_accounts(&runtime).await[0].id,
+        )
+        .unwrap();
+        runtime.unbind_integration(id).await.unwrap();
+
+        assert!(github_accounts(&runtime).await.is_empty());
+        let key = agentos_secrets::network_key("https://api.github.com", "work").unwrap();
+        assert!(!store.contains(&key).unwrap());
+        let unbound = records_of(&runtime, "operator.integration.unbound").await;
+        assert_eq!(unbound, 1);
+        assert_eq!(records_of(&runtime, "operator.credential.removed").await, 1);
+        for event in recent_events(&runtime, 100, false).await.unwrap() {
+            if event.kind.starts_with("operator.integration.") {
+                assert!(event.summary.contains("work"), "{}", event.summary);
+            }
+        }
+        assert_nowhere_recorded(&runtime, SECRET).await;
     }
 
     #[tokio::test]

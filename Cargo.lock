@@ -127,6 +127,7 @@ dependencies = [
  "agentos-audit",
  "agentos-browser",
  "agentos-core",
+ "agentos-integrations",
  "agentos-permissions",
  "agentos-persistence",
  "agentos-providers",
@@ -166,6 +167,24 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ts-rs",
+]
+
+[[package]]
+name = "agentos-integrations"
+version = "0.2.0"
+dependencies = [
+ "agentos-audit",
+ "agentos-core",
+ "agentos-permissions",
+ "agentos-tools",
+ "async-trait",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -222,6 +241,7 @@ dependencies = [
  "agentos-browser",
  "agentos-computer",
  "agentos-core",
+ "agentos-integrations",
  "agentos-permissions",
  "agentos-persistence",
  "agentos-providers",

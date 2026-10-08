@@ -147,6 +147,34 @@ it is technically a breaking change.
   that moves itself to another origin later is not acted on: every browser tool that acts on the
   current page checks, when it runs, that the page is still on the origin it was authorised for.
 
+- **A `github` rule is the grant to act as an account, one repository at a time.** Each GitHub call
+  needs exactly one capability, `github.<resource>.<verb>`, on the repository it names as
+  `owner/name`, and does not also need `network.credential`. Repository names in a rule are compared
+  in lower case, as GitHub compares them, under the `github` domain and under any domain pattern
+  that matches it. The token's own scopes can narrow what a rule permits and never widen it: a token
+  that can write to a whole organisation still writes only where a rule says. The token is also an
+  ordinary network credential, so a `network.credential` rule naming its origin and label lets
+  `network.request` spend it on any endpoint; no starter policy grants that.
+- **What GitHub returns taints the run.** Every answer is an `integration` source naming the account
+  and the endpoint, so after an agent reads an issue anyone could have written, a write it then
+  proposes is put to a person rather than allowed.
+- **An account's token is bound to its account's origin.** It is stored as a network credential for
+  the account's API origin under its label, never in the database, and every spend is recorded as
+  `network.credential.used` and redacted from what comes back, on success or failure, as
+  `network.request`'s are. That includes `agentos integration test`, whose record names
+  `operator.integration.test` as what spent it. The host always comes from the bound account; no tool argument can
+  name one. A scopes note that is not a list of scopes, or that holds part of the token, is refused.
+- **A private-network host is an operator's opt-in, per account.** An account bound with
+  `--allow-private-network`, or the desktop's checkbox, may reach RFC 1918, unique-local and
+  carrier-grade NAT addresses, for an Enterprise server on the operator's own network. It never
+  reaches loopback, link-local, multicast, documentation or other reserved addresses, nor the cloud
+  metadata services inside the ranges it admits (`100.100.100.200`, `fd00:ec2::/32`), and it is
+  refused for the service's own public host.
+- **Binding and unbinding are audited.** `operator.integration.bound` and
+  `operator.integration.unbound` carry the integration, label, host and whether a private network is
+  allowed, and never the token, beside the `operator.credential.*` record for the token itself.
+  Binding over a network credential no account uses is refused rather than replacing it.
+
 ### Added
 
 - `filesystem.search`, by name glob and by content, with depth, result and byte caps and a count of
@@ -198,6 +226,23 @@ it is technically a breaking change.
   never its value; runs and stops the scheduler, saying in plain words when another process holds
   it; and lists the tool catalogue by domain with the agents each tool is granted to. Removing a
   provider key asks first.
+- GitHub, the first integration: twelve tools acting as an account the operator binds.
+  `github.repos.get`, `github.issues.list`, `github.issues.get`, `github.pulls.list`,
+  `github.pulls.get` and `github.checks.list` read and are medium risk; `github.issues.create`,
+  `github.issues.comment`, `github.issues.update`, `github.pulls.create` and `github.pulls.comment`
+  write and are high; `github.pulls.merge` is critical. Under the starter's `max_risk: medium` every
+  write is refused until the ceiling is raised. An approval names the repository, the number and,
+  for a merge, the base branch. A pull request's diff is cut at the output limit and says where.
+  `github.search.code` is left out, since a search across an organisation reads outside any one
+  repository a rule could name.
+- `agentos integration list | add | remove | test`. `add` takes `--label`, `--host` for an
+  Enterprise server, `--allow-private-network` and a `--scopes` note, and reads the token from a
+  prompt that does not echo or from standard input. `list` says loudly when an account has no token
+  behind it, and `test` makes one authenticated read and reports reachable, unauthorised or wrong
+  host.
+- Desktop: Settings has an Integrations section that lists what binding an account grants, binds,
+  tests and removes accounts, and marks one whose token is gone. Network credentials names the
+  account a credential is the token of before it is removed or replaced.
 
 ### Changed
 
@@ -230,6 +275,9 @@ it is technically a breaking change.
 - `browser.navigate` watches a page for half a second after it loads before it returns. A navigation
   the page starts for another origin in that time fails as it starts, however long the destination
   takes to answer.
+- `network.request` now leaves through the same transport as every integration, extracted into
+  `agentos_tools::egress`. Nothing an operator can observe changes, except that a refusal of
+  `100.100.100.200` or an address in `fd00:ec2::/32` now names it as a cloud metadata address.
 
 ## [0.2.0]
 

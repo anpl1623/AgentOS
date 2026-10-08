@@ -1,0 +1,33 @@
+[package]
+name = "agentos-integrations"
+description = "Third-party service integrations for AgentOS, each one a set of ordinary tools over the audited egress path."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = ["github"]
+github = []
+
+[dependencies]
+agentos-core.workspace = true
+agentos-permissions.workspace = true
+agentos-tools.workspace = true
+async-trait.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+agentos-audit.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
+
+[lints]
+workspace = true

@@ -24,6 +24,8 @@ import type { CreateScheduleInput } from "../bindings/CreateScheduleInput";
 import type { CreateTaskInput } from "../bindings/CreateTaskInput";
 import type { DashboardView } from "../bindings/DashboardView";
 import type { EventView } from "../bindings/EventView";
+import type { IntegrationTestView } from "../bindings/IntegrationTestView";
+import type { IntegrationView } from "../bindings/IntegrationView";
 import type { MemoryView } from "../bindings/MemoryView";
 import type { NetworkCredentialView } from "../bindings/NetworkCredentialView";
 import type { PolicyCheck } from "../bindings/PolicyCheck";
@@ -166,6 +168,34 @@ export const api = {
     call<NetworkCredentialView>("set_network_credential", { origin, name, secret }),
   removeNetworkCredential: (origin: string, name: string) =>
     call<null>("remove_network_credential", { origin, name }),
+
+  /**
+   * Every integration the runtime ships, with its tools and bound accounts.
+   * An account says whether the keychain still holds its token; never the
+   * token, nor a hint of it.
+   */
+  listIntegrations: () => call<IntegrationView[]>("list_integrations"),
+  /**
+   * Bind an account: its token is stored as a network credential for the
+   * host's origin, then the account is recorded. `host` is the default when
+   * null. Only this call can let an account reach a private network address.
+   * Nothing is answered, so the token is not echoed, and a refusal does not
+   * quote it; read the list again to see what was stored.
+   */
+  bindIntegration: (
+    integration: string,
+    label: string,
+    host: string | null,
+    privateNetwork: boolean,
+    scopes: string | null,
+    token: string,
+  ) =>
+    call<null>("bind_integration", { integration, label, host, privateNetwork, scopes, token }),
+  /** Remove the account, then its token. */
+  unbindIntegration: (accountId: string) => call<null>("unbind_integration", { accountId }),
+  /** One authenticated read against the account's host, and what it found. */
+  testIntegration: (accountId: string) =>
+    call<IntegrationTestView>("test_integration", { accountId }),
 
   /**
    * Tell the runtime a held close has reached the interface. A close nobody

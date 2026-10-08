@@ -21,6 +21,8 @@ import type { CadenceInput } from "../bindings/CadenceInput";
 import type { CadencePreview } from "../bindings/CadencePreview";
 import type { DashboardView } from "../bindings/DashboardView";
 import type { EventView } from "../bindings/EventView";
+import type { IntegrationTestView } from "../bindings/IntegrationTestView";
+import type { IntegrationView } from "../bindings/IntegrationView";
 import type { MemoryView } from "../bindings/MemoryView";
 import type { NetworkCredentialView } from "../bindings/NetworkCredentialView";
 import type { PolicyCheck } from "../bindings/PolicyCheck";
@@ -233,6 +235,30 @@ const settings: SettingsView = {
       ["network.request", "network", "medium", true,
         "Make one HTTP request and return the status line, the response headers and the body.",
         ["network.fetch", "network.send", "network.credential"]],
+      ["github.repos.get", "github", "medium", true, "Read a repository's description.",
+        ["github.repos.read"]],
+      ["github.issues.list", "github", "medium", true, "List a repository's issues.",
+        ["github.issues.read"]],
+      ["github.issues.get", "github", "medium", true, "Read one issue and its body.",
+        ["github.issues.read"]],
+      ["github.issues.create", "github", "high", true, "Open an issue.",
+        ["github.issues.write"]],
+      ["github.issues.comment", "github", "high", true, "Comment on an issue.",
+        ["github.issues.write"]],
+      ["github.issues.update", "github", "high", true,
+        "Change an issue's state, title, body or labels.", ["github.issues.write"]],
+      ["github.pulls.list", "github", "medium", true, "List a repository's pull requests.",
+        ["github.pulls.read"]],
+      ["github.pulls.get", "github", "medium", true, "Read one pull request, optionally its diff.",
+        ["github.pulls.read"]],
+      ["github.pulls.create", "github", "high", true, "Open a pull request.",
+        ["github.pulls.write"]],
+      ["github.pulls.comment", "github", "high", true, "Comment on a pull request.",
+        ["github.pulls.write"]],
+      ["github.pulls.merge", "github", "critical", true, "Merge a pull request.",
+        ["github.pulls.merge"]],
+      ["github.checks.list", "github", "medium", true, "List the checks run against a commit.",
+        ["github.checks.read"]],
     ] as const
   ).map(([name, domain, risk, untrusted, description, capabilities]) => ({
     name,
@@ -649,13 +675,17 @@ const grants: ToolGrantView[] = (
 }));
 
 /**
- * Two credentials bound to the CRM's origin. A fixture of a credential is an
- * origin and a name, as the runtime's answer is: there is no value here to
- * show, so no screen built against this data can learn to show one.
+ * Two credentials bound to the CRM's origin, and a GitHub account's token. A
+ * fixture of a credential is an origin and a name, as the runtime's answer is:
+ * there is no value here to show, so no screen built against this data can
+ * learn to show one.
  */
 const credentials: NetworkCredentialView[] = [
-  { origin: "http://127.0.0.1:8420", name: "default" },
-  { origin: "http://127.0.0.1:8420", name: "reports" },
+  { origin: "http://127.0.0.1:8420", name: "default", account: null },
+  { origin: "http://127.0.0.1:8420", name: "reports", account: null },
+  // The token of the GitHub account `work`, which is a credential like any
+  // other, and is listed as that account's.
+  { origin: "https://api.github.com", name: "work", account: "GitHub account work" },
 ];
 
 /**
@@ -704,7 +734,90 @@ function setNetworkCredential(args: Record<string, unknown>): NetworkCredentialV
   if (/[\u0000-\u001f\u007f-\u009f]/.test(secret)) {
     throw new Refusal("a credential cannot contain line breaks or other control characters");
   }
-  return { origin, name };
+  const account =
+    credentials.find((stored) => stored.origin === origin && stored.name === name)?.account ??
+    null;
+  return { origin, name, account };
+}
+
+/**
+ * GitHub with two accounts. The second is bound to an Enterprise server on a
+ * private network and its token has gone from the keychain, which is the state
+ * the list exists to make loud; a fixture where every row is healthy would
+ * never show it.
+ */
+const integrations: IntegrationView[] = [
+  {
+    id: "github",
+    display_name: "GitHub",
+    default_host: "https://api.github.com",
+    tools: settings.tools.filter((tool) => tool.domain === "github").map((tool) => tool.name),
+    accounts: [
+      {
+        id: "acct-work",
+        label: "work",
+        host: "https://api.github.com",
+        origin: "https://api.github.com",
+        private_network: false,
+        scopes: "repo, read:org",
+        credential_present: true,
+        created_at: minutesAgo(60 * 24 * 9),
+        last_used_at: minutesAgo(40),
+      },
+      {
+        id: "acct-ghe",
+        label: "ghe",
+        host: "https://ghe.internal.example/api/v3",
+        origin: "https://ghe.internal.example",
+        private_network: true,
+        scopes: null,
+        credential_present: false,
+        created_at: minutesAgo(60 * 24 * 30),
+        last_used_at: null,
+      },
+    ],
+  },
+];
+
+/**
+ * Binding an account, as the command answers it: nothing, or a refusal in the
+ * runtime's words. Like the credential fixture it keeps nothing, so the list
+ * does not change; the screen reads the list again, as it does for real.
+ */
+function bindIntegration(args: Record<string, unknown>): null {
+  const integration = integrations.find((candidate) => candidate.id === args.integration);
+  if (!integration) {
+    throw new Refusal(`there is no integration called \`${String(args.integration)}\``);
+  }
+  const label = String(args.label ?? "").trim();
+  if (!/^[a-z0-9-]{1,32}$/.test(label)) {
+    throw new Refusal(
+      `\`${label}\` cannot label an account: use 1 to 32 lower-case letters, digits or \`-\``,
+    );
+  }
+  if (integration.accounts.some((account) => account.label === label)) {
+    throw new Refusal(
+      `a ${integration.display_name} account labelled \`${label}\` is already bound`,
+    );
+  }
+  if (args.host !== null && args.host !== undefined) fixtureOrigin(String(args.host));
+  if (String(args.token ?? "").trim() === "") throw new Refusal("no token was provided");
+  return null;
+}
+
+/** A connection test: an account with no token is refused before anything is sent. */
+function testIntegration(args: Record<string, unknown>): IntegrationTestView {
+  const account = integrations
+    .flatMap((integration) => integration.accounts)
+    .find((candidate) => candidate.id === args.accountId);
+  if (!account) throw new Refusal("there is no integration account with that identity");
+  if (!account.credential_present) {
+    throw new Refusal(
+      `no token is stored for \`${account.label}\` at ${account.origin}; ` +
+        "remove the account and bind it again",
+    );
+  }
+  return { outcome: "reachable", detail: "authenticated as octocat" };
 }
 
 const PROVIDERS = ["anthropic", "openai", "ollama", "mock"];
@@ -879,6 +992,8 @@ const answers: Record<string, unknown> = {
   grant_report: grants,
   list_network_credentials: credentials,
   remove_network_credential: null,
+  list_integrations: integrations,
+  unbind_integration: null,
   remove_provider_key: null,
   add_task_dependency: null,
   delete_schedule: null,
@@ -935,6 +1050,8 @@ function retryTask(taskId: string): StartedTask {
 /** Answers that depend on the command's arguments. */
 const computed: Record<string, (args: Record<string, unknown>) => unknown> = {
   set_network_credential: setNetworkCredential,
+  bind_integration: bindIntegration,
+  test_integration: testIntegration,
   set_provider_key: (args) => {
     knownProvider(String(args.provider));
     if (String(args.key ?? "").trim() === "") throw new Refusal("no key was provided");

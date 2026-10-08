@@ -1,13 +1,14 @@
-//! A minimal HTTP server for the mock CRM.
+//! A minimal HTTP server for the mock CRM and the mock GitHub.
 //!
-//! Hand-rolled rather than pulling in a web framework. It serves five static
-//! page shapes to one browser on loopback, and that does not justify a
-//! dependency tree the security-sensitive parts of this project would then also
-//! have to carry.
+//! Hand-rolled rather than pulling in a web framework. Between them the two
+//! mocks serve a handful of fixed shapes to one client on loopback, and that
+//! does not justify a dependency tree the security-sensitive parts of this
+//! project would then also have to carry.
 //!
 //! It is not a general-purpose server and makes no attempt to be one: no
-//! keep-alive, no compression, no TLS, loopback only.
+//! keep-alive, no chunked bodies, no compression, no TLS, loopback only.
 
+use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -18,8 +19,9 @@ use tokio::sync::Notify;
 
 use crate::crm;
 
-/// Largest request AgentOS will read before giving up on it.
-const MAX_REQUEST_BYTES: usize = 16 * 1024;
+/// Largest request AgentOS will read before giving up on it, head and body
+/// each.
+pub(crate) const MAX_REQUEST_BYTES: usize = 16 * 1024;
 
 /// A running mock CRM.
 #[derive(Debug)]
@@ -40,32 +42,7 @@ impl MockCrm {
     ///
     /// Returns [`io::Error`] if the port cannot be bound.
     pub async fn start() -> io::Result<Self> {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-        let address = listener.local_addr()?;
-        let shutdown = Arc::new(Notify::new());
-        let signal = shutdown.clone();
-
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    () = signal.notified() => break,
-                    accepted = listener.accept() => match accepted {
-                        Ok((stream, _peer)) => {
-                            tokio::spawn(async move {
-                                if let Err(error) = serve(stream).await {
-                                    tracing::debug!(%error, "mock CRM connection ended");
-                                }
-                            });
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "mock CRM accept failed");
-                            break;
-                        }
-                    },
-                }
-            }
-        });
-
+        let (address, shutdown) = listen("mock CRM", serve).await?;
         Ok(Self {
             base_url: format!("http://127.0.0.1:{}", address.port()),
             address,
@@ -103,40 +80,167 @@ impl Drop for MockCrm {
     }
 }
 
-async fn serve(mut stream: TcpStream) -> io::Result<()> {
+/// Accept connections on a fresh loopback port and hand each to `handle`,
+/// until the returned signal is notified.
+///
+/// The one place either mock binds a socket, so the one place to check that
+/// neither is reachable off the machine.
+pub(crate) async fn listen<H, F>(
+    name: &'static str,
+    handle: H,
+) -> io::Result<(SocketAddr, Arc<Notify>)>
+where
+    H: Fn(TcpStream) -> F + Send + Sync + 'static,
+    F: Future<Output = io::Result<()>> + Send + 'static,
+{
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let address = listener.local_addr()?;
+    let shutdown = Arc::new(Notify::new());
+    let signal = shutdown.clone();
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = signal.notified() => break,
+                accepted = listener.accept() => match accepted {
+                    Ok((stream, _peer)) => {
+                        let connection = handle(stream);
+                        tokio::spawn(async move {
+                            if let Err(error) = connection.await {
+                                tracing::debug!(%error, "{name} connection ended");
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "{name} accept failed");
+                        break;
+                    }
+                },
+            }
+        }
+    });
+
+    Ok((address, shutdown))
+}
+
+/// One request, as read off the socket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Request {
+    /// The method, as sent.
+    pub(crate) method: String,
+    /// The request target: path and query.
+    pub(crate) target: String,
+    /// Header names, lowercased, and their values.
+    pub(crate) headers: Vec<(String, String)>,
+    /// The body, when `Content-Length` declared one.
+    pub(crate) body: Vec<u8>,
+}
+
+impl Request {
+    /// The path, without the query.
+    pub(crate) fn path(&self) -> &str {
+        self.target.split('?').next().unwrap_or("/")
+    }
+
+    /// The query, without the `?`.
+    pub(crate) fn query(&self) -> Option<&str> {
+        self.target.split_once('?').map(|(_, query)| query)
+    }
+
+    /// A header's value, by case-insensitive name.
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+/// What reading a request came to.
+#[derive(Debug)]
+pub(crate) enum Read {
+    /// A whole request.
+    Request(Request),
+    /// Something that must be refused with this status and text.
+    Refused(u16, &'static str),
+}
+
+/// Read one request: the head, then as much body as `Content-Length` says.
+///
+/// Neither part may exceed [`MAX_REQUEST_BYTES`]. A body declared longer is
+/// refused before any of it is read, rather than read and then refused.
+pub(crate) async fn read_request(stream: &mut TcpStream) -> io::Result<Read> {
     let mut buffer = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
 
-    // Read until the end of the headers. The mock CRM has no request bodies, so
-    // there is nothing after them to wait for.
-    loop {
-        let read = stream.read(&mut chunk).await?;
-        if read == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..read]);
-        if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
-            break;
+    let end = loop {
+        if let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+            break end;
         }
         if buffer.len() > MAX_REQUEST_BYTES {
-            return respond(&mut stream, 431, "text/plain", "Request header too large").await;
+            return Ok(Read::Refused(431, "Request header too large"));
         }
-    }
-
-    let request = String::from_utf8_lossy(&buffer);
-    let Some(line) = request.lines().next() else {
-        return respond(&mut stream, 400, "text/plain", "Bad request").await;
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            // A client that hung up mid-head gets an answer it will not read,
+            // which is simpler than a third outcome every caller handles.
+            return Ok(Read::Refused(400, "Bad request"));
+        }
+        buffer.extend_from_slice(&chunk[..read]);
     };
-    let mut parts = line.split_whitespace();
-    let method = parts.next().unwrap_or_default();
-    let target = parts.next().unwrap_or("/");
 
-    if !matches!(method, "GET" | "HEAD") {
+    let head = String::from_utf8_lossy(&buffer[..end]).into_owned();
+    let mut lines = head.split("\r\n");
+    let mut parts = lines.next().unwrap_or_default().split_whitespace();
+    let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
+        return Ok(Read::Refused(400, "Bad request"));
+    };
+    let headers: Vec<(String, String)> = lines
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
+        .collect();
+
+    let declared = headers
+        .iter()
+        .find(|(name, _)| name == "content-length")
+        .map(|(_, value)| value.parse::<usize>());
+    let length = match declared {
+        None => 0,
+        Some(Ok(length)) if length <= MAX_REQUEST_BYTES => length,
+        Some(Ok(_)) => return Ok(Read::Refused(413, "Request body too large")),
+        Some(Err(_)) => return Ok(Read::Refused(400, "Bad request")),
+    };
+    let mut body = buffer.split_off(end + 4);
+    while body.len() < length {
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok(Read::Refused(400, "Bad request"));
+        }
+        body.extend_from_slice(&chunk[..read]);
+    }
+    body.truncate(length);
+
+    Ok(Read::Request(Request {
+        method: method.to_owned(),
+        target: target.to_owned(),
+        headers,
+        body,
+    }))
+}
+
+async fn serve(mut stream: TcpStream) -> io::Result<()> {
+    let request = match read_request(&mut stream).await? {
+        Read::Request(request) => request,
+        Read::Refused(status, text) => {
+            return respond(&mut stream, status, "text/plain", text).await;
+        }
+    };
+
+    if !matches!(request.method.as_str(), "GET" | "HEAD") {
         return respond(&mut stream, 405, "text/plain", "Method not allowed").await;
     }
 
-    let path = target.split('?').next().unwrap_or("/");
-    let (status, body) = route(path);
+    let (status, body) = route(request.path());
     respond(&mut stream, status, "text/html; charset=utf-8", &body).await
 }
 
@@ -168,7 +272,8 @@ fn route(path: &str) -> (u16, String) {
     }
 }
 
-async fn respond(
+/// Write a whole response and let the connection close.
+pub(crate) async fn respond(
     stream: &mut TcpStream,
     status: u16,
     content_type: &str,
@@ -176,10 +281,16 @@ async fn respond(
 ) -> io::Result<()> {
     let reason = match status {
         200 => "OK",
+        201 => "Created",
         400 => "Bad Request",
+        401 => "Unauthorized",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
+        413 => "Content Too Large",
+        422 => "Unprocessable Entity",
         431 => "Request Header Fields Too Large",
+        500 => "Internal Server Error",
         _ => "OK",
     };
     let response = format!(
@@ -258,6 +369,27 @@ mod tests {
             .await
             .unwrap();
         assert!(response.contains("405"));
+    }
+
+    #[tokio::test]
+    async fn a_body_declared_over_the_limit_is_refused_unread() {
+        let crm = MockCrm::start().await.unwrap();
+        let mut stream = TcpStream::connect(crm.address()).await.unwrap();
+        stream
+            .write_all(
+                format!(
+                    "POST /customers HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n",
+                    MAX_REQUEST_BYTES + 1
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut response)
+            .await
+            .unwrap();
+        assert!(response.starts_with("HTTP/1.1 413"), "{response}");
     }
 
     async fn fetch(crm: &MockCrm, path: &str) -> String {

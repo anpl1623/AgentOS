@@ -116,6 +116,10 @@ pub fn run() {
             commands::list_network_credentials,
             commands::set_network_credential,
             commands::remove_network_credential,
+            commands::list_integrations,
+            commands::bind_integration,
+            commands::unbind_integration,
+            commands::test_integration,
             commands::acknowledge_close,
             commands::confirm_close,
         ])

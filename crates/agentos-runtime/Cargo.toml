@@ -13,6 +13,7 @@ agentos-audit.workspace = true
 agentos-browser.workspace = true
 agentos-computer.workspace = true
 agentos-core.workspace = true
+agentos-integrations.workspace = true
 agentos-permissions.workspace = true
 agentos-persistence.workspace = true
 agentos-providers.workspace = true

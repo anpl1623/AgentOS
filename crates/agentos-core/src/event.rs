@@ -402,6 +402,40 @@ pub enum AgentEvent {
         name: String,
     },
 
+    /// An operator bound an account of an integration.
+    ///
+    /// The token is a network credential, stored first and recorded by its own
+    /// `operator.credential.set`; this records the account row that points at
+    /// it. `private_network` is here because it is the one setting that widens
+    /// where the account's requests may go, and only the operator can set it.
+    #[serde(rename = "operator.integration.bound")]
+    IntegrationBound {
+        /// The integration, e.g. `github`.
+        integration: String,
+        /// The account's label, which is also its credential's name.
+        label: String,
+        /// The API base URL every request for this account goes to.
+        host: String,
+        /// Whether the account may reach private-network addresses.
+        private_network: bool,
+    },
+
+    /// An operator unbound an account of an integration.
+    ///
+    /// Recorded when the row is gone. The credential behind it is removed after
+    /// and recorded by its own `operator.credential.removed`.
+    #[serde(rename = "operator.integration.unbound")]
+    IntegrationUnbound {
+        /// The integration.
+        integration: String,
+        /// The account's label.
+        label: String,
+        /// The API base URL it was bound to.
+        host: String,
+        /// Whether it could reach private-network addresses.
+        private_network: bool,
+    },
+
     /// An operator wrote a memory for an agent.
     ///
     /// The content is carried whole, as a policy's document is. Memories are
@@ -606,6 +640,8 @@ impl AgentEvent {
             Self::ProviderKeyRemoved { .. } => "operator.provider_key.removed",
             Self::CredentialSet { .. } => "operator.credential.set",
             Self::CredentialRemoved { .. } => "operator.credential.removed",
+            Self::IntegrationBound { .. } => "operator.integration.bound",
+            Self::IntegrationUnbound { .. } => "operator.integration.unbound",
             Self::MemoryRemembered { .. } => "operator.memory.recorded",
             Self::MemoryRevised { .. } => "operator.memory.revised",
             Self::MemoryForgotten { .. } => "operator.memory.forgotten",
@@ -650,7 +686,9 @@ impl AgentEvent {
             | Self::ProviderKeySet { .. }
             | Self::ProviderKeyRemoved { .. }
             | Self::CredentialSet { .. }
-            | Self::CredentialRemoved { .. } => true,
+            | Self::CredentialRemoved { .. }
+            | Self::IntegrationBound { .. }
+            | Self::IntegrationUnbound { .. } => true,
             // The runtime acting as the operator, at a remote service. Whether
             // the run was tainted is in the permission records beside it; the
             // spend matters either way.
@@ -721,6 +759,25 @@ impl AgentEvent {
             Self::CredentialRemoved { origin, name } => {
                 format!("credential {name} removed for {origin}")
             }
+            Self::IntegrationBound {
+                integration,
+                label,
+                host,
+                private_network,
+            } => format!(
+                "{integration} account {label} bound to {host}{}",
+                if *private_network {
+                    ", private network allowed"
+                } else {
+                    ""
+                }
+            ),
+            Self::IntegrationUnbound {
+                integration,
+                label,
+                host,
+                ..
+            } => format!("{integration} account {label} unbound from {host}"),
             Self::MemoryRemembered {
                 agent,
                 kind,
@@ -834,6 +891,8 @@ pub const SECURITY_KINDS: &[&str] = &[
     "operator.provider_key.removed",
     "operator.credential.set",
     "operator.credential.removed",
+    "operator.integration.bound",
+    "operator.integration.unbound",
     "network.credential.used",
     "operator.memory.recorded",
     "operator.memory.revised",
@@ -915,7 +974,7 @@ mod tests {
     /// How many variants [`AgentEvent`] has.
     ///
     /// Kept beside [`variant_index`] because the two change together.
-    const VARIANT_COUNT: usize = 45;
+    const VARIANT_COUNT: usize = 47;
 
     /// A dense index per variant, in declaration order.
     ///
@@ -970,6 +1029,8 @@ mod tests {
             AgentEvent::CredentialSet { .. } => 42,
             AgentEvent::CredentialRemoved { .. } => 43,
             AgentEvent::CredentialUsed { .. } => 44,
+            AgentEvent::IntegrationBound { .. } => 45,
+            AgentEvent::IntegrationUnbound { .. } => 46,
         }
     }
 
@@ -1193,6 +1254,18 @@ mod tests {
                 name: "default".into(),
                 tool: "network.request".into(),
             },
+            AgentEvent::IntegrationBound {
+                integration: "github".into(),
+                label: "work".into(),
+                host: "https://api.github.com".into(),
+                private_network: false,
+            },
+            AgentEvent::IntegrationUnbound {
+                integration: "github".into(),
+                label: "work".into(),
+                host: "https://api.github.com".into(),
+                private_network: false,
+            },
         ]
     }
 
@@ -1370,7 +1443,7 @@ mod tests {
 
     #[test]
     fn credential_events_carry_no_secret_material() {
-        // A network credential passes near three events. Each is pinned to the
+        // A network credential passes near five events. Each is pinned to the
         // fields that name the credential, so a value cannot be added to one
         // without changing this list.
         for (event, expected) in [
@@ -1395,6 +1468,26 @@ mod tests {
                     tool: "network.request".into(),
                 },
                 vec!["event", "name", "origin", "tool"],
+            ),
+            // The account rows point at a credential by its label; the token
+            // is never theirs to carry.
+            (
+                AgentEvent::IntegrationBound {
+                    integration: "github".into(),
+                    label: "work".into(),
+                    host: "https://ghe.example/api/v3".into(),
+                    private_network: true,
+                },
+                vec!["event", "host", "integration", "label", "private_network"],
+            ),
+            (
+                AgentEvent::IntegrationUnbound {
+                    integration: "github".into(),
+                    label: "work".into(),
+                    host: "https://ghe.example/api/v3".into(),
+                    private_network: true,
+                },
+                vec!["event", "host", "integration", "label", "private_network"],
             ),
         ] {
             let json = serde_json::to_value(&event).unwrap();
@@ -1469,6 +1562,8 @@ mod tests {
                 "operator.agent.enabled_changed",
                 "operator.credential.removed",
                 "operator.credential.set",
+                "operator.integration.bound",
+                "operator.integration.unbound",
                 "operator.memory.forgotten",
                 "operator.memory.recorded",
                 "operator.memory.revised",

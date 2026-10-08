@@ -61,10 +61,11 @@ pub async fn run(command: CredentialCommand, config: &RuntimeConfig) -> Result<(
 
     match command {
         CredentialCommand::List => {
-            let stored = super::open(config)
-                .await?
-                .list_network_credentials()
-                .await?;
+            let runtime = super::open(config).await?;
+            let stored = runtime.list_network_credentials().await?;
+            // A credential an integration account depends on is named as its
+            // token, so that `remove` and `set` on it are not done blind.
+            let accounts = runtime.list_integrations().await?;
             if stored.is_empty() {
                 println!(
                     "No network credentials stored. Add one with `agentos credential set \
@@ -72,9 +73,18 @@ pub async fn run(command: CredentialCommand, config: &RuntimeConfig) -> Result<(
                 );
                 return Ok(());
             }
-            println!("{}{}", pad(&style.dim("ORIGIN"), 40), style.dim("NAME"));
+            println!(
+                "{}{}  {}",
+                pad(&style.dim("ORIGIN"), 40),
+                pad(&style.dim("NAME"), 20),
+                style.dim("TOKEN OF")
+            );
             for (origin, name) in stored {
-                println!("{}{name}", pad(&origin, 40));
+                let account = accounts
+                    .iter()
+                    .find(|bound| bound.uses_credential(&origin, &name))
+                    .map_or_else(|| "-".to_owned(), |bound| bound.describe());
+                println!("{}{}  {account}", pad(&origin, 40), pad(&name, 20));
             }
         }
 

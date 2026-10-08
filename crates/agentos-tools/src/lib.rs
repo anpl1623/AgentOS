@@ -10,6 +10,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod approval;
+pub mod egress;
 pub mod error;
 pub mod filesystem;
 pub mod network;
