@@ -274,7 +274,8 @@ it is technically a breaking change.
   tells them the origin they were authorised for.
 - `browser.navigate` watches a page for half a second after it loads before it returns. A navigation
   the page starts for another origin in that time fails as it starts, however long the destination
-  takes to answer.
+  takes to answer. A navigation that fails this way returns only once the browser is on
+  `about:blank` or its session is closed, never while the other origin's page is still open.
 - `network.request` now leaves through the same transport as every integration, extracted into
   `agentos_tools::egress`. Nothing an operator can observe changes, except that a refusal of
   `100.100.100.200` or an address in `fd00:ec2::/32` now names it as a cloud metadata address.

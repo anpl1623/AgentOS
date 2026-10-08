@@ -46,7 +46,9 @@ use agentos_tools::{
 };
 use async_trait::async_trait;
 use chromiumoxide::Page;
-use chromiumoxide::cdp::browser_protocol::page::{EventFrameStartedNavigating, FrameId};
+use chromiumoxide::cdp::browser_protocol::page::{
+    EventFrameNavigated, EventFrameStartedNavigating, FrameId,
+};
 use chromiumoxide::listeners::EventStream;
 use futures::{FutureExt, StreamExt};
 use schemars::JsonSchema;
@@ -1287,12 +1289,13 @@ impl Tool for Screenshot {
 ///
 /// The request that reached the page has been made by now; what this prevents
 /// is the agent reading, typing into or screenshotting a page whose origin no
-/// decision covered. If the browser will not even go to `about:blank`, the
-/// run's session is closed, which leaves no page at all.
+/// decision covered. The browser has left when its page is on `about:blank`,
+/// not when it has been sent there (see [`blank`]). If it does not get there,
+/// the run's session is closed, which leaves no page at all.
 async fn leave(pool: &BrowserPool, context: &ToolContext, page: &Page) {
-    let left = tokio::time::timeout(LEAVE_TIMEOUT, page.goto("about:blank"))
+    let left = tokio::time::timeout(LEAVE_TIMEOUT, blank(page))
         .await
-        .is_ok_and(|result| result.is_ok());
+        .unwrap_or(false);
     if !left {
         tracing::warn!("could not leave an unauthorised page; closing the run's browser");
         pool.close_run(context.run_id).await;
@@ -1302,6 +1305,33 @@ async fn leave(pool: &BrowserPool, context: &ToolContext, page: &Page) {
 /// How long leaving an unauthorised page may take before the session is closed
 /// instead.
 const LEAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Send `page` to `about:blank`, and say whether its main frame arrived there.
+///
+/// A navigation the page started for itself, and that is already committing
+/// when this one is sent, is not cancelled by it: the browser commits that
+/// page first and `about:blank` after it. [`Page::goto`] counts its navigation
+/// done when the next document loads, whichever navigation brought it, so it
+/// can return while the browser is on the very page it was meant to leave.
+/// Chrome does this to a page that moves itself from its load event. Only the
+/// main frame committing `about:blank` says the page has gone.
+async fn blank(page: &Page) -> bool {
+    // Watched from before the page is sent, so that an arrival before `goto`
+    // returns is seen as well as one after.
+    let Ok(mut arrivals) = page.event_listener::<EventFrameNavigated>().await else {
+        return false;
+    };
+    if page.goto("about:blank").await.is_err() {
+        return false;
+    }
+    while let Some(arrival) = arrivals.next().await {
+        if arrival.frame.parent_id.is_none() && arrival.frame.url == "about:blank" {
+            return true;
+        }
+    }
+    // The page's events ended without it arriving: it, or the browser, is gone.
+    false
+}
 
 /// Where the page's main frame has set off for since `starts` was last read,
 /// if that is anywhere other than `authorised`.
