@@ -845,6 +845,26 @@ mod tests {
         panic!("the task never became {status:?}");
     }
 
+    /// Ask for `options` until the change goes through, trying again as the
+    /// refusal tells the operator to.
+    ///
+    /// A run's task reads as succeeded a moment before the run is over. The run
+    /// writes the task's status, then records its completion and returns, and
+    /// the scheduler counts it in progress until it has returned. Asking once,
+    /// as soon as the status turns, races that tail, and a loaded machine loses
+    /// the race. Every refusal on the way must still be the one for runs in
+    /// progress.
+    async fn repace_once_runs_finish(supervisor: &SchedulerSupervisor, options: SchedulerOptions) {
+        for _ in 0..400 {
+            match supervisor.repace(options).await {
+                Ok(()) => return,
+                Err(refused) => assert_eq!(refused.to_string(), SCHEDULER_BUSY),
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("the new pacing was still refused long after the task had succeeded");
+    }
+
     #[test]
     fn new_pacing_waits_for_scheduled_runs_and_the_same_pacing_disturbs_nothing() {
         tauri::async_runtime::block_on(async {
@@ -883,7 +903,7 @@ mod tests {
             // Once the run is over, the same change goes through.
             release.add_permits(1);
             wait_for_status(&runtime, task, TaskStatus::Succeeded).await;
-            supervisor.repace(slower).await.unwrap();
+            repace_once_runs_finish(&supervisor, slower).await;
             assert!(!supervisor.is_running().await);
             supervisor.start(false).await.unwrap();
             assert_eq!(supervisor.status().await.options, slower);
