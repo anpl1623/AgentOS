@@ -10,8 +10,10 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod approval;
+pub mod egress;
 pub mod error;
 pub mod filesystem;
+pub mod network;
 pub mod pipeline;
 pub mod taint;
 pub mod terminal;
@@ -22,11 +24,13 @@ use std::sync::Arc;
 
 pub use approval::{ApprovalGate, ApprovalOutcome, DenyAllGate, RecordingGate};
 pub use error::ToolError;
+pub use network::{AddressPolicy, NetworkRequest};
 pub use pipeline::{ExecutionReport, ToolPipeline};
 pub use taint::TaintTracker;
 pub use tool::{
-    DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT, Tool, ToolContext, ToolOutput, ToolPlan,
-    ToolRegistry, metadata_for, parse_arguments,
+    CredentialResolver, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT, MIN_REDACTED_FRAGMENT,
+    PolicyProbe, REDACTED_CREDENTIAL, Secret, Tool, ToolContext, ToolOutput, ToolPlan,
+    ToolRegistry, metadata_for, parse_arguments, plan_exceeds_manifest,
 };
 pub use vision::{
     DEFAULT_MAX_IMAGE_BYTES, DEFAULT_MAX_IMAGE_EDGE, PreparedImage, VisionError, prepare,
@@ -67,6 +71,7 @@ mod tests {
                 "filesystem.list",
                 "filesystem.move",
                 "filesystem.read",
+                "filesystem.search",
                 "filesystem.write",
                 "terminal.exec",
             ]
@@ -94,14 +99,24 @@ mod tests {
         }
     }
 
+    /// A documentation check, not a control.
+    ///
+    /// The flag drives only what `agentos tools` prints; the pipeline taints
+    /// from provenance whatever it says. This keeps the catalogue honest for the
+    /// operator reading it.
     #[test]
-    fn tools_that_read_the_outside_world_are_marked_untrusted() {
+    fn tools_that_read_the_outside_world_are_catalogued_as_such() {
         let registry = standard_registry();
-        for name in ["filesystem.read", "filesystem.list", "terminal.exec"] {
+        for name in [
+            "filesystem.read",
+            "filesystem.list",
+            "filesystem.search",
+            "terminal.exec",
+        ] {
             let tool = registry.get(name).unwrap();
             assert!(
                 tool.metadata().returns_untrusted_data,
-                "`{name}` returns external data and must raise taint"
+                "`{name}` reads the outside world and should be listed as external"
             );
         }
     }

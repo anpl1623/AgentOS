@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::Timestamp;
 use crate::error::CoreError;
 use crate::ids::{AgentId, ScheduleId, TaskId, TaskRunId, TaskStepId, ToolExecutionId};
+use crate::trust::DataSource;
 
 /// Lifecycle state of a run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -478,6 +479,14 @@ pub struct TaskRun {
     pub state: TaskState,
     /// Whether this run has ingested untrusted data.
     pub tainted: bool,
+    /// Every external source that contributed to the taint, in the order first
+    /// seen.
+    ///
+    /// Kept beside the flag rather than instead of it so that a later attempt
+    /// at the same task can rebuild a tracker that is not only tainted but can
+    /// say why. Empty for runs recorded before the sources were persisted.
+    #[serde(default)]
+    pub taint_sources: Vec<DataSource>,
     /// Number of model turns taken so far.
     pub steps_taken: u32,
     /// Final answer, when completed.
@@ -504,6 +513,7 @@ impl TaskRun {
             attempt,
             state: TaskState::Idle,
             tainted: false,
+            taint_sources: Vec::new(),
             steps_taken: 0,
             result: None,
             failure: None,
@@ -681,6 +691,29 @@ mod tests {
         for state in TaskState::ALL {
             assert_eq!(state.as_str().parse::<TaskState>().unwrap(), state);
         }
+    }
+
+    #[test]
+    fn a_run_serialised_before_taint_sources_existed_still_reads() {
+        let run = TaskRun::new(TaskId::new(), 1);
+        let mut value = serde_json::to_value(&run).unwrap();
+        value.as_object_mut().unwrap().remove("taint_sources");
+
+        let read: TaskRun = serde_json::from_value(value).unwrap();
+        assert!(read.taint_sources.is_empty());
+    }
+
+    #[test]
+    fn taint_sources_keep_their_variant_and_fields() {
+        let mut run = TaskRun::new(TaskId::new(), 1);
+        run.tainted = true;
+        run.taint_sources = vec![DataSource::Web {
+            url: "https://evil.example".into(),
+        }];
+
+        let json = serde_json::to_string(&run).unwrap();
+        let read: TaskRun = serde_json::from_str(&json).unwrap();
+        assert_eq!(read, run);
     }
 
     #[test]

@@ -141,7 +141,12 @@ impl ExecuteCommand {
              interpreted, and metacharacters in arguments are passed through literally. To \
              chain commands, run them one at a time.",
             RiskLevel::High,
-            vec![Capability::new(permission_domains::TERMINAL, "exec")],
+            // `plan` also requires `filesystem.read` on the working directory,
+            // so the manifest names both.
+            vec![
+                Capability::new(permission_domains::TERMINAL, "exec"),
+                Capability::new(permission_domains::FILESYSTEM, "read"),
+            ],
             true,
         ))
     }

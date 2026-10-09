@@ -12,6 +12,9 @@
 //!   enabled: true
 //!   escalate_at_or_above: medium
 //!
+//! approval_budget:
+//!   max_per_run: 10                    # after this many requests, refuse instead of asking
+//!
 //! permissions:
 //!   computer:
 //!     screenshot: ask
@@ -50,18 +53,36 @@
 //! ever compares canonical paths. A path that does not exist yet is resolved
 //! against its nearest existing ancestor rather than rejected — an agent scoped
 //! to a directory it will create on first use is a normal configuration.
+//!
+//! Origins are canonicalised at load time in the same way — lower-case scheme
+//! and host, no default port — so that a rule binds the requests it names
+//! however either was spelled. An origin that is not `scheme://host[:port]` is
+//! a compile error rather than a rule that matches nothing.
+//!
+//! An origin with no port binds the scheme's default port only, whether its
+//! host is literal or a glob: `https://*.example.com` does not admit
+//! `https://a.example.com:8443`. Write `:*` for any port, as
+//! `http://localhost:*` above does.
+//!
+//! Repository names are lower-cased at load time for the same reason, in a
+//! `github` block and in a `"*"` block alike: GitHub reads `Acme/Widgets` and
+//! `acme/widgets` as one repository, and its tools ask about it in lower case.
+//! Under `"*"` they are lower-cased for `github` alone; every other domain
+//! still reads its names as they were written.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use agentos_core::permission::Effect;
+use agentos_core::permission::{Effect, permission_domains};
 use agentos_core::risk::RiskLevel;
 use serde::{Deserialize, Serialize};
 
 use crate::error::PolicyError;
 use crate::path::{expand_home, resolve_secure};
-use crate::pattern::{GlobKind, ResourcePattern};
-use crate::policy::{Policy, PolicyRule, TaintPolicy};
+use crate::pattern::{GlobKind, NamePattern, ResourcePattern};
+use crate::policy::{
+    ApprovalPolicy, DEFAULT_MAX_APPROVALS_PER_RUN, Policy, PolicyRule, TaintPolicy,
+};
 
 /// The YAML document, before it is compiled into a [`Policy`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -79,6 +100,9 @@ pub struct PolicyDocument {
     /// Taint escalation settings.
     #[serde(default)]
     pub taint_escalation: Option<TaintDocument>,
+    /// How many approvals one run may ask for.
+    #[serde(default)]
+    pub approval_budget: Option<ApprovalBudgetDocument>,
     /// Domain -> action -> specification.
     ///
     /// `BTreeMap` rather than `HashMap` so compilation is deterministic and rule
@@ -116,6 +140,30 @@ impl From<TaintDocument> for TaintPolicy {
         Self {
             enabled: doc.enabled,
             escalate_at_or_above: doc.escalate_at_or_above,
+        }
+    }
+}
+
+/// The approval budget as written in YAML.
+///
+/// Leaving `max_per_run` out keeps the default budget; writing `max_per_run: ~`
+/// removes the limit, which is a decision somebody has to type.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalBudgetDocument {
+    /// The most requests one run may raise.
+    #[serde(default = "default_max_per_run")]
+    pub max_per_run: Option<u32>,
+}
+
+const fn default_max_per_run() -> Option<u32> {
+    Some(DEFAULT_MAX_APPROVALS_PER_RUN)
+}
+
+impl From<ApprovalBudgetDocument> for ApprovalPolicy {
+    fn from(doc: ApprovalBudgetDocument) -> Self {
+        Self {
+            max_per_run: doc.max_per_run,
         }
     }
 }
@@ -177,8 +225,8 @@ impl PolicyDocument {
     ///
     /// # Errors
     ///
-    /// Returns [`PolicyError`] if a glob is malformed, a path cannot be
-    /// resolved, or `~` cannot be expanded.
+    /// Returns [`PolicyError`] if a glob or origin is malformed, a path cannot
+    /// be resolved, or `~` cannot be expanded.
     pub fn compile(&self) -> Result<Policy, PolicyError> {
         let name = self.agent.clone().unwrap_or_else(|| "policy".to_owned());
         let mut policy = Policy {
@@ -187,6 +235,7 @@ impl PolicyDocument {
             max_risk: self.max_risk,
             rules: Vec::new(),
             taint: self.taint_escalation.map(Into::into).unwrap_or_default(),
+            approvals: self.approval_budget.map(Into::into).unwrap_or_default(),
         };
 
         for (domain, actions) in &self.permissions {
@@ -217,26 +266,46 @@ fn compile_rule(
         ActionSpec::Detailed(detailed) => detailed.clone(),
     };
 
-    let mut patterns = Vec::new();
-    for raw in &detailed.paths {
-        patterns.push(compile_path(rule_id, raw)?);
-    }
-    for (kind, values) in [
-        (GlobKind::Program, &detailed.programs),
-        (GlobKind::Origin, &detailed.origins),
-        (GlobKind::Application, &detailed.applications),
-        (GlobKind::Named, &detailed.names),
-    ] {
-        for raw in values {
-            patterns.push(ResourcePattern::glob(kind, raw).map_err(|source| {
-                PolicyError::Pattern {
-                    pattern: raw.clone(),
-                    rule: rule_id.to_owned(),
-                    source,
-                }
-            })?);
+    let compile = |names: &[String]| -> Result<Vec<ResourcePattern>, PolicyError> {
+        let mut patterns = Vec::new();
+        for raw in &detailed.paths {
+            patterns.push(compile_path(rule_id, raw)?);
         }
-    }
+        for (kind, values) in [
+            (GlobKind::Program, &detailed.programs[..]),
+            (GlobKind::Origin, &detailed.origins[..]),
+            (GlobKind::Application, &detailed.applications[..]),
+            (GlobKind::Named, names),
+        ] {
+            for raw in values {
+                patterns.push(ResourcePattern::glob(kind, raw).map_err(|source| {
+                    PolicyError::Pattern {
+                        pattern: raw.clone(),
+                        rule: rule_id.to_owned(),
+                        source,
+                    }
+                })?);
+            }
+        }
+        Ok(patterns)
+    };
+    let patterns = compile(&detailed.names)?;
+    // GitHub resolves `owner/name` whatever its case, and its tools ask about
+    // the repository in lower case. A rule that can apply to `github` is
+    // compared with it in the same spelling, or a deny written `Acme/Secret`
+    // would match nothing and leave `acme/secret` to an allow of `acme/*`.
+    // That holds for a rule under `"*"` as much as for one under `github`;
+    // the folded names are kept apart so that such a rule's other domains
+    // still read its names as written.
+    let folded: Vec<String> = detailed
+        .names
+        .iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
+    let github_patterns = (folded != detailed.names
+        && NamePattern::parse(domain).matches(permission_domains::GITHUB))
+    .then(|| compile(&folded))
+    .transpose()?;
 
     // Listing resources without an effect means "allow, but only here". Listing
     // neither means the effect must be explicit.
@@ -251,6 +320,9 @@ fn compile_rule(
     };
 
     let mut rule = PolicyRule::new(rule_id, domain, action, effect).with_resources(patterns);
+    if let Some(github_patterns) = github_patterns {
+        rule = rule.with_github_resources(github_patterns);
+    }
     if let Some(max_risk) = detailed.max_risk {
         rule = rule.with_max_risk(max_risk);
     }
@@ -340,6 +412,12 @@ pub fn quote_scalar(value: &str) -> String {
 /// Read-only inside one workspace directory, browsing allowed on localhost,
 /// everything else denied. Deliberately close to useless until an operator
 /// widens it — the default must never be the permissive one.
+///
+/// The `network` and `github` blocks are there to be read, not obeyed: they
+/// ship commented out, so a new agent reaches no server and no repository.
+/// What they show is the vocabulary, and the one interaction an operator would
+/// otherwise learn by trial — the starter ceiling of `medium` refuses every
+/// high-risk request, which is every write and every credentialed call.
 #[must_use]
 pub fn starter_policy_yaml(workspace: &Path) -> String {
     let workspace = quote_scalar(&workspace.display().to_string());
@@ -352,6 +430,10 @@ pub fn starter_policy_yaml(workspace: &Path) -> String {
          taint_escalation:\n\
          \x20 enabled: true\n\
          \x20 escalate_at_or_above: medium\n\
+         \n\
+         # After this many approval requests in one run, refuse instead of asking.\n\
+         approval_budget:\n\
+         \x20 max_per_run: 10\n\
          \n\
          permissions:\n\
          \x20 filesystem:\n\
@@ -369,7 +451,35 @@ pub fn starter_policy_yaml(workspace: &Path) -> String {
          \x20     origins: [\"http://localhost:*\", \"http://127.0.0.1:*\"]\n\
          \x20   read:\n\
          \x20     effect: allow\n\
-         \x20     origins: [\"http://localhost:*\", \"http://127.0.0.1:*\"]\n"
+         \x20     origins: [\"http://localhost:*\", \"http://127.0.0.1:*\"]\n\
+         \x20 # Reach a server directly. Spending a stored credential is a grant of its own.\n\
+         \x20 # With max_risk: medium, network.send is denied outright, and so is any request\n\
+         \x20 # that spends a credential: writing to a remote service, or acting there as you,\n\
+         \x20 # is high risk. Raise the ceiling deliberately, not to make a refusal go away.\n\
+         \x20 # network:\n\
+         \x20 #   fetch: [\"https://api.example.com\"]\n\
+         \x20 #   send:\n\
+         \x20 #     effect: ask\n\
+         \x20 #     origins: [\"https://api.example.com\"]\n\
+         \x20 #   credential:\n\
+         \x20 #     effect: ask\n\
+         \x20 #     names: [\"https://api.example.com/*\"]\n\
+         \x20 # GitHub, once you have run `agentos integration add github`. A rule here lets\n\
+         \x20 # the agent act as the bound account on the repositories it names; the token's\n\
+         \x20 # own scopes can narrow that, never widen it.\n\
+         \x20 # Reads are allowed; writes are `ask`. Note that `max_risk: medium` above\n\
+         \x20 # denies every write outright: raise it to `high` only when you want the\n\
+         \x20 # approval card to be the thing standing between the agent and a repo.\n\
+         \x20 # Reads are medium risk too, so once a run has read an issue, its later reads ask.\n\
+         \x20 # github:\n\
+         \x20 #   repos.read:  [\"your-org/*\"]\n\
+         \x20 #   issues.read: [\"your-org/*\"]\n\
+         \x20 #   pulls.read:  [\"your-org/*\"]\n\
+         \x20 #   checks.read: [\"your-org/*\"]\n\
+         \x20 #   issues.write:\n\
+         \x20 #     effect: ask\n\
+         \x20 #     names: [\"your-org/sandbox\"]\n\
+         \x20 #   pulls.merge: deny\n"
     )
 }
 
@@ -518,6 +628,119 @@ permissions:
         assert_eq!(engine.evaluate(&remote).effect, Effect::Deny);
     }
 
+    fn navigate_to(origin: &str) -> PermissionRequest {
+        PermissionRequest::new(
+            "browser.navigate",
+            Capability::new("browser", "navigate").with_resource(ResourceRef::Origin {
+                origin: origin.into(),
+            }),
+            RiskLevel::Medium,
+        )
+    }
+
+    #[test]
+    fn origin_rules_bind_however_they_were_spelled() {
+        // Before canonicalisation these three rules compiled and matched
+        // nothing a browser tool would ever report.
+        let yaml = "permissions:\n  browser:\n    navigate: [\"https://CRM.Example.com\"]\n    read: [\"https://docs.example.com:443\"]\n    interact: [\"https://*.Example.org\"]\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+
+        assert_eq!(
+            engine
+                .evaluate(&navigate_to("https://crm.example.com"))
+                .effect,
+            Effect::Allow
+        );
+        let read = PermissionRequest::new(
+            "browser.read",
+            Capability::new("browser", "read").with_resource(ResourceRef::Origin {
+                origin: "https://docs.example.com".into(),
+            }),
+            RiskLevel::Low,
+        );
+        assert_eq!(engine.evaluate(&read).effect, Effect::Allow);
+        let interact = PermissionRequest::new(
+            "browser.interact",
+            Capability::new("browser", "interact").with_resource(ResourceRef::Origin {
+                origin: "https://app.example.org".into(),
+            }),
+            RiskLevel::Medium,
+        );
+        assert_eq!(engine.evaluate(&interact).effect, Effect::Allow);
+
+        // Canonicalising widened nothing beyond what was written.
+        assert_eq!(
+            engine
+                .evaluate(&navigate_to("https://crm.example.com:8443"))
+                .effect,
+            Effect::Deny
+        );
+        assert_eq!(
+            engine
+                .evaluate(&navigate_to("http://crm.example.com"))
+                .effect,
+            Effect::Deny
+        );
+    }
+
+    #[test]
+    fn a_literal_deny_is_not_undercut_on_another_port_by_a_glob_allow() {
+        // `https://*` used to admit every port while the deny stopped at 443,
+        // so `https://evil.example:8443` fell through to the allow.
+        let yaml = "permissions:\n  browser:\n    \"*\": {effect: allow, origins: [\"https://*\"]}\n    navigate: {effect: deny, origins: [\"https://evil.example\"]}\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+        for origin in ["https://evil.example", "https://evil.example:8443"] {
+            assert_eq!(
+                engine.evaluate(&navigate_to(origin)).effect,
+                Effect::Deny,
+                "{origin}"
+            );
+        }
+        assert_eq!(
+            engine.evaluate(&navigate_to("https://good.example")).effect,
+            Effect::Allow
+        );
+    }
+
+    #[test]
+    fn a_loopback_deny_is_not_undercut_by_another_spelling_of_loopback() {
+        let yaml = "permissions:\n  browser:\n    \"*\": {effect: allow, origins: [\"http://*:*\"]}\n    navigate: {effect: deny, origins: [\"http://127.0.0.1:*\", \"http://localhost:*\", \"http://[::1]:*\"]}\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+        for origin in [
+            "http://127.0.0.1",
+            "http://[::ffff:127.0.0.1]",
+            "http://[::ffff:7f00:1]:8420",
+            "http://0.0.0.0:8420",
+            "http://[::]:8420",
+        ] {
+            assert_eq!(
+                engine.evaluate(&navigate_to(origin)).effect,
+                Effect::Deny,
+                "{origin}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_origin_fails_compilation_with_the_expected_form() {
+        for origin in [
+            "crm.example.com",
+            "https://crm.example.com/app",
+            "file:///etc",
+        ] {
+            let yaml = format!("permissions:\n  browser:\n    navigate: [\"{origin}\"]\n");
+            let error = PolicyDocument::from_yaml(&yaml)
+                .unwrap()
+                .compile()
+                .unwrap_err();
+            let message = error.to_string();
+            assert!(matches!(error, PolicyError::Pattern { .. }), "{message}");
+            assert!(message.contains(origin), "{message}");
+            assert!(message.contains("browser.navigate"), "{message}");
+            assert!(message.contains("scheme://host[:port]"), "{message}");
+        }
+    }
+
     #[test]
     fn computer_shorthand_infers_application_patterns() {
         // Before `computer` had its own arm this fell through to `names`, which
@@ -584,6 +807,42 @@ permissions:
     }
 
     #[test]
+    fn the_approval_budget_is_read_beside_taint() {
+        let yaml = "approval_budget:\n  max_per_run: 3\npermissions: {}\n";
+        let policy = PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap();
+        assert_eq!(policy.approvals.max_per_run, Some(3));
+    }
+
+    #[test]
+    fn the_approval_budget_defaults_to_ten_and_is_lifted_only_explicitly() {
+        let omitted = PolicyDocument::from_yaml("permissions: {}\n")
+            .unwrap()
+            .compile()
+            .unwrap();
+        assert_eq!(omitted.approvals.max_per_run, Some(10));
+
+        let empty_block = PolicyDocument::from_yaml("approval_budget: {}\n")
+            .unwrap()
+            .compile()
+            .unwrap();
+        assert_eq!(empty_block.approvals.max_per_run, Some(10));
+
+        let lifted = PolicyDocument::from_yaml("approval_budget:\n  max_per_run: ~\n")
+            .unwrap()
+            .compile()
+            .unwrap();
+        assert_eq!(lifted.approvals.max_per_run, None);
+    }
+
+    #[test]
+    fn an_hourly_approval_budget_is_not_accepted() {
+        // Nothing enforces one. A field that parses and is not enforced reads
+        // to its author as a control that exists.
+        let err = PolicyDocument::from_yaml("approval_budget:\n  max_per_hour: 5\n").unwrap_err();
+        assert!(matches!(err, PolicyError::Yaml(_)));
+    }
+
+    #[test]
     fn default_is_deny_when_unspecified() {
         let policy = PolicyDocument::from_yaml("permissions: {}\n")
             .unwrap()
@@ -640,6 +899,13 @@ permissions:
         let policy = PolicyDocument::from_yaml(&yaml).unwrap().compile().unwrap();
         assert_eq!(policy.default_effect, Effect::Deny);
         assert_eq!(policy.max_risk, Some(RiskLevel::Medium));
+        assert_eq!(policy.approvals.max_per_run, Some(10));
+        assert!(
+            !policy
+                .rules
+                .iter()
+                .any(|rule| rule.id.starts_with("network.") || rule.id.starts_with("github."))
+        );
 
         let engine = PolicyEngine::new(policy);
         let exec = PermissionRequest::new(
@@ -650,6 +916,244 @@ permissions:
             RiskLevel::High,
         );
         assert_eq!(engine.evaluate(&exec).effect, Effect::Deny);
+
+        // The network block is an example, not a grant.
+        let fetch = network_request("fetch", STARTER_NETWORK_ORIGIN, RiskLevel::Medium);
+        assert_eq!(engine.evaluate(&fetch).effect, Effect::Deny);
+    }
+
+    const STARTER_NETWORK_ORIGIN: &str = "https://api.example.com";
+
+    fn network_request(action: &str, origin: &str, risk: RiskLevel) -> PermissionRequest {
+        PermissionRequest::new(
+            "network.request",
+            Capability::new("network", action).with_resource(ResourceRef::Origin {
+                origin: origin.to_owned(),
+            }),
+            risk,
+        )
+    }
+
+    /// The starter policy with one of its example blocks uncommented, as an
+    /// operator would: the `# <domain>:` line and every line indented beneath it.
+    fn with_block_uncommented(starter: &str, domain: &str) -> String {
+        let opening = format!("  # {domain}:");
+        let mut inside = false;
+        starter
+            .lines()
+            .map(|line| {
+                if line == opening {
+                    inside = true;
+                } else if inside && !line.starts_with("  #   ") {
+                    inside = false;
+                }
+                if inside {
+                    line.replacen("  # ", "  ", 1)
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_starter_network_block_shows_the_ceiling_refusing_a_send() {
+        let (_guard, root) = canonical_temp();
+        let yaml = with_block_uncommented(&starter_policy_yaml(&root), "network");
+        assert!(yaml.contains("\n  network:\n"), "nothing was uncommented");
+        let policy = PolicyDocument::from_yaml(&yaml).unwrap().compile().unwrap();
+        let engine = PolicyEngine::new(policy);
+
+        // A read of the listed origin is what the block grants.
+        let fetch = network_request("fetch", STARTER_NETWORK_ORIGIN, RiskLevel::Medium);
+        assert_eq!(engine.evaluate(&fetch).effect, Effect::Allow);
+
+        // Another origin is not listed.
+        let elsewhere = network_request("fetch", "https://evil.example", RiskLevel::Medium);
+        assert_eq!(engine.evaluate(&elsewhere).effect, Effect::Deny);
+
+        // A write to the listed origin is refused by the ceiling before the
+        // rule that would have asked is consulted. This is the interaction
+        // the block's comment documents; if it changes, the comment is wrong.
+        let send = network_request("send", STARTER_NETWORK_ORIGIN, RiskLevel::High);
+        let decision = engine.evaluate(&send);
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("policy:max_risk"));
+
+        // As is a fetch that spends a credential, which `network.request`
+        // prices one level up.
+        let credential = PermissionRequest::new(
+            "network.request",
+            Capability::new("network", "credential").with_resource(ResourceRef::Named {
+                name: format!("{STARTER_NETWORK_ORIGIN}/default"),
+            }),
+            RiskLevel::High,
+        );
+        let decision = engine.evaluate(&credential);
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("policy:max_risk"));
+
+        // Below the ceiling, the credential grant is scoped to its origin.
+        let mut raised = PolicyDocument::from_yaml(&yaml).unwrap();
+        raised.max_risk = Some(RiskLevel::High);
+        let engine = PolicyEngine::new(raised.compile().unwrap());
+        let decision = engine.evaluate(&credential);
+        assert_eq!(decision.effect, Effect::Ask);
+        let foreign = PermissionRequest::new(
+            "network.request",
+            Capability::new("network", "credential").with_resource(ResourceRef::Named {
+                name: "https://evil.example/default".to_owned(),
+            }),
+            RiskLevel::High,
+        );
+        assert_eq!(engine.evaluate(&foreign).effect, Effect::Deny);
+    }
+
+    /// A call to a GitHub tool as its plan prices it: one capability, scoped
+    /// to the repository by name.
+    fn github_request(action: &str, repo: &str, risk: RiskLevel) -> PermissionRequest {
+        PermissionRequest::new(
+            format!("github.{action}"),
+            Capability::new("github", action).with_resource(ResourceRef::Named {
+                name: repo.to_owned(),
+            }),
+            risk,
+        )
+    }
+
+    /// The block as shipped, with no change to the parser: `repos.read` and
+    /// the rest are ordinary action names, and an unknown domain's shorthand
+    /// already scopes by name. If this needs a parser change to pass, the
+    /// GitHub plans have stopped matching the vocabulary the block teaches.
+    #[test]
+    fn the_starter_github_block_compiles_without_a_parser_change_and_scopes_by_repository() {
+        let (_guard, root) = canonical_temp();
+        let yaml = with_block_uncommented(&starter_policy_yaml(&root), "github");
+        assert!(yaml.contains("\n  github:\n"), "nothing was uncommented");
+        let document = PolicyDocument::from_yaml(&yaml).unwrap();
+        let engine = PolicyEngine::new(document.compile().unwrap());
+
+        // A read of a repository under the listed owner is what the block grants.
+        let read = github_request("issues.read", "your-org/x", RiskLevel::Medium);
+        let decision = engine.evaluate(&read);
+        assert_eq!(decision.effect, Effect::Allow);
+        assert_eq!(decision.matched_rule.as_deref(), Some("github.issues.read"));
+        // Another owner is not listed.
+        let foreign = github_request("issues.read", "someone-else/x", RiskLevel::Medium);
+        assert_eq!(engine.evaluate(&foreign).effect, Effect::Deny);
+
+        // Under the starter ceiling every write is refused before the rule
+        // that would have asked is consulted, which the block's comment says.
+        let write = github_request("issues.write", "your-org/sandbox", RiskLevel::High);
+        let decision = engine.evaluate(&write);
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("policy:max_risk"));
+
+        // With the ceiling raised as the comment describes, a write to the
+        // named repository asks, and a write anywhere else is still refused.
+        let mut raised = document.clone();
+        raised.max_risk = Some(RiskLevel::High);
+        let engine = PolicyEngine::new(raised.compile().unwrap());
+        assert_eq!(engine.evaluate(&write).effect, Effect::Ask);
+        let elsewhere = github_request("issues.write", "your-org/other", RiskLevel::High);
+        assert_eq!(engine.evaluate(&elsewhere).effect, Effect::Deny);
+
+        // Taint. A tainted write asks, as it did untainted: the card is in
+        // front of it either way. A tainted read is escalated as well,
+        // because GitHub reads are medium risk and the starter escalates from
+        // medium; the block's comment says so, and this is what holds it to it.
+        let decision = engine.evaluate(&write.clone().tainted(true));
+        assert_eq!(decision.effect, Effect::Ask);
+        assert_eq!(
+            engine.evaluate(&read.clone().tainted(false)).effect,
+            Effect::Allow
+        );
+        let decision = engine.evaluate(&read.tainted(true));
+        assert_eq!(decision.effect_before_taint, Effect::Allow);
+        assert_eq!(decision.effect, Effect::Ask);
+        assert!(decision.was_escalated_by_taint());
+        assert!(decision.reason.contains("untrusted"), "{}", decision.reason);
+
+        // A merge is refused by the ceiling, and refused by its own rule once
+        // the ceiling is out of the way: raising `max_risk` does not make the
+        // block's `deny` a suggestion.
+        let merge = github_request("pulls.merge", "your-org/sandbox", RiskLevel::Critical);
+        assert_eq!(engine.evaluate(&merge).effect, Effect::Deny);
+        let mut unbounded = document;
+        unbounded.max_risk = Some(RiskLevel::Critical);
+        let engine = PolicyEngine::new(unbounded.compile().unwrap());
+        let decision = engine.evaluate(&merge);
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("github.pulls.merge"));
+    }
+
+    #[test]
+    fn a_repository_rule_binds_however_it_was_spelled() {
+        // The tools ask in lower case. Compared as written, the deny matched
+        // nothing they would ever send, and `acme/secret` fell to the allow.
+        let yaml = "permissions:\n  github:\n    \"*\": {effect: allow, names: [\"acme/*\"]}\n    issues.read: {effect: deny, names: [\"Acme/Secret\"]}\n    pulls.read: [\"ACME/Widgets\"]\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+
+        let secret = github_request("issues.read", "acme/secret", RiskLevel::Medium);
+        let decision = engine.evaluate(&secret);
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("github.issues.read"));
+
+        let widgets = github_request("pulls.read", "acme/widgets", RiskLevel::Medium);
+        let decision = engine.evaluate(&widgets);
+        assert_eq!(decision.effect, Effect::Allow);
+        assert_eq!(decision.matched_rule.as_deref(), Some("github.pulls.read"));
+
+        // A rule under `"*"`, which covers github, binds it the same way.
+        // This is the shape that failed open: a default-allow policy with a
+        // deny under `"*"` naming the repository in capitals. A domain is `*`
+        // or a name, never a glob, so `git*` is a domain of its own that no
+        // GitHub capability is in, and is left as it is.
+        let yaml = "default: allow\npermissions:\n  \"*\":\n    issues.read: {effect: deny, names: [\"Acme/Secret\"]}\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+        let decision = engine.evaluate(&secret);
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("*.issues.read"));
+
+        // Folded for github alone. Under the same `"*"`, a network credential
+        // is still named in the case it was written in, as credential names
+        // are compared: the deny binds `Work` and not `work`.
+        let yaml = "default: allow\npermissions:\n  \"*\":\n    credential: {effect: deny, names: [\"https://api.example.com/Work\"]}\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+        let credential = |name: &str| {
+            PermissionRequest::new(
+                "network.request",
+                Capability::new("network", "credential").with_resource(ResourceRef::Named {
+                    name: format!("https://api.example.com/{name}"),
+                }),
+                RiskLevel::High,
+            )
+        };
+        assert_eq!(engine.evaluate(&credential("Work")).effect, Effect::Deny);
+        assert_eq!(engine.evaluate(&credential("work")).effect, Effect::Allow);
+
+        // Only the github domain is folded: another domain's names are
+        // compared as they were written.
+        let yaml = "permissions:\n  email:\n    send: [\"Ops@Example.com\"]\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+        let send = |name: &str| {
+            PermissionRequest::new(
+                "email.send",
+                Capability::new("email", "send").with_resource(ResourceRef::Named {
+                    name: name.to_owned(),
+                }),
+                RiskLevel::Low,
+            )
+        };
+        assert_eq!(
+            engine.evaluate(&send("Ops@Example.com")).effect,
+            Effect::Allow
+        );
+        assert_eq!(
+            engine.evaluate(&send("ops@example.com")).effect,
+            Effect::Deny
+        );
     }
 
     #[test]

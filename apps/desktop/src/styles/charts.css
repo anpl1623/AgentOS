@@ -1,0 +1,242 @@
+/* Charts.
+ *
+ * A chart here is a figure with a caption and a table carrying the same facts
+ * as text; the drawing is the second way of saying them, not the only one.
+ * Tones come from the status ramps and nowhere else, and every tone that
+ * carries meaning also has a shape — the hatch for "did not execute" and for
+ * "waiting on you" — so the chart still reads in greyscale.
+ *
+ * Inline styles. Nothing a chart draws sets a style property inline. Geometry
+ * that only the data knows travels one of two ways: in an SVG element's own
+ * geometry attributes (x, y, width, height, d), which are data rather than
+ * style, or as a CSS custom property read by a class here, for example
+ *
+ *   <div className="chart-tip" style={{ "--x": "212px", "--y": "40px" }}>
+ *
+ * Colour, size and spacing are never passed either way.
+ */
+
+.figure {
+  margin: 0;
+  padding: var(--s-7) var(--s-8);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+.figure + .figure,
+.panel + .figure,
+.figure + .panel {
+  margin-top: var(--s-6);
+}
+.figure-caption {
+  margin-top: var(--s-4);
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+
+/* The text equivalent. Usually inside a disclosure beneath the drawing. */
+.figure-data {
+  margin-top: var(--s-4);
+  font-size: var(--fs-small);
+}
+.figure-data summary {
+  cursor: pointer;
+  color: var(--text-dim);
+}
+.figure-data table {
+  width: 100%;
+  margin-top: var(--s-4);
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.figure-data th,
+.figure-data td {
+  padding: var(--s-1) var(--s-4);
+  text-align: left;
+  border-bottom: 1px solid var(--border-hairline);
+}
+.figure-data th {
+  color: var(--text-dim);
+  font-weight: var(--fw-semibold);
+}
+
+/* The drawing and the box its tooltip is positioned in. */
+.chart {
+  position: relative;
+}
+.chart svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+
+.chart-grid {
+  stroke: var(--chart-grid);
+  stroke-width: 1px;
+  shape-rendering: crispEdges;
+}
+.chart-axis,
+.chart-label {
+  fill: var(--chart-ink);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+}
+.chart-axis {
+  font-size: var(--fs-micro);
+}
+.chart-label {
+  font-size: var(--fs-meta);
+}
+
+/* One span on a track. The fill is the hue's line colour and the edge its
+ * foreground, which keeps a short span visible against the panel. */
+.chart-span {
+  fill: var(--surface-hover);
+  stroke: var(--border-control);
+  stroke-width: 1px;
+  cursor: pointer;
+}
+.chart-span.ok {
+  fill: var(--ok-line);
+  stroke: var(--ok-fg);
+}
+.chart-span.danger {
+  fill: var(--danger-line);
+  stroke: var(--danger-fg);
+}
+.chart-span.blocked {
+  fill: var(--blocked-wash);
+  stroke: var(--blocked-line);
+}
+.chart-span.warn {
+  fill: var(--warn-line);
+  stroke: var(--warn-fg);
+}
+.chart-span.info {
+  fill: var(--info-line);
+  stroke: var(--info-fg);
+}
+.chart-span:hover {
+  stroke: var(--text);
+}
+
+/* Hatch lines inside the shared <pattern> definitions. One ink for every
+ * pattern, since the pattern is laid over whatever tone the span already has. */
+.chart-hatch {
+  stroke: var(--chart-hatch);
+  stroke-width: 1.5px;
+}
+
+/* The first call made after the run read untrusted data. */
+.chart-taint {
+  fill: var(--warn-fg);
+  stroke: var(--surface-panel);
+  stroke-width: 1px;
+}
+
+/* An HTML track, for a chart simple enough not to need SVG: a lane of fixed
+ * height with bars placed by --x and sized by --w, both as percentages. */
+.chart-lane {
+  position: relative;
+  height: var(--chart-row);
+  margin-bottom: var(--chart-gap);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+}
+.chart-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--x, 0);
+  width: max(var(--w, 0%), 0.4%);
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+  border: 1px solid var(--border-control);
+}
+.chart-bar.ok {
+  background: var(--ok-line);
+  border-color: var(--ok-fg);
+}
+.chart-bar.danger {
+  background: var(--danger-line);
+  border-color: var(--danger-fg);
+}
+.chart-bar.blocked {
+  background: var(--blocked-wash);
+  border-color: var(--blocked-line);
+}
+.chart-bar.warn {
+  background: var(--warn-line);
+  border-color: var(--warn-fg);
+}
+.chart-bar.info {
+  background: var(--info-line);
+  border-color: var(--info-fg);
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-7);
+  margin-top: var(--s-4);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+.chart-swatch {
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+  border: 1px solid var(--border-control);
+}
+.chart-swatch.ok {
+  background: var(--ok-line);
+  border-color: var(--ok-fg);
+}
+.chart-swatch.danger {
+  background: var(--danger-line);
+  border-color: var(--danger-fg);
+}
+.chart-swatch.blocked {
+  background: var(--blocked-wash);
+  border-color: var(--blocked-line);
+}
+.chart-swatch.warn {
+  background: var(--warn-line);
+  border-color: var(--warn-fg);
+}
+.chart-swatch.info {
+  background: var(--info-line);
+  border-color: var(--info-fg);
+}
+
+/* The one line of plain text under the tracks. */
+.chart-summary {
+  margin-top: var(--s-4);
+  font-size: var(--fs-small);
+}
+
+/* Positioned by --x and --y relative to .chart, above the point it describes. */
+.chart-tip {
+  position: absolute;
+  left: var(--x, 0);
+  top: var(--y, 0);
+  z-index: var(--z-sticky);
+  transform: translate(-50%, calc(-100% - var(--s-3)));
+  max-width: 18rem;
+  padding: var(--s-2) var(--s-4);
+  font-size: var(--fs-meta);
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-emphasis);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-overlay);
+  pointer-events: none;
+  white-space: nowrap;
+}

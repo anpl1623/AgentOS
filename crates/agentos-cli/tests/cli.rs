@@ -306,3 +306,230 @@ fn a_valid_policy_can_be_installed_and_is_summarised() {
     let shown = run_ok(home, &["policy", "show", "demo"]);
     assert!(shown.contains("terminal.exec => allow"), "{shown}");
 }
+
+#[test]
+fn standing_instructions_and_the_scheduler_are_on_the_security_record() {
+    let guard = TempDir::new().unwrap();
+    let home = guard.path();
+    run_ok(
+        home,
+        &[
+            "agent",
+            "create",
+            "--name",
+            "demo",
+            "--provider",
+            "mock",
+            "--model",
+            "scripted",
+        ],
+    );
+
+    run_ok(
+        home,
+        &[
+            "schedule",
+            "create",
+            "hourly",
+            "Check in.",
+            "--every",
+            "3600",
+            "--at",
+            "2020-01-01T00:00:00Z",
+        ],
+    );
+    run_ok(home, &["schedule", "pause", "hourly"]);
+    let resumed = run_ok(home, &["schedule", "resume", "hourly"]);
+    assert!(resumed.contains("Next firing"), "{resumed}");
+    // Resumed forward from now, so it is not due; put it back in the past
+    // with a one-shot that is.
+    run_ok(
+        home,
+        &[
+            "schedule",
+            "create",
+            "catch-up",
+            "Check in.",
+            "--once",
+            "--at",
+            "2020-01-01T00:00:00Z",
+        ],
+    );
+    run_ok(
+        home,
+        &["task", "create", "Later.", "--at", "2999-01-01T00:00:00Z"],
+    );
+
+    let pass = run_ok(home, &["schedule", "run", "--once"]);
+    assert!(pass.contains("1 fired, 1 started"), "{pass}");
+    run_ok(home, &["schedule", "delete", "hourly"]);
+
+    let security = run_ok(home, &["audit", "tail", "--security", "--limit", "100"]);
+    for kind in [
+        "operator.schedule.created",
+        "operator.schedule.paused",
+        "operator.schedule.resumed",
+        "operator.schedule.deleted",
+        "operator.task.created",
+        "operator.scheduler.started",
+        "operator.scheduler.stopped",
+    ] {
+        assert!(security.contains(kind), "{kind} missing:\n{security}");
+    }
+    assert!(run_ok(home, &["audit", "verify"]).contains("intact"));
+
+    // Another process holds the lease: a second scheduler is refused before
+    // it fires, starts or records anything.
+    let lease = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(home.join("scheduler.lock"))
+        .unwrap();
+    lease.lock().unwrap();
+    let before = run_ok(home, &["audit", "tail", "--limit", "1000"])
+        .lines()
+        .count();
+    let refused = agentos(home, &["schedule", "run", "--once"]);
+    assert!(!refused.status.success());
+    let message = String::from_utf8_lossy(&refused.stderr);
+    assert!(message.contains("already running"), "{message}");
+    assert_eq!(
+        run_ok(home, &["audit", "tail", "--limit", "1000"])
+            .lines()
+            .count(),
+        before
+    );
+}
+
+#[test]
+fn a_credential_is_never_taken_from_the_command_line() {
+    // An argument is in the shell's history and in `ps` for every user on the
+    // machine. There is no position for a secret, so one typed there is a
+    // usage error and nothing is stored or recorded. None of these reaches the
+    // keychain: each is refused before a secret would be read.
+    let guard = TempDir::new().unwrap();
+    let home = guard.path();
+
+    let in_argv = agentos(
+        home,
+        &[
+            "credential",
+            "set",
+            "https://api.example.com",
+            "default",
+            "sk-live-EXAMPLESECRET",
+        ],
+    );
+    assert!(!in_argv.status.success());
+    let message = String::from_utf8_lossy(&in_argv.stderr);
+    assert!(message.contains("unexpected argument"), "{message}");
+
+    let not_an_origin = agentos(home, &["credential", "set", "file:///etc", "default"]);
+    assert!(!not_an_origin.status.success());
+    let message = String::from_utf8_lossy(&not_an_origin.stderr);
+    assert!(message.contains("is not an origin"), "{message}");
+
+    // A dot in a name would let it carry part of a host into the key.
+    let dotted = agentos(home, &["credential", "set", "https://a.example", "b.token"]);
+    assert!(!dotted.status.success());
+    let message = String::from_utf8_lossy(&dotted.stderr);
+    assert!(message.contains("credential name"), "{message}");
+
+    let listing = run_ok(home, &["credential", "list"]);
+    assert!(
+        listing.contains("No network credentials stored"),
+        "{listing}"
+    );
+    let security = run_ok(home, &["audit", "tail", "--limit", "1000"]);
+    assert!(!security.contains("operator.credential"), "{security}");
+    assert!(!security.contains("EXAMPLESECRET"), "{security}");
+}
+
+#[test]
+fn an_integration_token_is_never_taken_from_the_command_line() {
+    // As for a network credential: a token typed as an argument is in the
+    // shell's history and in `ps`. There is no position or flag for one, and
+    // everything else that can refuse is refused before a token is asked for,
+    // so none of these reaches the keychain.
+    let guard = TempDir::new().unwrap();
+    let home = guard.path();
+
+    for args in [
+        &["integration", "add", "github", "ghp_EXAMPLETOKEN0123456789"][..],
+        &[
+            "integration",
+            "add",
+            "github",
+            "--token",
+            "ghp_EXAMPLETOKEN0123456789",
+        ],
+    ] {
+        let output = agentos(home, args);
+        assert!(!output.status.success(), "{args:?}");
+        let message = String::from_utf8_lossy(&output.stderr);
+        assert!(message.contains("unexpected argument"), "{message}");
+    }
+
+    // A label that is not one is refused without being quoted back: it may
+    // be the token, pasted into the wrong place.
+    let pasted = agentos(
+        home,
+        &[
+            "integration",
+            "add",
+            "github",
+            "--label",
+            "ghp_EXAMPLETOKEN0123456789",
+        ],
+    );
+    assert!(!pasted.status.success());
+    let message = String::from_utf8_lossy(&pasted.stderr);
+    assert!(message.contains("account label"), "{message}");
+    assert!(!message.contains("EXAMPLETOKEN"), "{message}");
+
+    let not_a_host = agentos(
+        home,
+        &[
+            "integration",
+            "add",
+            "github",
+            "--host",
+            "ftp://ghe.example",
+        ],
+    );
+    assert!(!not_a_host.status.success());
+
+    let unknown = agentos(home, &["integration", "add", "gitlab"]);
+    assert!(!unknown.status.success());
+    let message = String::from_utf8_lossy(&unknown.stderr);
+    assert!(message.contains("invalid value"), "{message}");
+
+    let listing = run_ok(home, &["integration", "list"]);
+    assert!(listing.contains("No integration accounts"), "{listing}");
+    let tail = run_ok(home, &["audit", "tail", "--limit", "1000"]);
+    assert!(!tail.contains("operator.integration"), "{tail}");
+    assert!(!tail.contains("operator.credential"), "{tail}");
+    assert!(!tail.contains("EXAMPLETOKEN"), "{tail}");
+}
+
+#[test]
+fn github_is_offered_before_an_account_is_bound_and_says_how_to_bind_one() {
+    let guard = TempDir::new().unwrap();
+    let home = guard.path();
+
+    // The catalogue does not depend on what is bound.
+    let tools = run_ok(home, &["tools"]);
+    assert!(tools.contains("github.issues.list"), "{tools}");
+    assert!(tools.contains("github.pulls.merge"), "{tools}");
+
+    for command in ["test", "remove"] {
+        let output = agentos(home, &["integration", command, "github"]);
+        assert!(!output.status.success(), "{command}");
+        let message = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            message.contains("agentos integration add github"),
+            "{command}: {message}"
+        );
+    }
+}

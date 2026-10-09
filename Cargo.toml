@@ -9,6 +9,7 @@ members = [
     "crates/agentos-tools",
     "crates/agentos-providers",
     "crates/agentos-browser",
+    "crates/agentos-integrations",
     "crates/agentos-computer",
     "crates/agentos-runtime",
     "crates/agentos-demo",
@@ -19,7 +20,7 @@ members = [
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.94"
 license = "MIT"
 repository = "https://github.com/anpl1623/AgentOS"
 authors = ["AgentOS Contributors"]
@@ -30,6 +31,7 @@ agentos-secrets = { path = "crates/agentos-secrets", version = "0.2.0" }
 agentos-persistence = { path = "crates/agentos-persistence", version = "0.2.0" }
 agentos-audit = { path = "crates/agentos-audit", version = "0.2.0" }
 agentos-browser = { path = "crates/agentos-browser", version = "0.2.0" }
+agentos-integrations = { path = "crates/agentos-integrations", version = "0.2.0" }
 agentos-computer = { path = "crates/agentos-computer", version = "0.2.0" }
 agentos-demo = { path = "crates/agentos-demo", version = "0.2.0" }
 agentos-permissions = { path = "crates/agentos-permissions", version = "0.2.0" }
@@ -50,6 +52,11 @@ hex = "0.4.3"
 # Only the codecs AgentOS actually decodes. The default feature set pulls in a
 # dozen more formats, each one more parser exposed to attacker-supplied bytes.
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"] }
+# One HTTP client for the model providers and for `network.request`. No
+# `cookies`: a cookie jar is state a server sets and a later request carries
+# back without anyone deciding to send it, which is the opposite of a request
+# whose every header was authorised.
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "charset", "http2", "stream"] }
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

@@ -3,7 +3,7 @@
 [![CI](https://github.com/anpl1623/AgentOS/actions/workflows/ci.yml/badge.svg)](https://github.com/anpl1623/AgentOS/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/anpl1623/AgentOS?sort=semver)](https://github.com/anpl1623/AgentOS/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://rustup.rs)
+[![Rust 1.94+](https://img.shields.io/badge/rust-1.94%2B-orange.svg)](https://rustup.rs)
 ![Platforms: macOS, Windows, Linux](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)
 
 > **An open-source AI operating system for running your business from your computer.**
@@ -67,11 +67,14 @@ You
 └─────────────────────────────────────┘
 ```
 
-![The AgentOS dashboard: running work, recent refusals, agents and audit state](docs/images/dashboard.png)
+![The AgentOS dashboard: work waiting on a decision, running work, recent failures and refusals, and tool use](docs/images/dashboard.png)
 
 The dashboard is the operator's view of the machine: what is running, what is waiting on a
 decision, and what was refused. The `audit chain` tile reports whether the hash chain
-verifies, which is the same check `agentos audit verify` runs from the CLI.
+verifies. Its first check after launch covers the whole chain; after that it checks only
+the records written since, each linked onto the last record it proved, so a record changed
+before that point is not noticed until the next launch. Settings' check and
+`agentos audit verify` rehash the whole chain every time.
 
 ![An approval request, escalated because the run read untrusted data](docs/images/approvals.png)
 
@@ -665,7 +668,7 @@ alongside the execution loop rather than after it.
 
 ## Phase 6: Integrations
 
-- [ ] GitHub
+- [x] GitHub
 - [ ] Slack
 - [ ] Gmail
 - [ ] Google Calendar
@@ -719,7 +722,7 @@ sha256sum -c agentos-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 
 ## Requirements
 
-- [Rust](https://rustup.rs) 1.85 or newer: for the runtime and the CLI
+- [Rust](https://rustup.rs) 1.94 or newer: for the runtime and the CLI
 - [Node](https://nodejs.org) 20 or newer: only for the desktop application
 
 The database is embedded, and the test suite needs no network, no API key and no external service.
@@ -866,6 +869,7 @@ development-only and are removed from a production build.
 | `agentos schedule create \| list \| pause \| resume \| delete \| run` | Standing instructions, and the loop that acts on them |
 | `agentos audit tail \| verify` | Read the log and check its integrity |
 | `agentos provider list \| set-key \| remove-key` | Manage credentials |
+| `agentos credential set \| list \| remove` | Store network credentials, each bound to one origin |
 | `agentos demo` | Run the end-to-end demonstration against a local mock CRM |
 | `agentos tools` | See what the runtime can offer an agent |
 
@@ -880,6 +884,11 @@ max_risk: high
 taint_escalation:
   enabled: true
   escalate_at_or_above: medium
+
+# How many times one run may ask a person. Past it, a request is refused
+# without asking anyone. `max_per_run: ~` removes the limit.
+approval_budget:
+  max_per_run: 10
 
 permissions:
   filesystem:
@@ -916,6 +925,82 @@ permissions:
 
 Conflicts resolve by specificity, and ties go to the stricter effect, so a contradictory policy fails
 closed.
+
+### Network
+
+`network.request` reaches a server directly, and a policy grants it as three actions rather than one:
+
+| Action | What it covers | Risk |
+| --- | --- | --- |
+| `fetch` | `GET`, `HEAD` or `OPTIONS` with no body, and a short path, query and headers | medium |
+| `send` | Any other method, any body, or a path, query or headers over 256 bytes | high |
+| `credential` | Spending a stored credential, scoped to `{origin}/{name}` | one level above the request |
+
+An origin allowlist says where a request may go and nothing about what leaves with it, so reading an
+API and writing to one are separate grants, and a long query is priced as the upload it is. Origins
+are matched against the normalised `scheme://host[:port]`, as browser origins are: a pattern with no
+port means the scheme's default, and `:*` means any.
+
+```yaml
+permissions:
+  network:
+    fetch: ["https://api.example.com"]
+    send:
+      effect: ask
+      origins: ["https://api.example.com"]
+    credential:
+      effect: ask
+      names: ["https://api.example.com/*"]
+```
+
+Credentials are stored in the keychain under the origin they belong to, with
+`agentos credential set https://api.example.com default` or from the desktop's settings, and never
+read from the environment. A request names one; it gets the secret only at that origin, and anything
+echoed back is redacted before the model or the audit log sees it. With the starter policy's
+`max_risk: medium`, every `send` and every credentialed request is refused until the ceiling is
+raised.
+
+Redirects are not followed. The policy answered for one origin, and a `Location` pointing elsewhere is
+a second origin that needs its own decision, so the response goes back to the agent as it is.
+
+### GitHub
+
+GitHub's tools act as an account the operator binds, and a policy grants them by repository:
+
+```bash
+agentos integration add github --label work     # the token is read from a prompt or stdin
+agentos integration test github --label work    # one authenticated read: reachable, unauthorised or wrong host
+```
+
+```yaml
+permissions:
+  github:
+    repos.read:  ["your-org/*"]
+    issues.read: ["your-org/*"]
+    pulls.read:  ["your-org/*"]
+    checks.read: ["your-org/*"]
+    issues.write:
+      effect: ask
+      names: ["your-org/sandbox"]
+    pulls.merge: deny
+```
+
+A `github` rule is the grant to act as the bound account on the repositories it names. The token's
+own scopes can narrow that and never widen it: a token that can write to the whole organisation
+still writes only where a rule says. Reads are medium risk, writes high and `pulls.merge` critical,
+so the starter's `max_risk: medium` refuses every write until the ceiling is raised. An issue body is
+a text field a stranger can type into, so everything GitHub returns taints the run, and after the
+first read every call that would have been allowed asks instead.
+
+The token is a network credential for the account's API origin, named after its label, so spending
+it is recorded and redacted as `network.request`'s are. It follows that a `network.credential` rule
+naming that origin and label also lets `network.request` spend the token on any endpoint it can
+reach, outside every `github` rule; such a rule grants the whole token. The host comes from the
+bound account, never from a tool argument. An Enterprise server on a private address is reached only
+if the account was added with `--allow-private-network`, and loopback and link-local addresses are
+refused even then. `github.search.code` is left out on purpose: a search across an organisation
+reads outside any one repository, so no rule scoped to a repository could honestly describe what it
+read.
 
 ## Tests
 

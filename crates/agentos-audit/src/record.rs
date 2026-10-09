@@ -173,13 +173,29 @@ impl ChainVerification {
 ///
 /// Reports every problem rather than stopping at the first, because an operator
 /// investigating a suspected tamper wants the full picture in one pass.
+///
+/// The chain must start at genesis: its first record must be sequence 1 and
+/// name the genesis hash. A log whose oldest records were deleted is a broken
+/// log, not a shorter one.
 #[must_use]
 pub fn verify_chain(records: &[AuditRecord]) -> ChainVerification {
-    let mut breaks = Vec::new();
-    let mut expected_prev_hash = GENESIS_HASH.to_owned();
-    let mut expected_sequence: Option<u64> = None;
+    verify_chain_from(records, 0, GENESIS_HASH)
+}
 
-    for record in records {
+/// Verify records that continue a chain already verified up to `sequence`,
+/// whose record had the hash `hash`.
+///
+/// Sequence 0 with [`GENESIS_HASH`] is the start of the chain, which is what
+/// [`verify_chain`] passes. Any other anchor lets a caller verify only what
+/// was written since it last looked, and still prove that the new records
+/// extend the old rather than replace them.
+#[must_use]
+pub fn verify_chain_from(records: &[AuditRecord], sequence: u64, hash: &str) -> ChainVerification {
+    let mut breaks = Vec::new();
+    let mut expected_prev_hash = hash.to_owned();
+    let mut previous = sequence;
+
+    for (index, record) in records.iter().enumerate() {
         if !record.is_intact() {
             breaks.push(ChainBreak::ModifiedRecord {
                 sequence: record.sequence,
@@ -187,30 +203,26 @@ pub fn verify_chain(records: &[AuditRecord]) -> ChainVerification {
             });
         }
 
-        match expected_sequence {
-            None if record.prev_hash != GENESIS_HASH && record.sequence == 1 => {
-                breaks.push(ChainBreak::BadGenesis);
-            }
-            Some(previous) if record.sequence != previous + 1 => {
-                breaks.push(ChainBreak::SequenceGap {
-                    previous,
-                    found: record.sequence,
-                });
-            }
-            _ => {}
+        if record.sequence != previous.saturating_add(1) {
+            breaks.push(ChainBreak::SequenceGap {
+                previous,
+                found: record.sequence,
+            });
         }
 
         if record.prev_hash != expected_prev_hash {
-            if let Some(previous) = expected_sequence {
-                breaks.push(ChainBreak::BrokenLink {
+            breaks.push(if index == 0 && sequence == 0 {
+                ChainBreak::BadGenesis
+            } else {
+                ChainBreak::BrokenLink {
                     sequence: record.sequence,
                     expected_sequence: previous,
-                });
-            }
+                }
+            });
         }
 
-        expected_prev_hash = record.hash.clone();
-        expected_sequence = Some(record.sequence);
+        expected_prev_hash.clone_from(&record.hash);
+        previous = record.sequence;
     }
 
     ChainVerification {
@@ -301,6 +313,58 @@ mod tests {
                 .any(|b| matches!(b, ChainBreak::BrokenLink { .. })),
             "{:?}",
             verification.breaks
+        );
+    }
+
+    #[test]
+    fn deleting_the_oldest_records_is_detected() {
+        // The chain's head has nothing before it to point back at it, so the
+        // only evidence is that the survivor does not start at genesis.
+        let mut records = chain(5);
+        records.drain(..2);
+
+        let verification = verify_chain(&records);
+        assert!(!verification.is_intact());
+        assert!(
+            verification.breaks.contains(&ChainBreak::SequenceGap {
+                previous: 0,
+                found: 3
+            }),
+            "{:?}",
+            verification.breaks
+        );
+        assert!(
+            verification.breaks.contains(&ChainBreak::BadGenesis),
+            "{:?}",
+            verification.breaks
+        );
+    }
+
+    #[test]
+    fn a_stretch_verifies_against_the_record_before_it() {
+        let records = chain(5);
+        let (before, after) = records.split_at(2);
+        let anchored = verify_chain_from(after, 2, &before[1].hash);
+        assert!(anchored.is_intact(), "{:?}", anchored.breaks);
+        assert_eq!(anchored.tip_hash, records[4].hash);
+
+        // Anchored anywhere else, the same stretch does not follow.
+        let misplaced = verify_chain_from(after, 1, &before[0].hash);
+        assert!(
+            misplaced.breaks.contains(&ChainBreak::SequenceGap {
+                previous: 1,
+                found: 3
+            }),
+            "{:?}",
+            misplaced.breaks
+        );
+        assert!(
+            misplaced.breaks.contains(&ChainBreak::BrokenLink {
+                sequence: 3,
+                expected_sequence: 1
+            }),
+            "{:?}",
+            misplaced.breaks
         );
     }
 

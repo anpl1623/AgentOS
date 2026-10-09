@@ -23,7 +23,7 @@ use agentos_core::memory::MemoryQuery;
 use agentos_core::task::{
     TaskFailure, TaskRun, TaskState, TaskStatus, TaskStep, TaskStepKind, TaskTrigger,
 };
-use agentos_core::trust::{Content, Message, Role};
+use agentos_core::trust::{Content, DataSource, Message, Role};
 use agentos_persistence::{Database, ToolExecutionRecord};
 use agentos_providers::{
     CompletionRequest, CompletionResponse, ProviderError, SharedProvider, messages_for_tool_result,
@@ -72,7 +72,6 @@ impl RunOutcome {
     }
 }
 
-/// Drives one run from start to finish.
 /// How many captures the conversation keeps before older ones are replaced by
 /// their description.
 ///
@@ -80,6 +79,15 @@ impl RunOutcome {
 /// does not turn into a slideshow the model pays for on every turn.
 const MAX_CONVERSATION_IMAGES: usize = 3;
 
+/// What [`AgentEvent::TaintRaised`] names as the way in when the untrusted data
+/// arrived through recalled memory rather than through a tool call.
+const MEMORY_CHANNEL: &str = "memory";
+
+/// What [`AgentEvent::TaintRaised`] names as the way in when the run inherited
+/// its taint from an earlier attempt at the same task.
+const RETRY_CHANNEL: &str = "retry";
+
+/// Drives one run from start to finish.
 pub struct AgentLoop {
     agent: Agent,
     run: TaskRun,
@@ -153,7 +161,11 @@ impl AgentLoop {
     /// a failed [`RunOutcome`]: an agent being unable to do something is a
     /// result, not an exception.
     pub async fn run(mut self, objective: &str) -> Result<RunOutcome, RuntimeError> {
-        self.seed_conversation(objective).await?;
+        // A retry starts with what earlier attempts read. Its tracker is seeded
+        // tainted, so nothing in this run will flip it; without a record here
+        // its own trail would never say why it began that way.
+        let inherited = self.run.taint_sources.clone();
+        let raised_by = self.seed_conversation(objective).await?;
 
         self.machine
             .emit(AgentEvent::TaskStarted {
@@ -161,6 +173,23 @@ impl AgentLoop {
                 attempt: self.run.attempt,
             })
             .await;
+        for source in inherited {
+            self.machine
+                .emit(AgentEvent::TaintRaised {
+                    source,
+                    tool: RETRY_CHANNEL.to_owned(),
+                })
+                .await;
+        }
+        if let Some(source) = raised_by {
+            self.machine
+                .emit(AgentEvent::TaintRaised {
+                    source,
+                    tool: MEMORY_CHANNEL.to_owned(),
+                })
+                .await;
+        }
+        self.sync_taint().await?;
         self.database
             .tasks()
             .set_status(self.run.task_id, TaskStatus::Running)
@@ -203,17 +232,53 @@ impl AgentLoop {
         self.finish(started).await
     }
 
-    async fn seed_conversation(&mut self, objective: &str) -> Result<(), RuntimeError> {
+    /// Put recalled memory and the objective in front of the model.
+    ///
+    /// A memory recorded from an external source is attacker-controlled text
+    /// that has merely been stored for a while. The prompt already wraps it as
+    /// untrusted; the tracker has to hear about it too, or a fact the agent
+    /// wrote down from a hostile page in one run would let the next run act on
+    /// it without a human seeing. Returns the source that flipped the run to
+    /// tainted, if one did, so the caller can announce it once the run has
+    /// been announced.
+    async fn seed_conversation(
+        &mut self,
+        objective: &str,
+    ) -> Result<Option<DataSource>, RuntimeError> {
         let memories = self
             .database
             .memories()
             .query(&MemoryQuery::for_agent(self.agent.id).of_kinds(PLANNING_MEMORY_KINDS))
             .await?;
 
+        let mut raised_by = None;
+        for memory in memories.iter().filter(|m| m.is_from_untrusted_source()) {
+            if self.taint.observe(&memory.source) {
+                raised_by = Some(memory.source.clone());
+            }
+        }
+
         if let Some(message) = memory_message(&memories) {
             self.conversation.push(message);
         }
         self.conversation.push(Message::objective(objective));
+        Ok(raised_by)
+    }
+
+    /// Write the tracker's view of the run to the run record when it differs.
+    ///
+    /// The sources are persisted as well as the flag so that a retry of this
+    /// task can start from them. They only ever grow, so a change in either is
+    /// a change in length or a change of flag.
+    async fn sync_taint(&mut self) -> Result<(), RuntimeError> {
+        let tainted = self.taint.is_tainted();
+        let sources = self.taint.sources();
+        if tainted == self.run.tainted && sources.len() == self.run.taint_sources.len() {
+            return Ok(());
+        }
+        self.run.tainted = tainted;
+        self.run.taint_sources = sources;
+        self.database.runs().update(&self.run).await?;
         Ok(())
     }
 
@@ -484,10 +549,7 @@ impl AgentLoop {
                 self.forget_stale_images();
             }
 
-            if self.taint.is_tainted() && !self.run.tainted {
-                self.run.tainted = true;
-                self.database.runs().update(&self.run).await?;
-            }
+            self.sync_taint().await?;
 
             if matches!(report.outcome, agentos_core::tool::ToolOutcome::Cancelled)
                 && self.cancel.is_cancelled()
@@ -558,6 +620,7 @@ impl AgentLoop {
         self.run.result.clone_from(&result);
         self.run.failure.clone_from(&self.pending_failure);
         self.run.tainted = self.taint.is_tainted();
+        self.run.taint_sources = self.taint.sources();
         if self.run.completed_at.is_none() {
             self.run.completed_at = Some(agentos_core::now());
         }

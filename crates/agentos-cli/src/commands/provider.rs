@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 use agentos_providers::provider_ids;
 use agentos_runtime::RuntimeConfig;
 use agentos_secrets::{
-    ChainSecretStore, EnvSecretStore, KeychainStatus, KeyringStore, SecretStore, provider_key,
+    ChainSecretStore, EnvSecretStore, KeychainStatus, KeyringStore, provider_key,
 };
 use anyhow::{Context, Result};
 use clap::Subcommand;
@@ -41,7 +41,10 @@ pub enum ProviderCommand {
 }
 
 /// Dispatch.
-pub async fn run(command: ProviderCommand, _config: &RuntimeConfig) -> Result<()> {
+///
+/// Storing and removing a key go through the runtime, which records that it
+/// happened — the provider, never the key — in the audit log.
+pub async fn run(command: ProviderCommand, config: &RuntimeConfig) -> Result<()> {
     let style = Style::detect();
 
     match command {
@@ -117,12 +120,13 @@ pub async fn run(command: ProviderCommand, _config: &RuntimeConfig) -> Result<()
             let key = key.trim();
             anyhow::ensure!(!key.is_empty(), "no key was provided");
 
-            let keyring = KeyringStore::new();
-            keyring
-                .set(&provider_key(&provider), key)
+            let runtime = super::open(config).await?;
+            runtime
+                .set_provider_key(&provider, key)
+                .await
                 .with_context(|| format!("storing the {provider} key in the keychain"))?;
 
-            let stored = keyring.get(&provider_key(&provider))?;
+            let stored = runtime.secrets().get(&provider_key(&provider))?;
             println!(
                 "{} {provider} key in the system keychain ({})",
                 style.green("Stored"),
@@ -131,7 +135,10 @@ pub async fn run(command: ProviderCommand, _config: &RuntimeConfig) -> Result<()
         }
 
         ProviderCommand::RemoveKey { provider } => {
-            KeyringStore::new().delete(&provider_key(&provider))?;
+            super::open(config)
+                .await?
+                .remove_provider_key(&provider)
+                .await?;
             println!("{} the {provider} key", style.green("Removed"));
         }
     }

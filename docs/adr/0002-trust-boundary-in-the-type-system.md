@@ -42,9 +42,25 @@ it was not given.
 The envelope makes the boundary visible to a cooperative model and makes injection attempts legible
 in the audit log.
 
-The cost: tool authors must correctly set `returns_untrusted_data`. Getting it wrong silently removes
-taint escalation for that tool, so it is called out in the contributing guide and covered by a test
-asserting the shipped tools are marked correctly.
+Taint is derived from the declared provenance of the bytes, not from anything a tool says about
+itself. Every result carries a `DataSource`; a tool that returns external data cannot opt out of
+raising taint. The provenance label is itself a claim, so it is not believed downwards: when a call
+may read — its tool name or any capability in its authorised plan is not one of the actions known
+only to change something (a filesystem write, delete, copy or move; a click, keystroke or pointer
+movement) — and the output is labelled as the operator's or the runtime's own, the run is tainted
+with the tool as the source. The list is of what does *not* read, so a domain nobody has listed yet
+is held to the floor. A filesystem tool that does not itself read, such as `filesystem.copy`, reads
+its source only to write it, and that read does not count. The text of a failed call is observed by
+the same rule: a failed read taints, a failed write does not. A denial is composed by the runtime
+and taints nothing; the resources the plan resolved (a symlink's target, a redirected origin) are
+kept in the audit record and left out of the text the model is given. `returns_untrusted_data`
+survives only as catalogue metadata for `agentos tools`, with no authorisation effect.
+
+The cost: a tool that labels its output wrongly, or plans a read it does not return to the model,
+produces approval prompts it did not need to. That is the error surfacing, and it fails towards a
+human looking rather than towards a silent action. Likewise a tool's capability manifest is checked
+against every plan and any excess is written to the audit log, but never refused — the policy engine
+evaluates the plan itself, so a stale manifest misleads a policy author and nothing more.
 
 ## Rejected
 

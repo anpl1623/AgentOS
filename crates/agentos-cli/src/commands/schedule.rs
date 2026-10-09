@@ -3,7 +3,9 @@
 use std::time::Duration;
 
 use agentos_core::schedule::{Cadence, Clock, ScheduleStatus};
-use agentos_runtime::{RuntimeConfig, Scheduler, SchedulerOptions};
+use agentos_runtime::{
+    RuntimeConfig, RuntimeError, Scheduler, SchedulerOptions, SchedulerTransition,
+};
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 
@@ -186,14 +188,13 @@ pub async fn run(command: ScheduleCommand, config: &RuntimeConfig) -> Result<()>
 
         ScheduleCommand::Pause { name } => {
             let schedule = by_name(&runtime, &name).await?;
-            runtime.pause_schedule(schedule.id).await?;
+            runtime.set_schedule_paused(schedule.id, true).await?;
             println!("Paused `{name}`. It keeps its next occurrence until resumed.");
         }
 
         ScheduleCommand::Resume { name } => {
             let schedule = by_name(&runtime, &name).await?;
-            runtime.resume_schedule(schedule.id).await?;
-            let resumed = runtime.database().schedules().get(schedule.id).await?;
+            let resumed = runtime.set_schedule_paused(schedule.id, false).await?;
             match (resumed.status, resumed.next_run_at) {
                 (ScheduleStatus::Active, Some(next)) => {
                     println!("Resumed `{name}`. Next firing {}.", next.to_rfc3339());
@@ -213,16 +214,35 @@ pub async fn run(command: ScheduleCommand, config: &RuntimeConfig) -> Result<()>
             concurrency,
             once,
         } => {
-            let scheduler = Scheduler::new(
-                runtime,
-                SchedulerOptions::default()
-                    .with_tick(Duration::from_secs(tick.max(1)))
-                    .with_max_concurrent_runs(concurrency.max(1)),
-            );
+            let options = SchedulerOptions::default()
+                .with_tick(Duration::from_secs(tick.max(1)))
+                .with_max_concurrent_runs(concurrency.max(1));
+            let scheduler = Scheduler::new(runtime.clone(), options);
+
+            // Taken before anything is recorded, so the chain never says a
+            // scheduler started that was refused. A single pass is held to the
+            // lease too: it starts work as any tick does, and the operator who
+            // left the desktop's scheduler on asked for one scheduler.
+            if let Err(error) = scheduler.take_lease() {
+                if matches!(error, RuntimeError::SchedulerAlreadyRunning) {
+                    bail!(
+                        "a scheduler is already running for this installation, in the desktop \
+                         application or another `agentos schedule run`; stop that one first"
+                    );
+                }
+                return Err(error.into());
+            }
+            runtime
+                .record_scheduler_state(SchedulerTransition::Started { on_launch: false }, &options)
+                .await?;
 
             if once {
-                let report = scheduler.tick().await?;
+                let report = scheduler.tick().await;
                 scheduler.drain().await;
+                runtime
+                    .record_scheduler_state(SchedulerTransition::Stopped, &options)
+                    .await?;
+                let report = report?;
                 println!(
                     "{} fired, {} started, {} abandoned",
                     report.fired.len(),
@@ -249,7 +269,12 @@ pub async fn run(command: ScheduleCommand, config: &RuntimeConfig) -> Result<()>
                 }
             });
 
-            scheduler.run().await?;
+            let outcome = scheduler.run().await;
+            // Recorded however it ended: from here on nothing starts unattended.
+            runtime
+                .record_scheduler_state(SchedulerTransition::Stopped, &options)
+                .await?;
+            outcome?;
         }
     }
 

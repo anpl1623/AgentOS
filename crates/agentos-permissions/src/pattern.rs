@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use agentos_core::permission::ResourceRef;
 use globset::{Glob, GlobMatcher};
 
+use crate::error::PatternError;
+use crate::origin::{OriginMatcher, compile_origin_pattern};
 use crate::path::{depth, is_within};
 
 /// Matches the `domain` or `action` half of a capability.
@@ -93,12 +95,16 @@ pub enum ResourcePattern {
         /// Compiled matcher.
         matcher: GlobMatcher,
     },
-    /// Matches a network origin by glob.
+    /// Matches a network origin, scheme, host and port each by glob.
+    ///
+    /// A pattern that names no port binds only the scheme's default port, on a
+    /// literal host and a host glob alike; `:*` is any port.
     Origin {
-        /// Source text.
+        /// Source text, canonicalised as an origin: lower-case scheme and host,
+        /// no default port.
         source: String,
         /// Compiled matcher.
-        matcher: GlobMatcher,
+        matcher: OriginMatcher,
     },
     /// Matches a desktop application by glob.
     Application {
@@ -125,17 +131,37 @@ impl PartialEq for ResourcePattern {
 impl ResourcePattern {
     /// Compile a glob-based pattern.
     ///
+    /// An origin pattern is canonicalised first, the same way the origin it
+    /// will be compared against was, so that `https://API.example.com:443` in a
+    /// policy binds the request a tool reports as `https://api.example.com`.
+    /// Canonicalising only the request would move the silent mismatch to the
+    /// policy side rather than remove it.
+    ///
     /// # Errors
     ///
-    /// Returns the underlying [`globset::Error`] if the glob is malformed.
-    pub fn glob(kind: GlobKind, source: &str) -> Result<Self, globset::Error> {
-        let matcher = Glob::new(source)?.compile_matcher();
-        let source = source.to_owned();
+    /// Returns [`PatternError::Glob`] if the glob is malformed, and
+    /// [`PatternError::Origin`] if an origin pattern is not of the form
+    /// `scheme://host[:port]`.
+    pub fn glob(kind: GlobKind, source: &str) -> Result<Self, PatternError> {
+        let glob = || Glob::new(source).map(|glob| glob.compile_matcher());
+        let owned = || source.to_owned();
         Ok(match kind {
-            GlobKind::Program => Self::Program { source, matcher },
-            GlobKind::Origin => Self::Origin { source, matcher },
-            GlobKind::Application => Self::Application { source, matcher },
-            GlobKind::Named => Self::Named { source, matcher },
+            GlobKind::Origin => {
+                let (source, matcher) = compile_origin_pattern(source)?;
+                Self::Origin { source, matcher }
+            }
+            GlobKind::Program => Self::Program {
+                matcher: glob()?,
+                source: owned(),
+            },
+            GlobKind::Application => Self::Application {
+                matcher: glob()?,
+                source: owned(),
+            },
+            GlobKind::Named => Self::Named {
+                matcher: glob()?,
+                source: owned(),
+            },
         })
     }
 
@@ -366,6 +392,106 @@ mod tests {
         assert!(!pattern.matches(Some(&ResourceRef::Origin {
             origin: "https://evil.com".into()
         })));
+    }
+
+    fn origin(origin: &str) -> ResourceRef {
+        ResourceRef::Origin {
+            origin: origin.into(),
+        }
+    }
+
+    #[test]
+    fn origin_patterns_are_canonicalised_when_compiled() {
+        // Upper case and an explicit default port used to compile into a rule
+        // that no canonical request could ever match.
+        for written in [
+            "https://API.Example.com",
+            "https://api.example.com:443",
+            "HTTPS://api.example.com/",
+        ] {
+            let pattern = ResourcePattern::glob(GlobKind::Origin, written).unwrap();
+            assert_eq!(pattern.describe(), "origin:https://api.example.com");
+            assert!(
+                pattern.matches(Some(&origin("https://api.example.com"))),
+                "`{written}` should match the canonical request"
+            );
+        }
+    }
+
+    #[test]
+    fn origin_requests_are_canonicalised_when_matched() {
+        // A tool that forgot to normalise must not reopen the bypass.
+        let pattern = ResourcePattern::glob(GlobKind::Origin, "https://api.example.com").unwrap();
+        assert!(pattern.matches(Some(&origin("https://API.example.com:443"))));
+        assert!(!pattern.matches(Some(&origin("https://api.example.com:8443"))));
+    }
+
+    #[test]
+    fn a_wildcard_port_includes_the_default_port() {
+        let pattern = ResourcePattern::glob(GlobKind::Origin, "http://localhost:*").unwrap();
+        assert!(pattern.matches(Some(&origin("http://localhost:8420"))));
+        assert!(pattern.matches(Some(&origin("http://localhost"))));
+        assert!(!pattern.matches(Some(&origin("http://localhost.evil.example"))));
+    }
+
+    #[test]
+    fn a_default_port_on_a_host_glob_is_not_widened_to_every_port() {
+        let pattern = ResourcePattern::glob(GlobKind::Origin, "https://*:443").unwrap();
+        assert!(pattern.matches(Some(&origin("https://a.example"))));
+        assert!(!pattern.matches(Some(&origin("https://a.example:8443"))));
+    }
+
+    #[test]
+    fn a_host_glob_with_no_port_binds_only_the_default_port() {
+        // The glob used to be matched against the whole origin, so `*` ran on
+        // into the port: `https://*` admitted `https://evil.example:8443`,
+        // while a literal deny of `https://evil.example` stopped at 443.
+        for written in ["https://*", "https://*.example.com"] {
+            let pattern = ResourcePattern::glob(GlobKind::Origin, written).unwrap();
+            assert!(pattern.matches(Some(&origin("https://a.example.com"))));
+            assert!(
+                !pattern.matches(Some(&origin("https://a.example.com:8443"))),
+                "`{written}` must not admit a non-default port"
+            );
+        }
+        let any_port = ResourcePattern::glob(GlobKind::Origin, "https://*:*").unwrap();
+        assert!(any_port.matches(Some(&origin("https://a.example.com:8443"))));
+        assert!(any_port.matches(Some(&origin("https://a.example.com"))));
+        assert!(!any_port.matches(Some(&origin("http://a.example.com"))));
+    }
+
+    #[test]
+    fn a_scheme_glob_with_no_port_means_each_schemes_own_default() {
+        let pattern = ResourcePattern::glob(GlobKind::Origin, "*://example.com").unwrap();
+        assert!(pattern.matches(Some(&origin("http://example.com"))));
+        assert!(pattern.matches(Some(&origin("https://example.com"))));
+        assert!(!pattern.matches(Some(&origin("http://example.com:443"))));
+        assert!(!pattern.matches(Some(&origin("https://example.com:8443"))));
+    }
+
+    #[test]
+    fn only_the_any_origin_pattern_matches_an_unparseable_origin() {
+        let any = ResourcePattern::glob(GlobKind::Origin, "*").unwrap();
+        let hosts = ResourcePattern::glob(GlobKind::Origin, "https://*:*").unwrap();
+        assert!(any.matches(Some(&origin("not a url"))));
+        assert!(!hosts.matches(Some(&origin("not a url"))));
+        assert!(!hosts.matches(Some(&origin("https://[::ffff:127.0.0.1]"))));
+    }
+
+    #[test]
+    fn ipv6_origin_patterns_match_the_literal_not_a_character_class() {
+        let pattern = ResourcePattern::glob(GlobKind::Origin, "http://[::1]:*").unwrap();
+        assert!(pattern.matches(Some(&origin("http://[::1]:8080"))));
+        assert!(pattern.matches(Some(&origin("http://[0::1]"))));
+        // Read as a glob, `[::1]` is one character from {`:`, `1`}.
+        assert!(!pattern.matches(Some(&origin("http://1:8080"))));
+    }
+
+    #[test]
+    fn malformed_origin_patterns_are_refused() {
+        let error = ResourcePattern::glob(GlobKind::Origin, "example.com").unwrap_err();
+        assert!(matches!(error, PatternError::Origin { .. }));
+        assert!(error.to_string().contains("scheme://host[:port]"));
     }
 
     #[test]

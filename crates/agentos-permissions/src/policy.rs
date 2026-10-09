@@ -1,6 +1,6 @@
 //! Policy documents and the rules inside them.
 
-use agentos_core::permission::{Capability, Effect};
+use agentos_core::permission::{Capability, Effect, permission_domains};
 use agentos_core::risk::RiskLevel;
 
 use crate::pattern::{NamePattern, ResourcePattern};
@@ -17,6 +17,17 @@ pub struct PolicyRule {
     pub action: NamePattern,
     /// Which resources this applies to. Empty means [`ResourcePattern::Any`].
     pub resources: Vec<ResourcePattern>,
+    /// The resources as a `github` capability is compared with them, when that
+    /// differs from [`Self::resources`]: repository names lower-cased, since
+    /// GitHub reads `Acme/Widgets` and `acme/widgets` as one repository and
+    /// its tools ask in lower case.
+    ///
+    /// Kept beside the names as written rather than in place of them, so that
+    /// a rule under the `*` domain, which covers `github` and every other
+    /// domain alike, folds its names for `github` alone. Another domain's
+    /// names, a network credential's among them, keep the case they were
+    /// written in.
+    pub github_resources: Option<Vec<ResourcePattern>>,
     /// What to do when it matches.
     pub effect: Effect,
     /// Risk ceiling for this rule. Actions above it are denied even if the
@@ -33,8 +44,25 @@ impl PolicyRule {
             domain: NamePattern::parse(domain),
             action: NamePattern::parse(action),
             resources: Vec::new(),
+            github_resources: None,
             effect,
             max_risk: None,
+        }
+    }
+
+    /// Compare `github` capabilities with `resources` instead of
+    /// [`Self::resources`]. See [`Self::github_resources`].
+    #[must_use]
+    pub fn with_github_resources(mut self, resources: Vec<ResourcePattern>) -> Self {
+        self.github_resources = Some(resources);
+        self
+    }
+
+    /// The resources `capability` is compared with.
+    fn resources_for(&self, capability: &Capability) -> &[ResourcePattern] {
+        match &self.github_resources {
+            Some(folded) if capability.domain == permission_domains::GITHUB => folded,
+            _ => &self.resources,
         }
     }
 
@@ -58,10 +86,11 @@ impl PolicyRule {
         if !self.domain.matches(&capability.domain) || !self.action.matches(&capability.action) {
             return false;
         }
-        if self.resources.is_empty() {
+        let resources = self.resources_for(capability);
+        if resources.is_empty() {
             return true;
         }
-        self.resources
+        resources
             .iter()
             .any(|pattern| pattern.matches(capability.resource.as_ref()))
     }
@@ -73,7 +102,7 @@ impl PolicyRule {
     #[must_use]
     pub fn specificity(&self, capability: &Capability) -> (u32, u32, u32) {
         let resource = self
-            .resources
+            .resources_for(capability)
             .iter()
             .filter(|pattern| pattern.matches(capability.resource.as_ref()))
             .map(ResourcePattern::specificity)
@@ -127,6 +156,36 @@ impl Default for TaintPolicy {
     }
 }
 
+/// How many times one run may put a request to a person.
+///
+/// Approval fatigue is the failure an approval gate invites: a policy that asks
+/// fifty times a run looks, from the card in front of somebody, exactly like
+/// one that asks twice, and by the fiftieth they are approving without reading.
+/// A run that needs that many is a misconfigured policy. Once the budget is
+/// spent the run stops asking and is refused, which sends the operator to fix
+/// the policy rather than training them to click.
+///
+/// There is deliberately no counterpart that grants: no bulk approval, no
+/// "always allow", no approving a run's remaining requests at once. Widening
+/// what an agent may do stays an edit to its policy, which is slower than
+/// clicking a card on purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApprovalPolicy {
+    /// The most requests one run may raise. `None` is no limit.
+    pub max_per_run: Option<u32>,
+}
+
+/// The budget a policy gets when it does not name one.
+pub const DEFAULT_MAX_APPROVALS_PER_RUN: u32 = 10;
+
+impl Default for ApprovalPolicy {
+    fn default() -> Self {
+        Self {
+            max_per_run: Some(DEFAULT_MAX_APPROVALS_PER_RUN),
+        }
+    }
+}
+
 /// Capabilities no policy may ever grant.
 ///
 /// These are the self-modification paths. If an agent could edit its own policy
@@ -161,6 +220,8 @@ pub struct Policy {
     pub rules: Vec<PolicyRule>,
     /// Taint escalation settings.
     pub taint: TaintPolicy,
+    /// How many approvals one run may ask for.
+    pub approvals: ApprovalPolicy,
 }
 
 impl Default for Policy {
@@ -179,6 +240,7 @@ impl Policy {
             max_risk: None,
             rules: Vec::new(),
             taint: TaintPolicy::default(),
+            approvals: ApprovalPolicy::default(),
         }
     }
 
@@ -200,6 +262,13 @@ impl Policy {
     #[must_use]
     pub const fn with_taint_policy(mut self, taint: TaintPolicy) -> Self {
         self.taint = taint;
+        self
+    }
+
+    /// Replace the approval budget.
+    #[must_use]
+    pub const fn with_approval_policy(mut self, approvals: ApprovalPolicy) -> Self {
+        self.approvals = approvals;
         self
     }
 
@@ -295,11 +364,54 @@ mod tests {
     }
 
     #[test]
+    fn an_origin_carve_out_binds_however_it_was_spelled() {
+        // A deny written with upper case and an explicit default port must
+        // still beat the broader allow for the lower-case request a tool
+        // reports; before canonicalisation it silently did not.
+        use crate::pattern::GlobKind;
+
+        let origin = |raw: &str| ResourcePattern::glob(GlobKind::Origin, raw).unwrap();
+        let policy = Policy::deny_all("p")
+            .with_rule(
+                PolicyRule::new("site", "browser", "navigate", Effect::Allow)
+                    .with_resources(vec![origin("https://*.example.com")]),
+            )
+            .with_rule(
+                PolicyRule::new("admin", "browser", "navigate", Effect::Deny)
+                    .with_resources(vec![origin("https://Admin.Example.com:443")]),
+            );
+        let navigate = |origin: &str| {
+            Capability::new("browser", "navigate").with_resource(ResourceRef::Origin {
+                origin: origin.into(),
+            })
+        };
+
+        assert_eq!(
+            policy
+                .winning_rule(&navigate("https://admin.example.com"))
+                .map(|r| r.id.as_str()),
+            Some("admin")
+        );
+        assert_eq!(
+            policy
+                .winning_rule(&navigate("https://crm.example.com"))
+                .map(|r| r.id.as_str()),
+            Some("site")
+        );
+    }
+
+    #[test]
     fn self_modification_is_immutably_denied() {
         for (domain, action) in IMMUTABLE_DENY {
             assert!(is_immutably_denied(&Capability::new(*domain, *action)));
         }
         assert!(!is_immutably_denied(&Capability::new("filesystem", "read")));
+    }
+
+    #[test]
+    fn a_run_may_ask_ten_times_unless_the_policy_says_otherwise() {
+        assert_eq!(ApprovalPolicy::default().max_per_run, Some(10));
+        assert_eq!(Policy::default().approvals, ApprovalPolicy::default());
     }
 
     #[test]

@@ -24,6 +24,11 @@ pub mod keys {
     pub const OPENAI_BASE_URL: &str = "provider.openai.base_url";
     /// Path to the Chromium executable the browser tools should drive.
     pub const BROWSER_EXECUTABLE: &str = "browser.executable";
+    /// Whether the desktop application runs a scheduler, and how it paces it.
+    ///
+    /// One key holding the whole preference, so changing it is one write and
+    /// never leaves it half changed.
+    pub const SCHEDULER: &str = "scheduler.preference";
 }
 
 impl SettingsRepository {

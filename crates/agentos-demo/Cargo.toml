@@ -1,6 +1,6 @@
 [package]
 name = "agentos-demo"
-description = "A local mock CRM and the end-to-end AgentOS demonstration scenario."
+description = "A local mock CRM and mock GitHub, and the end-to-end AgentOS demonstration scenario."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 agentos-permissions.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "io-util", "sync", "macros"] }
 tracing.workspace = true
 
@@ -17,12 +18,12 @@ tracing.workspace = true
 agentos-audit.workspace = true
 agentos-browser.workspace = true
 agentos-core.workspace = true
+agentos-integrations.workspace = true
 agentos-persistence.workspace = true
 agentos-providers.workspace = true
 agentos-runtime.workspace = true
 agentos-secrets.workspace = true
 agentos-tools.workspace = true
-serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tokio-util.workspace = true

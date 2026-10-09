@@ -13,6 +13,10 @@ approval_id: string,
  */
 approved: boolean, 
 /**
- * An optional note, recorded in the audit log.
+ * An optional note, recorded with the decision and in the audit log.
+ *
+ * Carried for an approval as well as a denial: the chain can prove a
+ * person allowed a high-risk action, and this is the only place it can
+ * say why.
  */
 note: string | null, };

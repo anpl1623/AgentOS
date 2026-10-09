@@ -322,6 +322,13 @@ impl SecretStore for InMemorySecretStore {
 ///
 /// For `provider.anthropic.api_key` it looks at `AGENTOS_ANTHROPIC_API_KEY`
 /// first, then the conventional `ANTHROPIC_API_KEY`.
+///
+/// It holds no network credentials. A variable name is the key with every
+/// character but a letter or digit folded to `_`, so `https://a-b.example` and
+/// `https://a.b.example` would read the same variable, and a credential bound
+/// to one origin would be spent at the other. Binding a network credential to
+/// its origin is the control, and a store that cannot spell the origin cannot
+/// keep it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EnvSecretStore;
 
@@ -333,8 +340,13 @@ impl EnvSecretStore {
     }
 
     /// Environment variable names checked for a key, in order.
+    ///
+    /// None for a network credential's key: see the type's documentation.
     #[must_use]
     pub fn variables_for(key: &str) -> Vec<String> {
+        if key.starts_with(NETWORK_KEY_PREFIX) {
+            return Vec::new();
+        }
         let normalised: String = key
             .chars()
             .map(|c| {
@@ -515,6 +527,50 @@ pub fn provider_key(provider: &str) -> String {
     format!("provider.{provider}.api_key")
 }
 
+/// What every network credential's key begins with.
+const NETWORK_KEY_PREFIX: &str = "network.";
+
+/// The longest name a network credential may have.
+pub const MAX_CREDENTIAL_NAME_LEN: usize = 64;
+
+/// Whether `name` can name a network credential: one to
+/// [`MAX_CREDENTIAL_NAME_LEN`] ASCII letters, digits, `_` or `-`.
+///
+/// The name ends the key [`network_key`] builds, after the origin and a `.`.
+/// Were a dot allowed in it, that boundary would move: `b.token` at
+/// `https://a.example` and `token` at `https://a.example.b` both build
+/// `network.https://a.example.b.token`, and a run could spend at one origin
+/// the credential stored for the other. With the dot excluded, the last `.` in
+/// a key is the one between origin and name, and no two pairs share a key. The rest of
+/// the alphabet is kept small because the name also appears in policy, where
+/// `network.credential` is scoped to `{origin}/{name}` and a `*` or `/` in it
+/// would read as part of the pattern.
+#[must_use]
+pub fn is_credential_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_CREDENTIAL_NAME_LEN
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+/// The keychain key a network credential is stored under, or `None` when
+/// `name` is not a credential name (see [`is_credential_name`]).
+///
+/// The origin is part of the key, not a field stored beside it. A run that has
+/// been hijacked can ask for the credential `default` against any host it
+/// likes, and if the host is not the one the operator stored the secret for,
+/// the lookup simply misses. Binding is the control, not the good intentions
+/// of the tool doing the asking.
+///
+/// `origin` must already be normalised (`scheme://host[:port]`, as the
+/// permissions crate's `normalise_origin` spells it); another spelling of the
+/// same server builds a key that was never stored, and misses.
+#[must_use]
+pub fn network_key(origin: &str, name: &str) -> Option<String> {
+    is_credential_name(name).then(|| format!("{NETWORK_KEY_PREFIX}{origin}.{name}"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -567,6 +623,50 @@ mod tests {
     #[test]
     fn provider_keys_are_namespaced() {
         assert_eq!(provider_key("anthropic"), "provider.anthropic.api_key");
+    }
+
+    #[test]
+    fn a_network_key_is_bound_to_its_origin() {
+        // The same name against two origins is two credentials: a run asking
+        // for `default` at a host the operator did not store it for misses.
+        let crm = network_key("https://crm.example.com", "default").unwrap();
+        let other = network_key("https://evil.example", "default").unwrap();
+        assert_eq!(crm, "network.https://crm.example.com.default");
+        assert_ne!(crm, other);
+        assert_ne!(network_key("https://crm.example.com", "token"), Some(crm));
+    }
+
+    #[test]
+    fn a_credential_name_cannot_move_the_origin_boundary() {
+        // With a dot in the name, `b.token` at one origin and `token` at
+        // another would build the same key.
+        assert_eq!(
+            network_key("https://a.example.b", "token").as_deref(),
+            Some("network.https://a.example.b.token")
+        );
+        assert_eq!(network_key("https://a.example", "b.token"), None);
+
+        for refused in ["", "a.b", "a/b", "a*", "a b", "ä", "a\nb", "a:b"] {
+            assert!(!is_credential_name(refused), "`{refused}` was accepted");
+        }
+        assert!(!is_credential_name(
+            &"a".repeat(MAX_CREDENTIAL_NAME_LEN + 1)
+        ));
+        for accepted in ["default", "api-token", "read_only", "v2"] {
+            assert!(is_credential_name(accepted), "`{accepted}` was refused");
+        }
+    }
+
+    #[test]
+    fn the_environment_holds_no_network_credentials() {
+        // A variable name folds `.` and `-` alike to `_`, so it cannot keep
+        // two origins apart.
+        let key = network_key("https://a-b.example", "token").unwrap();
+        assert!(EnvSecretStore::variables_for(&key).is_empty());
+        assert!(matches!(
+            EnvSecretStore::new().get(&key),
+            Err(SecretError::NotFound { .. })
+        ));
     }
 
     #[test]

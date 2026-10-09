@@ -1,0 +1,9 @@
+/* Font faces.
+ *
+ * Empty on purpose. The application uses the platform's system stack (see
+ * --font-sans in tokens.css), which needs no declaration and no download. A
+ * vendored face would be declared here with @font-face, loaded from a file
+ * shipped inside the bundle, and then named first in --font-sans. Naming a
+ * face in the stack without shipping it is the thing to avoid: it would pick
+ * up a locally installed copy on some machines and not on others.
+ */

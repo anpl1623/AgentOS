@@ -131,6 +131,56 @@ impl ScheduleRepository {
         rows.iter().map(hydrate).collect()
     }
 
+    /// Record a firing: create its task and advance the schedule, or neither.
+    ///
+    /// `fired` is the schedule as [`Schedule::record_firing`] left it, and
+    /// `due_at` is the occurrence it was fired for — its `next_run_at` as it was
+    /// read. The advance is conditional on the stored schedule still being
+    /// active and still due at that occurrence, so of two schedulers that both
+    /// read it as due, exactly one fires it; the other is told `false` and its
+    /// task is never written. One transaction holds both writes, so a task is
+    /// never left behind by a firing that lost, and a firing that won never
+    /// leaves the schedule pointing at a task that was not written.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Sql`] on failure.
+    pub async fn fire(
+        &self,
+        fired: &Schedule,
+        due_at: Option<agentos_core::Timestamp>,
+        task: &agentos_core::task::Task,
+    ) -> Result<bool, DbError> {
+        let mut transaction = self.pool.begin().await?;
+        // The task first: the schedule's `last_task_id` refers to it, and the
+        // reference is checked as the row is written.
+        crate::tasks::insert_with(&mut *transaction, task).await?;
+        let advanced = sqlx::query(
+            "UPDATE schedules
+                SET status = ?2, next_run_at = ?3, last_run_at = ?4, last_task_id = ?5,
+                    updated_at = ?6
+              WHERE id = ?1 AND status = 'active' AND next_run_at IS ?7",
+        )
+        .bind(fired.id.to_string())
+        .bind(fired.status.as_str())
+        .bind(write_optional_time(fired.next_run_at.as_ref()))
+        .bind(write_optional_time(fired.last_run_at.as_ref()))
+        .bind(fired.last_task_id.map(|id| id.to_string()))
+        .bind(write_time(&agentos_core::now()))
+        .bind(write_optional_time(due_at.as_ref()))
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+
+        if advanced == 1 {
+            transaction.commit().await?;
+            Ok(true)
+        } else {
+            transaction.rollback().await?;
+            Ok(false)
+        }
+    }
+
     /// Overwrite a schedule's mutable fields.
     ///
     /// # Errors
@@ -291,24 +341,14 @@ impl DependencyRepository {
     /// re-declaring a graph should not have to diff it first.
     ///
     /// This does **not** check for cycles — see
-    /// [`Runtime::add_dependency`](../../agentos_runtime/struct.Runtime.html),
+    /// [`Runtime::add_task_dependency`](../../agentos_runtime/struct.Runtime.html),
     /// which does, and which is the only thing that should be calling this.
     ///
     /// # Errors
     ///
     /// [`DbError::Sql`] if either task is absent, or if the two are the same.
     pub async fn add(&self, task: TaskId, depends_on: TaskId) -> Result<(), DbError> {
-        sqlx::query(
-            "INSERT INTO task_dependencies (task_id, depends_on_task_id, created_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT (task_id, depends_on_task_id) DO NOTHING",
-        )
-        .bind(task.to_string())
-        .bind(depends_on.to_string())
-        .bind(write_time(&agentos_core::now()))
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        add_with(&self.pool, task, depends_on).await
     }
 
     /// What `task` is waiting for.
@@ -319,7 +359,7 @@ impl DependencyRepository {
     pub async fn dependencies_of(&self, task: TaskId) -> Result<Vec<TaskId>, DbError> {
         let rows = sqlx::query(
             "SELECT depends_on_task_id FROM task_dependencies
-              WHERE task_id = ?1 ORDER BY created_at",
+              WHERE task_id = ?1 ORDER BY created_at, rowid",
         )
         .bind(task.to_string())
         .fetch_all(&self.pool)
@@ -343,7 +383,7 @@ impl DependencyRepository {
     pub async fn dependents_of(&self, task: TaskId) -> Result<Vec<TaskId>, DbError> {
         let rows = sqlx::query(
             "SELECT task_id FROM task_dependencies
-              WHERE depends_on_task_id = ?1 ORDER BY created_at",
+              WHERE depends_on_task_id = ?1 ORDER BY created_at, rowid",
         )
         .bind(task.to_string())
         .fetch_all(&self.pool)
@@ -359,19 +399,29 @@ impl DependencyRepository {
             .collect()
     }
 
-    /// Every edge, as `(task, depends_on)` pairs.
+    /// Every edge, as `(task, depends_on)` pairs, each task's in the order
+    /// they were added.
     ///
     /// Used to check a proposed edge for cycles without issuing one query per
     /// hop. Task graphs here are hand-authored and small; if that stops being
     /// true this becomes a recursive CTE.
     ///
+    /// The order is [`Self::dependencies_of`]'s, insertion order with the row
+    /// breaking a tie between edges written in one instant, so a reader that
+    /// names the first failed dependency from these edges names the one the
+    /// scheduler names when it abandons the task. Unordered, the store would
+    /// return them in key order, which for random ids is no order at all.
+    ///
     /// # Errors
     ///
     /// [`DbError::Sql`] on failure.
     pub async fn all(&self) -> Result<Vec<(TaskId, TaskId)>, DbError> {
-        let rows = sqlx::query("SELECT task_id, depends_on_task_id FROM task_dependencies")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT task_id, depends_on_task_id FROM task_dependencies
+              ORDER BY created_at, rowid",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter()
             .map(|row| {
                 Ok((
@@ -404,6 +454,31 @@ impl DependencyRepository {
     }
 }
 
+/// Write one edge of the task graph with whatever executor the caller holds.
+///
+/// Shared with the task repository, which writes a new task's edges inside
+/// the transaction that writes the task.
+pub(crate) async fn add_with<'e, E>(
+    executor: E,
+    task: TaskId,
+    depends_on: TaskId,
+) -> Result<(), DbError>
+where
+    E: sqlx::SqliteExecutor<'e>,
+{
+    sqlx::query(
+        "INSERT INTO task_dependencies (task_id, depends_on_task_id, created_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT (task_id, depends_on_task_id) DO NOTHING",
+    )
+    .bind(task.to_string())
+    .bind(depends_on.to_string())
+    .bind(write_time(&agentos_core::now()))
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use agentos_core::schedule::{Cadence, Clock};
@@ -424,6 +499,106 @@ mod tests {
         chrono::DateTime::parse_from_rfc3339(text)
             .unwrap()
             .with_timezone(&chrono::Utc)
+    }
+
+    /// A due schedule as a scheduler reads it, with the firing it means to
+    /// record: the schedule advanced, the moment it was due, and the task.
+    async fn read_due(
+        db: &Database,
+        id: ScheduleId,
+    ) -> (Schedule, Option<agentos_core::Timestamp>, Task) {
+        let mut schedule = db.schedules().get(id).await.unwrap();
+        let due_at = schedule.next_run_at;
+        let task = Task::new(schedule.agent_id, &schedule.objective).from_schedule(schedule.id);
+        schedule.record_firing(agentos_core::now(), task.id);
+        (schedule, due_at, task)
+    }
+
+    /// Fire what [`read_due`] read.
+    async fn fire_read(
+        db: &Database,
+        (schedule, due_at, task): (Schedule, Option<agentos_core::Timestamp>, Task),
+    ) -> (bool, Task) {
+        let fired = db.schedules().fire(&schedule, due_at, &task).await.unwrap();
+        (fired, task)
+    }
+
+    #[tokio::test]
+    async fn of_two_schedulers_reading_one_due_schedule_exactly_one_fires_it() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("agentos.db");
+        let first = Database::open(&path).await.unwrap();
+        let second = Database::open(&path).await.unwrap();
+        let agent = sample_agent("worker");
+        first.agents().insert(&agent).await.unwrap();
+
+        for round in 0..10 {
+            let schedule = Schedule::new(
+                agent.id,
+                format!("hourly {round}"),
+                "Check the queue.",
+                Cadence::Every { seconds: 3600 },
+                at("2020-01-01T00:00:00Z"),
+            )
+            .unwrap();
+            first.schedules().insert(&schedule).await.unwrap();
+
+            // Both read before either writes. Were one scheduler's read to
+            // land after the other's firing, it would see the advanced time,
+            // which is a schedule not yet due rather than the race.
+            let read_first = read_due(&first, schedule.id).await;
+            let read_second = read_due(&second, schedule.id).await;
+            let ((a, task_a), (b, task_b)) = tokio::join!(
+                fire_read(&first, read_first),
+                fire_read(&second, read_second)
+            );
+            assert!(a ^ b, "round {round}: both or neither fired");
+
+            // The loser's task was never written; the winner's was, and the
+            // schedule points at it.
+            let (won, lost) = if a {
+                (task_a, task_b)
+            } else {
+                (task_b, task_a)
+            };
+            assert!(first.tasks().find(won.id).await.unwrap().is_some());
+            assert!(first.tasks().find(lost.id).await.unwrap().is_none());
+            let stored = first.schedules().get(schedule.id).await.unwrap();
+            assert_eq!(stored.last_task_id, Some(won.id));
+            assert!(stored.next_run_at.unwrap() > at("2020-01-01T00:00:00Z"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_firing_read_before_a_pause_does_not_fire() {
+        let (db, agent_id) = seeded().await;
+        let schedule = Schedule::new(
+            agent_id,
+            "paused-under-it",
+            "o",
+            Cadence::Every { seconds: 3600 },
+            at("2020-01-01T00:00:00Z"),
+        )
+        .unwrap();
+        db.schedules().insert(&schedule).await.unwrap();
+
+        // A scheduler reads it as due, and the operator pauses it before the
+        // firing is written.
+        let mut read = db.schedules().get(schedule.id).await.unwrap();
+        db.schedules()
+            .set_status(schedule.id, ScheduleStatus::Paused, read.next_run_at)
+            .await
+            .unwrap();
+
+        let due_at = read.next_run_at;
+        let task = Task::new(agent_id, "o").from_schedule(schedule.id);
+        read.record_firing(agentos_core::now(), task.id);
+        assert!(!db.schedules().fire(&read, due_at, &task).await.unwrap());
+        assert!(db.tasks().find(task.id).await.unwrap().is_none());
+        assert_eq!(
+            db.schedules().get(schedule.id).await.unwrap().status,
+            ScheduleStatus::Paused
+        );
     }
 
     #[tokio::test]

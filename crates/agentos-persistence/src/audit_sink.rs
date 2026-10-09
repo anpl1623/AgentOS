@@ -38,6 +38,35 @@ impl SqliteAuditSink {
         rows.iter().map(hydrate).collect()
     }
 
+    /// The most recent records of the given kinds, newest first.
+    ///
+    /// Selected by the store rather than filtered from [`Self::tail`]: records
+    /// of a rare kind sit far apart in a busy log, and the newest `limit`
+    /// records of every kind may hold none of them.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Sql`] on failure.
+    pub async fn tail_of_kinds(
+        &self,
+        kinds: &[&str],
+        limit: i64,
+    ) -> Result<Vec<AuditRecord>, DbError> {
+        // The kinds travel as one bound JSON array, so the statement is fixed
+        // text and nothing a caller passes is ever part of it.
+        let kinds = serde_json::Value::from(kinds.to_vec()).to_string();
+        let rows = sqlx::query(
+            "SELECT * FROM audit_events
+              WHERE kind IN (SELECT value FROM json_each(?1))
+              ORDER BY sequence DESC LIMIT ?2",
+        )
+        .bind(kinds)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(hydrate).collect()
+    }
+
     /// Every record in chain order, for verification.
     ///
     /// # Errors
@@ -63,6 +92,35 @@ impl SqliteAuditSink {
         rows.iter().map(hydrate).collect()
     }
 
+    /// One record, by the identity it shares with its event.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Sql`] on failure.
+    pub async fn find(&self, id: EventId) -> Result<Option<AuditRecord>, DbError> {
+        let row = sqlx::query("SELECT * FROM audit_events WHERE id = ?1")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|row| hydrate(&row)).transpose()
+    }
+
+    /// Records after a given position, in chain order.
+    ///
+    /// What lets a verification carry on from where the last one stopped
+    /// rather than rehash the whole log each time.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Sql`] on failure.
+    pub async fn after(&self, sequence: u64) -> Result<Vec<AuditRecord>, DbError> {
+        let rows = sqlx::query("SELECT * FROM audit_events WHERE sequence > ?1 ORDER BY sequence")
+            .bind(i64::try_from(sequence).unwrap_or(i64::MAX))
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(hydrate).collect()
+    }
+
     /// How many records the log holds.
     ///
     /// # Errors
@@ -78,8 +136,22 @@ impl SqliteAuditSink {
 
 #[async_trait]
 impl AuditSink for SqliteAuditSink {
+    /// Append a record, refusing it as a conflict if its position is taken.
+    ///
+    /// The desktop application and a terminal can each hold a log over this
+    /// database, and each caches the tip it last wrote. Positions are dense, so
+    /// a log whose tip is stale always offers a position another process has
+    /// already filled, and the unique index on `sequence` refuses it in the
+    /// same statement that would have written it: there is no moment between
+    /// the check and the write for a third writer to use. The log then reseals
+    /// the record after the one that won.
+    ///
+    /// The sink checks nothing else about the record. Whether it links to its
+    /// predecessor is the verifier's question, and a store that quietly refused
+    /// unlinked records would hide exactly the tampering the verifier exists to
+    /// report.
     async fn append(&self, record: &AuditRecord) -> Result<(), AuditError> {
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO audit_events (id, sequence, at, kind, agent_id, task_id, run_id,
                                        payload, prev_hash, hash)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -95,9 +167,21 @@ impl AuditSink for SqliteAuditSink {
         .bind(&record.prev_hash)
         .bind(&record.hash)
         .execute(&self.pool)
-        .await
-        .map_err(|error| AuditError::Sink(error.to_string()))?;
-        Ok(())
+        .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            // The event id is unique too, but a log never offers one event
+            // twice; only the position can be taken by somebody else.
+            Err(sqlx::Error::Database(error))
+                if error.is_unique_violation() && error.message().contains("sequence") =>
+            {
+                Err(AuditError::Conflict {
+                    sequence: record.sequence,
+                })
+            }
+            Err(error) => Err(AuditError::Sink(error.to_string())),
+        }
     }
 
     async fn tip(&self) -> Result<(u64, String), AuditError> {
@@ -157,6 +241,45 @@ mod tests {
             objective: objective.to_owned(),
             attempt: 1,
         })
+    }
+
+    #[tokio::test]
+    async fn records_of_chosen_kinds_are_found_however_far_back_they_are() {
+        let db = Database::in_memory().await.unwrap();
+        let log = AuditLog::open(Arc::new(db.audit_sink())).await.unwrap();
+        log.record(Event::new(AgentEvent::ProviderKeySet {
+            provider: "anthropic".to_owned(),
+        }))
+        .await
+        .unwrap();
+        log.record(Event::new(AgentEvent::ProviderKeyRemoved {
+            provider: "anthropic".to_owned(),
+        }))
+        .await
+        .unwrap();
+        for i in 0..20 {
+            log.record(started(&format!("objective {i}")))
+                .await
+                .unwrap();
+        }
+
+        let sink = db.audit_sink();
+        // The newest records of every kind hold neither of them.
+        assert!(
+            sink.tail(10)
+                .await
+                .unwrap()
+                .iter()
+                .all(|record| record.kind == "agent.task.started")
+        );
+
+        let kinds = ["operator.provider_key.set", "operator.provider_key.removed"];
+        let found = sink.tail_of_kinds(&kinds, 10).await.unwrap();
+        let found: Vec<&str> = found.iter().map(|record| record.kind.as_str()).collect();
+        assert_eq!(found, vec![kinds[1], kinds[0]], "newest first");
+
+        assert_eq!(sink.tail_of_kinds(&kinds, 1).await.unwrap().len(), 1);
+        assert!(sink.tail_of_kinds(&[], 10).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -277,7 +400,60 @@ mod tests {
         sink.append(&record).await.unwrap();
 
         let clash = AuditRecord::seal(&started("b"), 1, GENESIS_HASH).unwrap();
-        assert!(sink.append(&clash).await.is_err());
+        assert!(matches!(
+            sink.append(&clash).await,
+            Err(AuditError::Conflict { sequence: 1 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn two_logs_over_one_database_keep_one_chain() {
+        // Two processes, each with its own log and its own cached tip. Two
+        // pools over one file, so their writes really do race.
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("agentos.db");
+        let desktop = Database::open(&path).await.unwrap();
+        let terminal = Database::open(&path).await.unwrap();
+        let desktop_log = Arc::new(
+            AuditLog::open(Arc::new(desktop.audit_sink()))
+                .await
+                .unwrap(),
+        );
+        let terminal_log = Arc::new(
+            AuditLog::open(Arc::new(terminal.audit_sink()))
+                .await
+                .unwrap(),
+        );
+
+        // Interleaved: each log's cached tip is stale on every write.
+        for i in 0..5 {
+            desktop_log
+                .record(started(&format!("desktop {i}")))
+                .await
+                .unwrap();
+            terminal_log
+                .record(started(&format!("terminal {i}")))
+                .await
+                .unwrap();
+        }
+
+        // And at once.
+        let mut writers = Vec::new();
+        for i in 0..10 {
+            for log in [desktop_log.clone(), terminal_log.clone()] {
+                writers.push(tokio::spawn(async move {
+                    log.record(started(&format!("concurrent {i}"))).await
+                }));
+            }
+        }
+        for writer in writers {
+            writer.await.unwrap().unwrap();
+        }
+
+        let records = desktop.audit_sink().all().await.unwrap();
+        assert_eq!(records.len(), 30, "a record was lost to a collision");
+        let verification = verify_chain(&records);
+        assert!(verification.is_intact(), "{:?}", verification.breaks);
     }
 
     #[tokio::test]
@@ -291,6 +467,62 @@ mod tests {
 
         assert_eq!(db.audit_sink().for_run(run).await.unwrap().len(), 1);
         assert_eq!(db.audit_sink().tail(10).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_record_found_by_id_comes_back_with_its_hashes_unchanged() {
+        let db = Database::in_memory().await.unwrap();
+        let log = AuditLog::open(Arc::new(db.audit_sink())).await.unwrap();
+        log.record(started("first")).await.unwrap();
+        let event = started("second").for_run(TaskRunId::new());
+        let written = log.record(event.clone()).await.unwrap();
+
+        let found = db.audit_sink().find(event.id).await.unwrap().unwrap();
+        assert_eq!(found, written);
+        assert_eq!(found.prev_hash, written.prev_hash);
+        assert_eq!(found.hash, written.hash);
+        assert!(found.is_intact());
+
+        assert!(
+            db.audit_sink()
+                .find(EventId::new())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_record_with_no_agent_task_or_run_round_trips() {
+        // Operator actions belong to no run. The envelope's context columns are
+        // nullable for exactly this, and the hash covers their absence.
+        let db = Database::in_memory().await.unwrap();
+        let log = AuditLog::open(Arc::new(db.audit_sink())).await.unwrap();
+        let event = Event::new(AgentEvent::ProviderKeySet {
+            provider: "anthropic".into(),
+        });
+        let written = log.record(event.clone()).await.unwrap();
+
+        let found = db.audit_sink().find(event.id).await.unwrap().unwrap();
+        assert_eq!(found, written);
+        assert!(found.agent_id.is_none() && found.task_id.is_none() && found.run_id.is_none());
+        assert!(verify_chain(&db.audit_sink().all().await.unwrap()).is_intact());
+    }
+
+    #[tokio::test]
+    async fn records_after_a_position_are_the_rest_of_the_chain() {
+        let db = Database::in_memory().await.unwrap();
+        let log = AuditLog::open(Arc::new(db.audit_sink())).await.unwrap();
+        for i in 0..4 {
+            log.record(started(&format!("o{i}"))).await.unwrap();
+        }
+        let rest = db.audit_sink().after(2).await.unwrap();
+        assert_eq!(
+            rest.iter().map(|r| r.sequence).collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert!(db.audit_sink().after(4).await.unwrap().is_empty());
+        assert_eq!(db.audit_sink().after(0).await.unwrap().len(), 4);
     }
 
     #[tokio::test]

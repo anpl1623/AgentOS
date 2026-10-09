@@ -5,7 +5,7 @@ use agentos_core::task::{TaskFailure, TaskRun, TaskState};
 use sqlx::{Row, SqlitePool};
 
 use crate::convert::{
-    read_enum, read_id, read_optional_json, read_optional_time, read_time, write_json,
+    read_enum, read_id, read_json, read_optional_json, read_optional_time, read_time, write_json,
     write_optional_time, write_time,
 };
 use crate::error::DbError;
@@ -29,32 +29,7 @@ impl RunRepository {
     ///
     /// [`DbError::Sql`] if the task does not exist or the attempt number is taken.
     pub async fn insert(&self, run: &TaskRun) -> Result<(), DbError> {
-        sqlx::query(
-            "INSERT INTO task_runs (id, task_id, attempt, state, tainted, steps_taken,
-                                    result, failure, input_tokens, output_tokens,
-                                    started_at, completed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        )
-        .bind(run.id.to_string())
-        .bind(run.task_id.to_string())
-        .bind(i64::from(run.attempt))
-        .bind(run.state.as_str())
-        .bind(i64::from(run.tainted))
-        .bind(i64::from(run.steps_taken))
-        .bind(run.result.as_deref())
-        .bind(
-            run.failure
-                .as_ref()
-                .map(|failure| write_json("failure", failure))
-                .transpose()?,
-        )
-        .bind(clamp_u64(run.input_tokens))
-        .bind(clamp_u64(run.output_tokens))
-        .bind(write_time(&run.started_at))
-        .bind(write_optional_time(run.completed_at.as_ref()))
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        insert_with(&self.pool, run).await
     }
 
     /// Persist the current state of a run.
@@ -65,13 +40,15 @@ impl RunRepository {
     pub async fn update(&self, run: &TaskRun) -> Result<(), DbError> {
         let affected = sqlx::query(
             "UPDATE task_runs
-                SET state = ?2, tainted = ?3, steps_taken = ?4, result = ?5, failure = ?6,
-                    input_tokens = ?7, output_tokens = ?8, completed_at = ?9
+                SET state = ?2, tainted = ?3, taint_sources = ?4, steps_taken = ?5,
+                    result = ?6, failure = ?7, input_tokens = ?8, output_tokens = ?9,
+                    completed_at = ?10
               WHERE id = ?1",
         )
         .bind(run.id.to_string())
         .bind(run.state.as_str())
         .bind(i64::from(run.tainted))
+        .bind(write_json("taint_sources", &run.taint_sources)?)
         .bind(i64::from(run.steps_taken))
         .bind(run.result.as_deref())
         .bind(
@@ -184,6 +161,43 @@ impl RunRepository {
     }
 }
 
+/// Insert a run through any executor.
+///
+/// Shared with the task repository, which writes a run in the same
+/// transaction that claims its task.
+pub(crate) async fn insert_with<'e, E>(executor: E, run: &TaskRun) -> Result<(), DbError>
+where
+    E: sqlx::SqliteExecutor<'e>,
+{
+    sqlx::query(
+        "INSERT INTO task_runs (id, task_id, attempt, state, tainted, taint_sources,
+                                steps_taken, result, failure, input_tokens,
+                                output_tokens, started_at, completed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+    )
+    .bind(run.id.to_string())
+    .bind(run.task_id.to_string())
+    .bind(i64::from(run.attempt))
+    .bind(run.state.as_str())
+    .bind(i64::from(run.tainted))
+    .bind(write_json("taint_sources", &run.taint_sources)?)
+    .bind(i64::from(run.steps_taken))
+    .bind(run.result.as_deref())
+    .bind(
+        run.failure
+            .as_ref()
+            .map(|failure| write_json("failure", failure))
+            .transpose()?,
+    )
+    .bind(clamp_u64(run.input_tokens))
+    .bind(clamp_u64(run.output_tokens))
+    .bind(write_time(&run.started_at))
+    .bind(write_optional_time(run.completed_at.as_ref()))
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 fn clamp_u64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
@@ -204,6 +218,11 @@ fn hydrate(row: &sqlx::sqlite::SqliteRow) -> Result<TaskRun, DbError> {
         attempt: u32::try_from(attempt).unwrap_or(u32::MAX),
         state: read_enum::<TaskState>(TABLE, "state", row.try_get::<String, _>("state")?.as_str())?,
         tainted: row.try_get::<i64, _>("tainted")? != 0,
+        taint_sources: read_json(
+            TABLE,
+            "taint_sources",
+            row.try_get::<String, _>("taint_sources")?.as_str(),
+        )?,
         steps_taken: u32::try_from(steps).unwrap_or(u32::MAX),
         result: row.try_get("result")?,
         failure: read_optional_json::<TaskFailure>(TABLE, "failure", row.try_get("failure")?)?,
@@ -261,6 +280,52 @@ mod tests {
         assert_eq!(loaded.input_tokens, 1234);
         assert_eq!(loaded.output_tokens, 567);
         assert!(loaded.completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn taint_sources_round_trip_as_values_not_labels() {
+        use agentos_core::trust::DataSource;
+
+        let (db, task_id) = seeded().await;
+        let mut run = TaskRun::new(task_id, 1);
+        db.runs().insert(&run).await.unwrap();
+        assert!(
+            db.runs()
+                .get(run.id)
+                .await
+                .unwrap()
+                .taint_sources
+                .is_empty(),
+            "a fresh run records no sources"
+        );
+
+        // A label such as `web:https://…` could not be turned back into a
+        // source a tracker can observe; the variant and its fields have to
+        // survive the trip intact.
+        let sources = vec![
+            DataSource::Web {
+                url: "https://evil.example/page".into(),
+            },
+            DataSource::Terminal {
+                program: "curl".into(),
+            },
+        ];
+        run.tainted = true;
+        run.taint_sources.clone_from(&sources);
+        db.runs().update(&run).await.unwrap();
+
+        let loaded = db.runs().get(run.id).await.unwrap();
+        assert!(loaded.tainted);
+        assert_eq!(loaded.taint_sources, sources);
+
+        let mut retry = TaskRun::new(task_id, 2);
+        retry.taint_sources.clone_from(&sources);
+        db.runs().insert(&retry).await.unwrap();
+        assert_eq!(
+            db.runs().get(retry.id).await.unwrap().taint_sources,
+            sources,
+            "an inherited taint written at insert must be read back too"
+        );
     }
 
     #[tokio::test]

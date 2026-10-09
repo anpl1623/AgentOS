@@ -13,6 +13,7 @@ agentos-audit.workspace = true
 agentos-browser.workspace = true
 agentos-computer.workspace = true
 agentos-core.workspace = true
+agentos-integrations.workspace = true
 agentos-permissions.workspace = true
 agentos-persistence.workspace = true
 agentos-providers.workspace = true
@@ -31,6 +32,7 @@ tracing.workspace = true
 agentos-permissions.workspace = true
 chrono.workspace = true
 schemars.workspace = true
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
