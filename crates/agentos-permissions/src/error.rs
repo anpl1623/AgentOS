@@ -1,4 +1,4 @@
-//! Errors from policy loading and path resolution.
+//! Errors from policy loading, path resolution and origin parsing.
 
 use std::path::PathBuf;
 
@@ -18,9 +18,9 @@ pub enum PolicyError {
         pattern: String,
         /// The rule it appeared in.
         rule: String,
-        /// The underlying glob error.
+        /// Why it could not be compiled.
         #[source]
-        source: globset::Error,
+        source: PatternError,
     },
 
     /// A filesystem root in the policy could not be resolved.
@@ -45,6 +45,73 @@ pub enum PolicyError {
     /// The document was structurally valid but semantically wrong.
     #[error("invalid policy: {0}")]
     Invalid(String),
+}
+
+/// A resource pattern could not be compiled.
+#[derive(Debug, Error)]
+pub enum PatternError {
+    /// The glob syntax was malformed.
+    #[error(transparent)]
+    Glob(#[from] globset::Error),
+
+    /// An origin pattern could not be canonicalised.
+    ///
+    /// Refused at compile time because the alternative is a rule that compiles,
+    /// looks right, and never matches: `https://example.com/app` names a path
+    /// no origin has, and `example.com` names no scheme.
+    #[error(
+        "{reason}; an origin is written `scheme://host[:port]`, such as \
+         `https://*.example.com` or `http://localhost:*`"
+    )]
+    Origin {
+        /// What was wrong with it.
+        reason: String,
+    },
+}
+
+/// A URL could not be reduced to an origin.
+///
+/// Every variant carries the URL as given, so the refusal an agent sees names
+/// the value it supplied rather than a normalised form of it.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum OriginError {
+    /// The scheme is not `http` or `https`, or there is no scheme.
+    #[error("`{url}` is not an http or https URL")]
+    UnsupportedScheme {
+        /// The offending value.
+        url: String,
+    },
+
+    /// There is nothing between the scheme and the path.
+    #[error("`{url}` has no host")]
+    NoHost {
+        /// The offending value.
+        url: String,
+    },
+
+    /// The URL carries a username or password.
+    #[error("`{url}` carries credentials; a URL with userinfo is refused")]
+    CredentialsInUrl {
+        /// The offending value.
+        url: String,
+    },
+
+    /// The host is not a plain ASCII name or address literal.
+    #[error(
+        "`{url}` has a host that is not a plain ASCII name, a dotted IPv4 address or a \
+         bracketed IPv6 address"
+    )]
+    InvalidHost {
+        /// The offending value.
+        url: String,
+    },
+
+    /// The port is missing after its colon, or is not 1-65535.
+    #[error("`{url}` has a port that is not a number from 1 to 65535")]
+    InvalidPort {
+        /// The offending value.
+        url: String,
+    },
 }
 
 /// A path could not be safely resolved, or escaped its sandbox.

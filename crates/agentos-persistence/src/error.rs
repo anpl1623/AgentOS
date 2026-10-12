@@ -47,6 +47,17 @@ pub enum DbError {
         value: String,
     },
 
+    /// A value the schema would not accept, refused before it was written.
+    #[error("{entity} `{value}` was not stored: {reason}")]
+    Invalid {
+        /// Entity kind.
+        entity: &'static str,
+        /// The refused value.
+        value: String,
+        /// Why.
+        reason: String,
+    },
+
     /// A value could not be serialised for storage.
     #[error("cannot serialise value for `{column}`: {source}")]
     Serialisation {

@@ -26,4 +26,12 @@ risk: string,
  * The single most useful thing to know when deciding what to grant, so it
  * is surfaced rather than buried in the description.
  */
-returns_untrusted_data: boolean, };
+returns_untrusted_data: boolean, 
+/**
+ * The capabilities a call may plan, which are what a policy rule must
+ * name for it to be allowed.
+ *
+ * Without this, finding out that one tool needs a capability from another
+ * domain means reading its source.
+ */
+capabilities: Array<string>, };

@@ -57,9 +57,14 @@ pub async fn run(args: DemoArgs, config: &RuntimeConfig) -> Result<()> {
     if args.headed {
         // The shared registry is built headless at open time, so watching the
         // agent work means composing a registry with headed browser tools and
-        // installing it. Everything else about the run is identical.
+        // installing it. Everything else about the run is identical, the
+        // bound integration accounts included.
         let options = agentos_browser::BrowserOptions::new(config.browser_profiles()).headed(true);
-        runtime.set_registry(agentos_runtime::build_registry_with(options));
+        let pool = std::sync::Arc::new(agentos_browser::BrowserPool::new(options));
+        runtime.set_registry(agentos_runtime::compose_registry(
+            &pool,
+            runtime.integration_accounts(),
+        ));
     }
 
     let crm = MockCrm::start().await.context("starting the mock CRM")?;
@@ -120,8 +125,6 @@ pub async fn run(args: DemoArgs, config: &RuntimeConfig) -> Result<()> {
     std::fs::create_dir_all(&workspace)?;
     let workspace = std::fs::canonicalize(&workspace)?;
     runtime
-        .database()
-        .agents()
         .set_policy(agent.id, &agentos_demo::policy(crm.base_url(), &workspace))
         .await?;
 

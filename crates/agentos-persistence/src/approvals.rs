@@ -6,7 +6,7 @@
 
 use agentos_core::approval::{ApprovalRequest, ApprovalStatus};
 use agentos_core::ids::{ApprovalId, TaskRunId};
-use agentos_core::permission::Capability;
+use agentos_core::permission::{Capability, Effect};
 use agentos_core::risk::RiskLevel;
 use sqlx::{Row, SqlitePool};
 
@@ -39,8 +39,10 @@ impl ApprovalRepository {
             "INSERT INTO approvals (id, agent_id, agent_name, task_id, run_id, tool, arguments,
                                     capability, risk, reason, explanation, affected_resources,
                                     tainted, taint_sources, status, requested_at, decided_at,
-                                    decision_note)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                                    decision_note, effect_before_taint, asked_this_run,
+                                    approval_budget)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+                     ?19, ?20, ?21)",
         )
         .bind(request.id.to_string())
         .bind(request.agent_id.to_string())
@@ -65,6 +67,9 @@ impl ApprovalRepository {
             request.decided_at.as_ref(),
         ))
         .bind(request.decision_note.as_deref())
+        .bind(request.effect_before_taint.as_str())
+        .bind(i64::from(request.asked_this_run))
+        .bind(request.approval_budget.map(i64::from))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -98,6 +103,29 @@ impl ApprovalRepository {
             sqlx::query("SELECT * FROM approvals WHERE status = 'pending' ORDER BY requested_at")
                 .fetch_all(&self.pool)
                 .await?;
+        rows.iter().map(hydrate).collect()
+    }
+
+    /// The most recently decided requests, newest decision first.
+    ///
+    /// Only requests that are no longer pending: the history of what was
+    /// answered, refused, cancelled or expired. A request still waiting is in
+    /// [`Self::list_pending`], and showing it here as well would put a live
+    /// card in front of a person twice, once where it cannot be answered.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Sql`] on failure.
+    pub async fn list_recent(&self, limit: i64) -> Result<Vec<ApprovalRequest>, DbError> {
+        let rows = sqlx::query(
+            "SELECT * FROM approvals
+              WHERE status <> 'pending'
+              ORDER BY COALESCE(decided_at, requested_at) DESC
+              LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(hydrate).collect()
     }
 
@@ -170,9 +198,40 @@ impl ApprovalRepository {
         .rows_affected();
         Ok(affected)
     }
+
+    /// Close every pending request whose run has already ended.
+    ///
+    /// A run that has finished, failed or been cancelled will never act on an
+    /// answer, so a request it left pending is not waiting on anybody: it is a
+    /// card that would sit in the queue forever. Such requests are marked
+    /// expired — nobody answered before the run that asked stopped listening —
+    /// with `note` saying why, and the count is returned.
+    ///
+    /// Requests belonging to runs still in progress are untouched; closing
+    /// those is the business of whoever ends the run.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Sql`] on failure.
+    pub async fn expire_for_finished_runs(&self, note: &str) -> Result<u64, DbError> {
+        let affected = sqlx::query(
+            "UPDATE approvals SET status = 'expired', decided_at = ?1, decision_note = ?2
+              WHERE status = 'pending'
+                AND run_id IN (SELECT id FROM task_runs
+                                WHERE state IN ('completed', 'failed', 'cancelled'))",
+        )
+        .bind(write_time(&agentos_core::now()))
+        .bind(note)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(affected)
+    }
 }
 
 fn hydrate(row: &sqlx::sqlite::SqliteRow) -> Result<ApprovalRequest, DbError> {
+    let asked_this_run: i64 = row.try_get("asked_this_run")?;
+    let approval_budget: Option<i64> = row.try_get("approval_budget")?;
     Ok(ApprovalRequest {
         id: read_id(TABLE, "id", row.try_get::<String, _>("id")?.as_str())?,
         agent_id: read_id(
@@ -203,6 +262,13 @@ fn hydrate(row: &sqlx::sqlite::SqliteRow) -> Result<ApprovalRequest, DbError> {
             row.try_get::<String, _>("capability")?.as_str(),
         )?,
         risk: read_enum::<RiskLevel>(TABLE, "risk", row.try_get::<String, _>("risk")?.as_str())?,
+        effect_before_taint: read_unit_enum::<Effect>(
+            TABLE,
+            "effect_before_taint",
+            row.try_get::<String, _>("effect_before_taint")?.as_str(),
+        )?,
+        asked_this_run: u32::try_from(asked_this_run).unwrap_or(0),
+        approval_budget: approval_budget.and_then(|budget| u32::try_from(budget).ok()),
         reason: row.try_get("reason")?,
         explanation: row.try_get("explanation")?,
         affected_resources: read_json(
@@ -233,6 +299,8 @@ fn hydrate(row: &sqlx::sqlite::SqliteRow) -> Result<ApprovalRequest, DbError> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::str::FromStr;
+
     use agentos_core::ids::{AgentId, TaskId};
     use agentos_core::task::{Task, TaskRun};
 
@@ -274,6 +342,9 @@ pub(crate) mod tests {
             arguments: serde_json::json!({"to": "customer@example.com"}),
             capability: Capability::new("email", "send"),
             risk: RiskLevel::High,
+            effect_before_taint: Effect::Allow,
+            asked_this_run: 3,
+            approval_budget: Some(10),
             reason: "policy rule `email.send` requires approval".to_owned(),
             explanation: "Send an order update to customer@example.com.".to_owned(),
             affected_resources: vec!["customer@example.com".to_owned()],
@@ -284,6 +355,76 @@ pub(crate) mod tests {
             decided_at: None,
             decision_note: None,
         }
+    }
+
+    #[tokio::test]
+    async fn a_request_written_before_migration_6_reads_after_it() {
+        // An installation upgraded from 0.2 holds approval rows with none of
+        // the decision-context columns. They must read, and read as claiming
+        // no more than was recorded.
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:")
+                    .unwrap()
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        crate::MIGRATOR.run_to(5, &pool).await.unwrap();
+        let db = Database { pool };
+
+        let agent = sample_agent("approver");
+        db.agents().insert(&agent).await.unwrap();
+        let task = Task::new(agent.id, "o");
+        db.tasks().insert(&task).await.unwrap();
+        let run = TaskRun::new(task.id, 1);
+        db.runs().insert(&run).await.unwrap();
+
+        let now = agentos_core::now();
+        let mut ids = Vec::new();
+        for (status, decided) in [("pending", None), ("approved", Some(now))] {
+            let id = ApprovalId::new();
+            ids.push(id);
+            sqlx::query(
+                "INSERT INTO approvals (id, agent_id, agent_name, task_id, run_id, tool,
+                                        arguments, capability, risk, reason, explanation,
+                                        affected_resources, tainted, taint_sources, status,
+                                        requested_at, decided_at, decision_note)
+                 VALUES (?1, ?2, 'approver', ?3, ?4, 'email.send', '{}',
+                         '{\"domain\":\"email\",\"action\":\"send\"}', 'high', 'policy',
+                         'sends', '[]', 0, '[]', ?5, ?6, ?7, NULL)",
+            )
+            .bind(id.to_string())
+            .bind(agent.id.to_string())
+            .bind(task.id.to_string())
+            .bind(run.id.to_string())
+            .bind(status)
+            .bind(write_time(&now))
+            .bind(decided.as_ref().map(write_time))
+            .execute(db.pool())
+            .await
+            .unwrap();
+        }
+
+        crate::MIGRATOR.run(db.pool()).await.unwrap();
+
+        for id in &ids {
+            let old = db.approvals().get(*id).await.unwrap();
+            assert_eq!(old.effect_before_taint, Effect::Ask);
+            assert_eq!(old.asked_this_run, 0);
+            assert_eq!(old.approval_budget, None);
+        }
+        let pending = db.approvals().list_pending().await.unwrap();
+        assert_eq!(
+            pending.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![ids[0]]
+        );
+        let recent = db.approvals().list_recent(10).await.unwrap();
+        assert_eq!(
+            recent.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![ids[1]]
+        );
     }
 
     #[tokio::test]
@@ -377,6 +518,112 @@ pub(crate) mod tests {
             ctx.db.approvals().get(decided.id).await.unwrap().status,
             ApprovalStatus::Approved
         );
+    }
+
+    #[tokio::test]
+    async fn the_context_a_person_decided_in_round_trips() {
+        let ctx = seeded().await;
+        let mut written = request(&ctx, "email.send");
+        written.effect_before_taint = Effect::Allow;
+        written.asked_this_run = 7;
+        written.approval_budget = None;
+        ctx.db.approvals().insert(&written).await.unwrap();
+
+        let loaded = ctx.db.approvals().get(written.id).await.unwrap();
+        assert_eq!(loaded.effect_before_taint, Effect::Allow);
+        assert_eq!(loaded.asked_this_run, 7);
+        assert_eq!(loaded.approval_budget, None);
+    }
+
+    #[tokio::test]
+    async fn an_approval_keeps_its_note() {
+        let ctx = seeded().await;
+        let written = request(&ctx, "email.send");
+        ctx.db.approvals().insert(&written).await.unwrap();
+        ctx.db
+            .approvals()
+            .decide(
+                written.id,
+                ApprovalStatus::Approved,
+                Some("customer asked for this"),
+            )
+            .await
+            .unwrap();
+
+        let loaded = ctx.db.approvals().get(written.id).await.unwrap();
+        assert_eq!(loaded.status, ApprovalStatus::Approved);
+        assert_eq!(
+            loaded.decision_note.as_deref(),
+            Some("customer asked for this")
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_requests_are_decided_ones_newest_decision_first() {
+        let ctx = seeded().await;
+        let now = agentos_core::now();
+        let ago = |seconds: i64| now - chrono::Duration::seconds(seconds);
+
+        let mut approved = request(&ctx, "approved");
+        approved.requested_at = ago(10);
+        approved.status = ApprovalStatus::Approved;
+        approved.decided_at = Some(ago(1));
+        approved.decision_note = Some("checked".to_owned());
+
+        let mut denied = request(&ctx, "denied");
+        denied.requested_at = ago(5);
+        denied.status = ApprovalStatus::Denied;
+        denied.decided_at = Some(ago(3));
+
+        // Still waiting, and newer than either decision: it belongs to the
+        // queue, not the history.
+        let mut waiting = request(&ctx, "waiting");
+        waiting.requested_at = ago(0);
+
+        for written in [&denied, &waiting, &approved] {
+            ctx.db.approvals().insert(written).await.unwrap();
+        }
+
+        let recent = ctx.db.approvals().list_recent(10).await.unwrap();
+        let tools: Vec<&str> = recent.iter().map(|r| r.tool.as_str()).collect();
+        assert_eq!(tools, vec!["approved", "denied"]);
+        assert_eq!(recent[0].decision_note.as_deref(), Some("checked"));
+
+        let limited = ctx.db.approvals().list_recent(2).await.unwrap();
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited[0].tool, "approved");
+    }
+
+    #[tokio::test]
+    async fn pending_requests_of_finished_runs_are_expired_with_a_reason() {
+        let ctx = seeded().await;
+        let mut ended = TaskRun::new(ctx.task_id, 2);
+        ended.state = agentos_core::task::TaskState::Failed;
+        ctx.db.runs().insert(&ended).await.unwrap();
+
+        let live = request(&ctx, "live");
+        let mut orphan = request(&ctx, "orphan");
+        orphan.run_id = ended.id;
+        ctx.db.approvals().insert(&live).await.unwrap();
+        ctx.db.approvals().insert(&orphan).await.unwrap();
+
+        let expired = ctx
+            .db
+            .approvals()
+            .expire_for_finished_runs("the run ended")
+            .await
+            .unwrap();
+        assert_eq!(expired, 1);
+
+        let closed = ctx.db.approvals().get(orphan.id).await.unwrap();
+        assert_eq!(closed.status, ApprovalStatus::Expired);
+        assert_eq!(closed.decision_note.as_deref(), Some("the run ended"));
+        assert!(closed.decided_at.is_some());
+
+        // The run still in progress keeps its request.
+        let pending = ctx.db.approvals().list_pending().await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, live.id);
     }
 
     #[tokio::test]

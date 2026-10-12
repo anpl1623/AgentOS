@@ -19,6 +19,7 @@ pub mod agents;
 pub mod approvals;
 pub mod audit_sink;
 pub mod executions;
+pub mod integrations;
 pub mod memories;
 pub mod runs;
 pub mod schedules;
@@ -36,7 +37,8 @@ pub use agents::AgentRepository;
 pub use approvals::ApprovalRepository;
 pub use audit_sink::SqliteAuditSink;
 pub use error::DbError;
-pub use executions::{ExecutionRepository, ToolExecutionRecord};
+pub use executions::{ExecutionRepository, ToolExecutionRecord, ToolUsage};
+pub use integrations::{IntegrationAccount, IntegrationAccountsRepository};
 pub use memories::MemoryRepository;
 pub use runs::RunRepository;
 pub use settings::SettingsRepository;
@@ -154,6 +156,12 @@ impl Database {
     #[must_use]
     pub fn dependencies(&self) -> schedules::DependencyRepository {
         schedules::DependencyRepository::new(self.pool.clone())
+    }
+
+    /// Bound integration accounts. Their tokens are not in the database.
+    #[must_use]
+    pub fn integrations(&self) -> IntegrationAccountsRepository {
+        IntegrationAccountsRepository::new(self.pool.clone())
     }
 
     /// Key/value settings.

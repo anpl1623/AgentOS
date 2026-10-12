@@ -66,6 +66,20 @@ pub enum ToolError {
     /// No such tool, or it is not enabled for this agent.
     #[error("unknown tool `{0}`")]
     UnknownTool(String),
+
+    /// A failure whose text held a credential the run had released, with the
+    /// credential replaced.
+    ///
+    /// Built by the pipeline, never by a tool. The text of a failure is
+    /// recorded in the hash-chained log, where nothing can be deleted, so it is
+    /// rewritten before it is recorded rather than after.
+    #[error("{message}")]
+    Redacted {
+        /// The outcome of the error it replaced.
+        outcome: ToolOutcome,
+        /// That error's text, redacted.
+        message: String,
+    },
 }
 
 impl ToolError {
@@ -80,6 +94,7 @@ impl ToolError {
             Self::Cancelled => ToolOutcome::Cancelled,
             Self::TimedOut { .. } => ToolOutcome::TimedOut,
             Self::Io { .. } | Self::Failed(_) => ToolOutcome::Failed,
+            Self::Redacted { outcome, .. } => *outcome,
         }
     }
 

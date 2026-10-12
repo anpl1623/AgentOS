@@ -54,6 +54,25 @@ impl MemoryRepository {
         Ok(())
     }
 
+    /// Fetch a memory.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::NotFound`] if absent.
+    pub async fn get(&self, id: MemoryId) -> Result<Memory, DbError> {
+        let row = sqlx::query("SELECT * FROM memories WHERE id = ?1")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref()
+            .map(hydrate)
+            .transpose()?
+            .ok_or(DbError::NotFound {
+                entity: "memory",
+                id: id.to_string(),
+            })
+    }
+
     /// Retrieve memories matching a query, most recently updated first.
     ///
     /// Free text is matched case-insensitively against the content. Ranking is
@@ -389,6 +408,8 @@ mod tests {
         db.memories().update(memory.id, "new", 0.5).await.unwrap();
         let loaded = db.memories().list_for_agent(agent_id).await.unwrap();
         assert_eq!(loaded[0].content, "new");
+        let one = db.memories().get(memory.id).await.unwrap();
+        assert_eq!((one.content.as_str(), one.confidence), ("new", 0.5));
 
         db.memories().delete(memory.id).await.unwrap();
         assert!(
@@ -400,6 +421,10 @@ mod tests {
         );
         assert!(matches!(
             db.memories().delete(memory.id).await.unwrap_err(),
+            DbError::NotFound { .. }
+        ));
+        assert!(matches!(
+            db.memories().get(memory.id).await.unwrap_err(),
             DbError::NotFound { .. }
         ));
     }

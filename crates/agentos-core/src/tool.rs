@@ -12,8 +12,11 @@ use crate::trust::{DataSource, UntrustedContent, UntrustedImage};
 
 /// Everything a tool declares about itself.
 ///
-/// The runtime uses `required_capabilities` and `risk` to authorise calls; the
-/// model only ever sees `name`, `description` and `input_schema`.
+/// All of it is a claim the tool makes, and nothing here is an authorisation
+/// input. The runtime authorises the capabilities a call's plan names, not the
+/// ones listed here, and derives taint from where returned bytes came from, not
+/// from what the tool says it returns. The model only ever sees `name`,
+/// `description` and `input_schema`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolMetadata {
     /// Fully-qualified name, `domain.action`, e.g. `filesystem.read`.
@@ -27,12 +30,20 @@ pub struct ToolMetadata {
     /// A tool may raise this per-call based on its arguments (deleting a
     /// directory is riskier than deleting a file), but never lower it.
     pub risk: RiskLevel,
-    /// Capabilities the caller must hold. Evaluated by the policy engine.
-    pub required_capabilities: Vec<Capability>,
-    /// Whether results of this tool may contain attacker-controlled text.
+    /// The capabilities this tool may plan: its manifest.
     ///
-    /// Every tool that reads the outside world sets this, which is what drives
-    /// taint escalation for the rest of the run.
+    /// This is what a policy author reads to know which rules a tool needs, and
+    /// what the pipeline compares each plan against to catch a tool reaching
+    /// beyond what it advertised. The policy engine evaluates the plan itself,
+    /// so an incomplete list here cannot widen what a call is allowed to do.
+    pub required_capabilities: Vec<Capability>,
+    /// Whether this tool reads the world outside the runtime.
+    ///
+    /// Advisory catalogue metadata with no authorisation effect: it is shown to
+    /// operators choosing what to grant, and nothing in the pipeline reads it.
+    /// Taint is derived from the provenance of what a call actually returned,
+    /// and from the reading capabilities its plan names, so a tool that sets
+    /// this wrongly misleads a listing but does not switch off escalation.
     pub returns_untrusted_data: bool,
 }
 
@@ -49,6 +60,25 @@ impl ToolMetadata {
     #[must_use]
     pub fn action(&self) -> &str {
         self.name.split_once('.').map_or("", |p| p.1)
+    }
+
+    /// The manifest as `domain.action` names, sorted and deduplicated.
+    ///
+    /// Policy rules match on domain and action, so this is the form a policy
+    /// author writes rules against; resources are dropped because a manifest
+    /// states what kind of thing a tool does, not where. It remains a claim:
+    /// the pipeline checks plans against it and records any excess, but the
+    /// enforcement point is the policy engine evaluating the plan.
+    #[must_use]
+    pub fn capability_names(&self) -> Vec<String> {
+        let mut names = self
+            .required_capabilities
+            .iter()
+            .map(Capability::qualified_name)
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        names.dedup();
+        names
     }
 }
 
@@ -82,10 +112,29 @@ impl ToolCall {
     }
 }
 
-/// How a tool invocation ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolOutcome {
+/// Declares [`ToolOutcome`] and [`ToolOutcome::ALL`] from one list.
+///
+/// Anything that must account for every outcome, such as the usage totals
+/// whose SQL spells the outcomes out, is checked against `ALL`. A hand-kept
+/// copy of the list could miss a new variant and every such check would still
+/// pass; written once here, a variant cannot exist without being in it.
+macro_rules! tool_outcomes {
+    ($($(#[$meta:meta])* $variant:ident,)+) => {
+        /// How a tool invocation ended.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum ToolOutcome {
+            $($(#[$meta])* $variant,)+
+        }
+
+        impl ToolOutcome {
+            /// Every outcome, in declaration order.
+            pub const ALL: &'static [Self] = &[$(Self::$variant,)+];
+        }
+    };
+}
+
+tool_outcomes! {
     /// The tool ran and produced a result.
     Success,
     /// Arguments failed validation; the tool never ran.
@@ -238,6 +287,24 @@ mod tests {
         let meta = metadata("noop");
         assert_eq!(meta.domain(), "noop");
         assert_eq!(meta.action(), "");
+    }
+
+    #[test]
+    fn capability_names_are_sorted_unique_and_unscoped() {
+        let mut meta = metadata("filesystem.copy");
+        meta.required_capabilities = vec![
+            Capability::new("filesystem", "write"),
+            Capability::new("filesystem", "read").with_resource(
+                crate::permission::ResourceRef::Path {
+                    path: "/tmp/a".into(),
+                },
+            ),
+            Capability::new("filesystem", "read"),
+        ];
+        assert_eq!(
+            meta.capability_names(),
+            vec!["filesystem.read", "filesystem.write"]
+        );
     }
 
     #[test]

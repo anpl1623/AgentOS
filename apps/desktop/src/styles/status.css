@@ -1,0 +1,131 @@
+/* Status marks.
+ *
+ * Two shapes, because they answer two different questions. A .risk chip is a
+ * property of an action — how much harm it could do — and is drawn as an
+ * outline in small capitals. A .verdict chip is what happened — the call ran,
+ * failed, or was refused — and is drawn filled, as a pill, in sentence case.
+ * A high-risk call that policy denied shows one of each, and they must not
+ * read as the same red thing twice: a refusal is the policy working, so it is
+ * drawn on the accent hue, not the danger hue.
+ *
+ * Both shapes fall back to a neutral look for a string they do not recognise,
+ * rather than to a border in currentColor that reads as a rendering fault.
+ */
+
+/* --- risk: a property ---------------------------------------------------- */
+
+.risk {
+  display: inline-block;
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: var(--s-1) var(--s-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+/* Five steps, each distinguishable from its neighbour: none and low no longer
+ * collapse into one look. */
+.risk.none {
+  color: var(--text-faint);
+  border-color: var(--border-subtle);
+}
+.risk.low {
+  color: var(--text-dim);
+  border-color: var(--border-control);
+}
+.risk.medium {
+  color: var(--warn-fg);
+  border-color: var(--warn-line);
+}
+.risk.high {
+  color: var(--danger-text);
+  border-color: var(--danger-fg);
+}
+/* The one risk step that also fills, so it is loud even at a glance. */
+.risk.critical {
+  color: var(--critical-fg);
+  border-color: var(--critical-fg);
+  background: var(--critical-wash);
+}
+
+/* --- verdict: what happened ---------------------------------------------- */
+
+/* Sentence case is the component's job, not text-transform's: the chip opens
+ * with a visually hidden prefix, which ::first-letter would capitalise instead
+ * of the visible word. */
+
+.verdict {
+  display: inline-block;
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+  padding: 0 var(--s-4);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+/* Tone names, which components choose, and the tool-outcome wire names mapped
+ * onto them, so a raw outcome string renders correctly either way. */
+.verdict.ok,
+.verdict.success,
+.verdict.succeeded,
+.verdict.completed {
+  color: var(--ok-fg);
+  border-color: var(--ok-line);
+  background: var(--ok-wash);
+}
+.verdict.danger,
+.verdict.failed,
+.verdict.timed_out,
+.verdict.invalid_arguments {
+  color: var(--danger-text);
+  border-color: var(--danger-line);
+  background: var(--danger-wash);
+}
+.verdict.blocked,
+.verdict.denied,
+.verdict.approval_denied {
+  color: var(--blocked-fg);
+  border-color: var(--blocked-line);
+  background: var(--blocked-wash);
+  box-shadow: inset 3px 0 0 var(--blocked-line);
+}
+.verdict.warn {
+  color: var(--warn-fg);
+  border-color: var(--warn-line);
+  background: var(--warn-wash);
+}
+/* A run in flight. Same hue family as a refusal, told apart by its quieter
+ * translucent edge and the absence of the refusal's leading bar. */
+.verdict.live,
+.verdict.running {
+  color: var(--info-fg);
+  border-color: var(--info-line);
+  background: var(--info-wash);
+}
+.verdict.neutral,
+.verdict.cancelled {
+  color: var(--text-dim);
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
+}
+/* Asked to stop but not yet stopped. The runtime has not confirmed it, so this
+ * must not look like cancelled: dashed, and in the attention hue. */
+.verdict.cancelling {
+  color: var(--warn-fg);
+  border-color: var(--warn-line);
+  border-style: dashed;
+  background: transparent;
+}
+/* Something scheduled that has not run once. An absence, so no fill. */
+.verdict.never {
+  color: var(--text-faint);
+  border-color: var(--border-strong);
+  border-style: dashed;
+  background: transparent;
+}

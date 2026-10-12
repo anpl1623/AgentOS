@@ -21,6 +21,13 @@ state: string,
  */
 tainted: boolean, 
 /**
+ * Where that data came from, labelled.
+ *
+ * Includes what an attempt inherited from the attempts before it, which is
+ * the only way a retry that started tainted can say why.
+ */
+taint_sources: Array<string>, 
+/**
  * Model turns consumed.
  */
 steps: number, 

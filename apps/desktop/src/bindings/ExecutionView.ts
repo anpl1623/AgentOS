@@ -12,6 +12,11 @@ export type ExecutionView = {
  */
 id: string, 
 /**
+ * The run that made the call, so a refusal listed on its own can open
+ * the trace it belongs to.
+ */
+run_id: string, 
+/**
  * The tool.
  */
 tool: string, 

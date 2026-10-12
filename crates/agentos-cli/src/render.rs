@@ -4,6 +4,7 @@
 //! interleaved with runtime calls, and so the approval card has one definition.
 
 use agentos_core::approval::ApprovalRequest;
+use agentos_core::permission::Effect;
 use agentos_core::risk::RiskLevel;
 use agentos_core::task::TaskState;
 use agentos_runtime::RunTrace;
@@ -148,6 +149,22 @@ pub fn approval_card(request: &ApprovalRequest, style: &Style) -> String {
         &format!("{} {}", style.dim("Because"), request.reason),
         style,
     ));
+    // How often this run has asked is what tells a policy that asks twice from
+    // one that asks fifty times; from the card alone the two look the same.
+    if request.asked_this_run > 0 {
+        let of = request
+            .approval_budget
+            .map(|budget| format!(" of {budget}"))
+            .unwrap_or_default();
+        out.push_str(&boxed_line(
+            &format!(
+                "{} {}{of} in this run",
+                style.dim("Request"),
+                request.asked_this_run
+            ),
+            style,
+        ));
+    }
 
     if request.tainted {
         out.push_str(&boxed_line("", style));
@@ -155,6 +172,12 @@ pub fn approval_card(request: &ApprovalRequest, style: &Style) -> String {
             &style.yellow("⚠ This agent has read untrusted data during this run."),
             style,
         ));
+        if request.effect_before_taint == Effect::Allow {
+            out.push_str(&boxed_line(
+                &style.yellow("  Its policy alone would allow this; that reading is why it asks."),
+                style,
+            ));
+        }
         // Naming the sources is what makes the warning actionable: "it read a
         // webpage" is a different decision from "it read a file you wrote".
         for source in &request.taint_sources {
@@ -337,6 +360,9 @@ mod tests {
             arguments: serde_json::json!({}),
             capability: Capability::new("email", "send"),
             risk: RiskLevel::Medium,
+            effect_before_taint: if tainted { Effect::Allow } else { Effect::Ask },
+            asked_this_run: 3,
+            approval_budget: Some(10),
             reason: "policy rule `email.send` requires approval".into(),
             explanation: "Send an order update to customer@example.com.".into(),
             affected_resources: vec!["customer@example.com".into()],
@@ -368,6 +394,16 @@ mod tests {
     fn a_tainted_run_is_called_out() {
         assert!(!approval_card(&request(false), &plain()).contains("untrusted data"));
         assert!(approval_card(&request(true), &plain()).contains("read untrusted data"));
+    }
+
+    #[test]
+    fn the_card_says_where_the_run_is_in_its_budget_and_why_it_asks() {
+        let card = approval_card(&request(true), &plain());
+        assert!(card.contains("Request 3 of 10 in this run"), "{card}");
+        assert!(card.contains("policy alone would allow this"), "{card}");
+        // A request the policy asks about on its own rules says nothing of the
+        // kind.
+        assert!(!approval_card(&request(false), &plain()).contains("policy alone"));
     }
 
     #[test]

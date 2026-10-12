@@ -51,15 +51,22 @@ impl Default for InteractiveGate {
 
 #[async_trait]
 impl ApprovalGate for InteractiveGate {
+    /// Everything above the auto-approval ceiling is put to the operator.
+    ///
+    /// Said here as well as acted on in [`Self::request`], so a run's approval
+    /// budget is spent only on prompts the operator actually saw.
+    fn will_ask(&self, request: &ApprovalRequest) -> bool {
+        self.auto_approve_below
+            .is_none_or(|ceiling| request.risk > ceiling)
+    }
+
     async fn request(
         &self,
         request: &ApprovalRequest,
         cancel: CancellationToken,
     ) -> ApprovalOutcome {
-        if let Some(ceiling) = self.auto_approve_below
-            && request.risk <= ceiling
-        {
-            return ApprovalOutcome::Approved;
+        if !self.will_ask(request) {
+            return ApprovalOutcome::Approved { note: None };
         }
 
         let style = Style::detect();
@@ -111,12 +118,70 @@ impl ApprovalGate for InteractiveGate {
                 ApprovalOutcome::Cancelled
             }
             result = prompt => match result {
-                Ok(true) => ApprovalOutcome::Approved,
+                Ok(true) => ApprovalOutcome::Approved { note: None },
                 Ok(false) => ApprovalOutcome::Denied {
                     note: Some("declined at the terminal".to_owned()),
                 },
                 Err(_) => ApprovalOutcome::Cancelled,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use agentos_core::approval::ApprovalStatus;
+    use agentos_core::ids::{AgentId, ApprovalId, TaskId, TaskRunId};
+    use agentos_core::permission::{Capability, Effect};
+    use agentos_core::risk::RiskLevel;
+
+    use super::*;
+
+    fn request(risk: RiskLevel) -> ApprovalRequest {
+        ApprovalRequest {
+            id: ApprovalId::new(),
+            agent_id: AgentId::new(),
+            agent_name: "a".into(),
+            task_id: TaskId::new(),
+            run_id: TaskRunId::new(),
+            tool: "filesystem.write".into(),
+            arguments: serde_json::json!({}),
+            capability: Capability::new("filesystem", "write"),
+            risk,
+            effect_before_taint: Effect::Ask,
+            asked_this_run: 0,
+            approval_budget: None,
+            reason: "policy".into(),
+            explanation: "writes a file".into(),
+            affected_resources: vec![],
+            tainted: false,
+            taint_sources: vec![],
+            status: ApprovalStatus::Pending,
+            requested_at: agentos_core::now(),
+            decided_at: None,
+            decision_note: None,
+        }
+    }
+
+    #[test]
+    fn only_what_is_above_the_ceiling_is_put_to_the_operator() {
+        // The run's approval budget counts what this says, so it must agree
+        // with what `request` does.
+        let gate = InteractiveGate::auto_approving_up_to(RiskLevel::Medium);
+        assert!(!gate.will_ask(&request(RiskLevel::Low)));
+        assert!(!gate.will_ask(&request(RiskLevel::Medium)));
+        assert!(gate.will_ask(&request(RiskLevel::High)));
+
+        let asks_everything = InteractiveGate::new();
+        assert!(asks_everything.will_ask(&request(RiskLevel::Low)));
+    }
+
+    #[tokio::test]
+    async fn what_is_not_asked_is_approved_without_a_prompt() {
+        let gate = InteractiveGate::auto_approving_up_to(RiskLevel::Medium);
+        let outcome = gate
+            .request(&request(RiskLevel::Low), CancellationToken::new())
+            .await;
+        assert_eq!(outcome, ApprovalOutcome::Approved { note: None });
     }
 }

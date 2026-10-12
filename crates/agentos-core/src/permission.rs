@@ -24,6 +24,8 @@ pub mod permission_domains {
     pub const COMPUTER: &str = "computer";
     /// Network requests not made through the browser.
     pub const NETWORK: &str = "network";
+    /// Acting as a bound GitHub account on a repository, named `owner/name`.
+    pub const GITHUB: &str = "github";
     /// Agent and policy self-modification.
     pub const RUNTIME: &str = "runtime";
 }

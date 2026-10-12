@@ -5,7 +5,7 @@ are stricter than you might expect. They are all there for a reason, and the rea
 
 ## Getting set up
 
-Requires [Rust](https://rustup.rs) 1.85 or newer. There is nothing else to install — the database is
+Requires [Rust](https://rustup.rs) 1.94 or newer. There is nothing else to install — the database is
 embedded and the test suite needs no network, no API key and no external service.
 
 ```bash
@@ -46,8 +46,11 @@ smell worth discussing.
 2. Implement `metadata`, `validate`, `plan` and `execute`.
 3. In `plan`, declare every capability the call needs — **including both ends of a transfer**.
    Reading a file you may read and writing it somewhere you may not is still exfiltration.
-4. Set `returns_untrusted_data: true` if the output could be influenced by anyone other than the
-   operator. This is what drives taint escalation, and getting it wrong quietly removes a control.
+4. Label every result with the `DataSource` its bytes came from, and list every capability `plan`
+   can require in the tool's manifest. Taint follows the label, and a plan that reads the outside
+   world taints the run whatever the label says; a plan that exceeds the manifest is written to
+   the audit log. `returns_untrusted_data` is catalogue information for `agentos tools` only and
+   has no effect on authorisation.
 5. Register it in `standard_registry()`, or — if the tool family needs its own crate, the way the
    browser and computer layers do — in `agentos_runtime::build_registry`. There is one composition
    root on purpose: a second registry assembled by hand is how the catalogue and the runtime drift

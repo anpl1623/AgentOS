@@ -71,11 +71,7 @@ pub async fn run(command: PolicyCommand, config: &RuntimeConfig) -> Result<()> {
 
             let runtime = super::open(config).await?;
             let agent = runtime.agent_by_name(&agent).await?;
-            let version = runtime
-                .database()
-                .agents()
-                .set_policy(agent.id, &source)
-                .await?;
+            let version = runtime.set_policy(agent.id, &source).await?;
 
             println!(
                 "{} policy for {} (version {version}, {} rule(s), default {})",
@@ -127,6 +123,17 @@ fn summarise(source: &str, style: &Style) -> Result<()> {
                 "Taint:   escalation is DISABLED; untrusted input will not raise the approval bar"
             )
         );
+    }
+
+    match policy.approvals.max_per_run {
+        Some(budget) => println!(
+            "{} after {budget} request(s) in one run, further ones are refused without asking",
+            style.dim("Budget: ")
+        ),
+        None => println!(
+            "{}",
+            style.yellow("Budget:  none; a run may ask for approval without limit")
+        ),
     }
 
     for rule in &policy.rules {

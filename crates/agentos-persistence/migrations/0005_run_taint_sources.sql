@@ -1,0 +1,12 @@
+-- Record which external sources tainted a run, not only that it was tainted.
+--
+-- A retry of a task re-reads what the earlier attempt read, so it has to start
+-- tainted; and an approval card raised by an inherited taint has to be able to
+-- say where the data came from. The flag alone answers neither: it cannot
+-- rebuild a tracker that names its sources.
+--
+-- A JSON array of serialised DataSource values, the same shape as
+-- approvals.taint_sources but not the same content: approvals hold display
+-- labels for a client to word, whereas these have to deserialise back into the
+-- values the tracker observes.
+ALTER TABLE task_runs ADD COLUMN taint_sources TEXT NOT NULL DEFAULT '[]';

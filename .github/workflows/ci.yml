@@ -78,6 +78,11 @@ jobs:
       - name: Type-check and build
         run: npm run build
         working-directory: apps/desktop
+      # The interface's pure logic — formatting, parsing, decisions about what an
+      # operator is shown — is tested in Node, without a browser or the runtime.
+      - name: Unit tests
+        run: npm test
+        working-directory: apps/desktop
       # The TypeScript types are generated from the Rust view models. If the two
       # have drifted, regenerating produces a diff — which means someone changed
       # a Rust type and did not commit the binding it implies.

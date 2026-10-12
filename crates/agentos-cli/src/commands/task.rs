@@ -54,8 +54,9 @@ pub enum TaskCommand {
         #[arg(long = "depends-on")]
         depends_on: Vec<String>,
 
-        /// Hold the task until this RFC 3339 time.
-        #[arg(long, conflicts_with = "depends_on")]
+        /// Hold the task until this RFC 3339 time. With `--depends-on`, it
+        /// waits for both.
+        #[arg(long)]
         at: Option<String>,
     },
 
@@ -163,21 +164,18 @@ pub async fn run(command: TaskCommand, config: &RuntimeConfig) -> Result<()> {
                 })
                 .collect::<Result<Vec<_>>>()?;
 
-            let task = match at {
-                Some(text) => {
-                    let when = chrono::DateTime::parse_from_rfc3339(&text)
+            let when = at
+                .map(|text| {
+                    chrono::DateTime::parse_from_rfc3339(&text)
                         .with_context(|| {
                             format!("`{text}` is not an RFC 3339 time, e.g. 2026-09-01T09:00:00Z")
-                        })?
-                        .with_timezone(&chrono::Utc);
-                    runtime.create_task_at(agent.id, &objective, when).await?
-                }
-                None => {
-                    runtime
-                        .create_task_after(agent.id, &objective, &dependencies)
-                        .await?
-                }
-            };
+                        })
+                        .map(|when| when.with_timezone(&chrono::Utc))
+                })
+                .transpose()?;
+            let task = runtime
+                .create_task(agent.id, &objective, &dependencies, when)
+                .await?;
 
             println!("{} {}", style.dim("Task     "), task.id);
             println!("{} {}", style.dim("Agent    "), agent.name);

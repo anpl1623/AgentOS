@@ -2,8 +2,10 @@
 //!
 //! One of two clients of `agentos-runtime`, the other being the CLI. Both talk
 //! to the same runtime; neither reimplements any part of it. What lives here is
-//! window setup, a command surface, and two bridges — approvals out to a human
-//! and audit events out to the activity feed.
+//! window setup, a command surface, two bridges — approvals out to a human and
+//! audit events out to the activity feed — and the supervision of the
+//! scheduler, which runs inside the application so that a schedule fires
+//! without a terminal left open.
 //!
 //! If you are looking for how an agent decides what to do, or what it is
 //! allowed to do, it is not in this crate. See `agentos-runtime` and
@@ -12,7 +14,10 @@
 
 pub mod commands;
 pub mod dto;
+pub mod lifecycle;
 pub mod state;
+
+use std::sync::Arc;
 
 use agentos_runtime::{Runtime, RuntimeConfig};
 use tauri::Manager;
@@ -40,7 +45,7 @@ pub fn run() {
         .with_writer(std::io::stderr)
         .init();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
             let config =
                 RuntimeConfig::discover().expect("could not determine where to store data");
@@ -57,15 +62,21 @@ pub fn run() {
             }
 
             state::stream_activity(app.handle().clone(), &runtime);
-            app.manage(AppState::new(runtime));
+            let state = AppState::new(runtime);
+            // After the reap, so a scheduler started now cannot have a run of
+            // its own mistaken for one the last process abandoned.
+            state::resume_scheduler(Arc::clone(&state.scheduler));
+            app.manage(state);
             Ok(())
         })
+        .on_window_event(lifecycle::on_window_event)
         .invoke_handler(tauri::generate_handler![
             commands::dashboard,
             commands::list_agents,
             commands::get_agent,
             commands::create_agent,
             commands::set_agent_enabled,
+            commands::grant_report,
             commands::check_policy,
             commands::set_policy,
             commands::list_tasks,
@@ -73,17 +84,52 @@ pub fn run() {
             commands::cancel_run,
             commands::get_trace,
             commands::get_task_trace,
+            commands::list_runs,
+            commands::retry_task,
+            commands::create_task,
+            commands::add_task_dependency,
+            commands::task_graph,
+            commands::scheduler_status,
+            commands::set_scheduler_running,
+            commands::list_schedules,
+            commands::create_schedule,
+            commands::set_schedule_paused,
+            commands::delete_schedule,
+            commands::check_cadence,
+            commands::list_memories,
+            commands::remember,
+            commands::revise_memory,
+            commands::forget_memory,
             commands::list_pending_approvals,
+            commands::list_recent_approvals,
             commands::resolve_approval,
             commands::activity,
             commands::verify_audit,
+            commands::audit_health,
+            commands::audit_record,
+            commands::audit_for_run,
+            commands::tool_usage,
             commands::list_tools,
             commands::settings,
             commands::set_provider_key,
             commands::remove_provider_key,
+            commands::list_network_credentials,
+            commands::set_network_credential,
+            commands::remove_network_credential,
+            commands::list_integrations,
+            commands::bind_integration,
+            commands::unbind_integration,
+            commands::test_integration,
+            commands::acknowledge_close,
+            commands::confirm_close,
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("could not start the AgentOS window");
+
+    // Built and run in two steps so the exit hook can be given to `run`: the
+    // scheduler and every live run are stopped, and recorded as stopped, before
+    // the process ends, rather than left for the next launch to reap.
+    app.run(|handle, event| lifecycle::on_run_event(handle, &event));
 }
 
 #[cfg(test)]

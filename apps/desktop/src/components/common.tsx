@@ -1,87 +1,52 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
-import { humanise } from "../sdk/format";
+import { ago } from "../sdk/format";
+import { useNow } from "./hooks";
 
-/** A risk level, coloured by severity. The one thing on screen that should shout. */
-export function Risk({ level }: { level: string }) {
-  return <span className={`badge ${level}`}>{level}</span>;
-}
-
-/** A run state, coloured by disposition. */
-export function State({ state }: { state: string }) {
-  const tone =
-    state === "completed"
-      ? "ok"
-      : state === "failed"
-        ? "high"
-        : state === "cancelled"
-          ? "medium"
-          : ["idle"].includes(state)
-            ? "neutral"
-            : "live";
-  return <span className={`badge ${tone}`}>{humanise(state)}</span>;
-}
-
-/** A task status. */
-export function Status({ status }: { status: string }) {
-  const tone =
-    status === "succeeded"
-      ? "ok"
-      : status === "failed"
-        ? "high"
-        : status === "cancelled"
-          ? "medium"
-          : status === "running"
-            ? "live"
-            : "neutral";
-  return <span className={`badge ${tone}`}>{status}</span>;
-}
-
-/**
- * Whether an agent may be given work.
- *
- * Deliberately not the run-state badge: an *enabled* agent is not a *running*
- * one, and showing "running" beside an idle agent would be a lie about what the
- * machine is doing.
- */
-export function Enabled({ status }: { status: string }) {
-  const on = status === "enabled";
-  return <span className={`badge ${on ? "ok" : "neutral"}`}>{on ? "enabled" : "disabled"}</span>;
-}
-
-/**
- * The marker for a run that has read untrusted data.
- *
- * Shown wherever such a run appears, not only on the approval card. A person
- * scanning a list should be able to see which work was influenced by something
- * the operator did not write.
- */
-export function Tainted({ label = "read untrusted data" }: { label?: string }) {
-  return (
-    <span className="taint" title="This run has read data from outside the trust boundary.">
-      <span aria-hidden="true">⚠</span>
-      {label}
-    </span>
-  );
-}
+// The status chips live in their own module; re-exported so every screen keeps
+// importing its whole vocabulary from one place.
+export * from "./status";
 
 export function Panel({ children }: { children: ReactNode }) {
   return <div className="panel">{children}</div>;
 }
 
+/** An emptied list. A result the operator asked for, so it is announced. */
 export function Empty({ children }: { children: ReactNode }) {
-  return <div className="empty">{children}</div>;
+  return (
+    <div className="empty" role="status">
+      {children}
+    </div>
+  );
 }
 
 export function Loading({ what }: { what: string }) {
-  return <div className="spinner">Loading {what}…</div>;
+  return (
+    <div className="spinner" role="status" aria-live="polite">
+      Loading {what}…
+    </div>
+  );
 }
 
+/**
+ * An async failure. Every one in the app arrives through here, so it is an
+ * alert: a request that failed while the operator looked elsewhere must not
+ * appear in silence.
+ */
 export function ErrorBanner({ message }: { message: string }) {
-  return <div className="banner error">{message}</div>;
+  return (
+    <div className="banner error" role="alert">
+      {message}
+    </div>
+  );
 }
 
-/** A labelled number for the dashboard. */
+/**
+ * A labelled number for the dashboard.
+ *
+ * The tone is a class, not a colour. A colour chosen here is one the light
+ * theme cannot reach.
+ */
 export function Stat({
   value,
   label,
@@ -89,32 +54,128 @@ export function Stat({
 }: {
   value: string | number;
   label: string;
-  tone?: "ok" | "warn" | "danger";
+  tone?: "ok" | "warn" | "danger" | undefined;
 }) {
-  const colour =
-    tone === "ok"
-      ? "var(--ok)"
-      : tone === "warn"
-        ? "var(--warn)"
-        : tone === "danger"
-          ? "var(--danger)"
-          : undefined;
   return (
     <div className="stat">
-      <div className="stat-value" style={colour ? { color: colour } : undefined}>
-        {value}
-      </div>
+      <div className={tone ? `stat-value tone-${tone}` : "stat-value"}>{value}</div>
       <div className="stat-label">{label}</div>
     </div>
   );
 }
 
-/** The section heading used throughout. */
-export function Section({ title, action }: { title: string; action?: ReactNode }) {
+/**
+ * One line of a list.
+ *
+ * With `onActivate` it is a real `<button>`, so Enter, Space, focus and the
+ * announcement as something that does a thing all come from the platform
+ * rather than from a key handler that would have to be right in thirteen
+ * places. Without it, it is a plain `<div>` that takes no focus.
+ *
+ * Pass `onActivate` only when activation does something. A row guarded with
+ * `task.latest_run ? () => open(…) : undefined` is correct; a row given a
+ * handler that sometimes does nothing is announced as a button, takes a tab
+ * stop, and then ignores the key press. A row holding its own buttons or links
+ * must not take `onActivate` either: interactive content cannot nest inside a
+ * button.
+ */
+export function Row({
+  onActivate,
+  className,
+  children,
+}: {
+  onActivate?: (() => void) | undefined;
+  className?: string | undefined;
+  children: ReactNode;
+}) {
+  const extra = className ? ` ${className}` : "";
+  if (onActivate) {
+    return (
+      <button type="button" className={`row clickable${extra}`} onClick={onActivate}>
+        {children}
+      </button>
+    );
+  }
+  return <div className={`row${extra}`}>{children}</div>;
+}
+
+/**
+ * The title block of a screen.
+ *
+ * `parent` draws a breadcrumb back to the list a detail screen belongs to. It
+ * takes a callback rather than a route so this component does not need to know
+ * how the app navigates.
+ */
+export function PageHeader({
+  title,
+  subtitle,
+  parent,
+  actions,
+}: {
+  title: ReactNode;
+  subtitle?: ReactNode;
+  parent?: { label: string; onActivate: () => void } | undefined;
+  actions?: ReactNode;
+}) {
   return (
-    <div className="page-head">
-      <h2 style={{ margin: "24px 0 10px" }}>{title}</h2>
-      {action ? <div style={{ marginTop: 20 }}>{action}</div> : null}
+    <>
+      {parent ? (
+        <nav className="crumbs" aria-label="Breadcrumb">
+          <button type="button" className="crumb" onClick={parent.onActivate}>
+            {parent.label}
+          </button>
+        </nav>
+      ) : null}
+      <div className="page-head">
+        <h1>{title}</h1>
+        {actions}
+      </div>
+      {subtitle ? <p className="page-sub">{subtitle}</p> : null}
+    </>
+  );
+}
+
+// Varied so a column of placeholders reads as a list rather than a barcode.
+// Fixed rather than random so a re-render does not make the skeleton jitter.
+const SKELETON_WIDTHS = [
+  [62, 38],
+  [48, 30],
+  [70, 44],
+  [55, 26],
+] as const;
+
+/**
+ * Placeholder rows in the shape of `.row-title` over `.row-meta`.
+ *
+ * Hidden from assistive technology: the `Loading` beside it is what speaks,
+ * and a list of blank shapes has nothing to say.
+ */
+export function SkeletonRows({ count }: { count: number }) {
+  return (
+    <div aria-hidden="true">
+      {Array.from({ length: count }, (_, index) => {
+        const [title, meta] = SKELETON_WIDTHS[index % SKELETON_WIDTHS.length] ?? [60, 35];
+        return (
+          <div className="skeleton-row" key={index}>
+            <div className="skeleton-line" style={{ "--w": `${title}%` } as CSSProperties} />
+            <div className="skeleton-line" style={{ "--w": `${meta}%` } as CSSProperties} />
+          </div>
+        );
+      })}
     </div>
   );
+}
+
+/**
+ * The note on a screen whose latest refresh failed and which is showing what
+ * it had before. Worded here once so every screen says it the same way.
+ */
+export function Stale({ since }: { since: string | number }) {
+  // Re-render on the minute so "from 3m ago" does not stay 3m for an hour.
+  useNow();
+  const at = typeof since === "number" ? since : Date.parse(since);
+  // A time that cannot be read still leaves the data stale; say so without
+  // printing the garbage.
+  if (!Number.isFinite(at)) return <span className="stale">showing earlier data</span>;
+  return <span className="stale">showing data from {ago(new Date(at).toISOString())}</span>;
 }

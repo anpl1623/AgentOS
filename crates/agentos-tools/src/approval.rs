@@ -14,7 +14,12 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApprovalOutcome {
     /// A human said yes.
-    Approved,
+    Approved {
+        /// Why, if they wrote it down. Kept with the decision and in the
+        /// audit record, so that a yes to a high-risk call can be explained
+        /// as well as proved.
+        note: Option<String>,
+    },
     /// A human said no.
     Denied {
         /// Their note, if any.
@@ -22,13 +27,22 @@ pub enum ApprovalOutcome {
     },
     /// The run was cancelled while waiting.
     Cancelled,
+    /// Nobody was asked: the run had spent its approval budget.
+    ///
+    /// Distinct from [`Self::Denied`] so the audit chain can say who refused.
+    /// A reader of the chain must be able to tell a policy's limit from a
+    /// person's judgement without parsing the note.
+    OverBudget {
+        /// What the run was told, naming the count and the budget.
+        note: String,
+    },
 }
 
 impl ApprovalOutcome {
     /// Whether the action may proceed.
     #[must_use]
     pub const fn is_approved(&self) -> bool {
-        matches!(self, Self::Approved)
+        matches!(self, Self::Approved { .. })
     }
 }
 
@@ -45,6 +59,17 @@ pub trait ApprovalGate: Send + Sync + fmt::Debug {
         request: &ApprovalRequest,
         cancel: CancellationToken,
     ) -> ApprovalOutcome;
+
+    /// Whether this request would be put to a person.
+    ///
+    /// A gate that settles some requests by a rule of its own, as the CLI's
+    /// auto-approval ceiling does, answers no for those. A run's approval
+    /// budget bounds how often a person is asked, and must not be spent on
+    /// requests nobody saw. The default is yes, so a gate that does not say
+    /// is counted: a wrong default here can only make the budget stricter.
+    fn will_ask(&self, _request: &ApprovalRequest) -> bool {
+        true
+    }
 }
 
 /// Denies everything.
@@ -64,6 +89,11 @@ impl ApprovalGate for DenyAllGate {
         ApprovalOutcome::Denied {
             note: Some("no approver is available; running unattended".to_owned()),
         }
+    }
+
+    /// Nobody is asked: the answer is the rule.
+    fn will_ask(&self, _request: &ApprovalRequest) -> bool {
+        false
     }
 }
 
@@ -116,7 +146,7 @@ impl ApprovalGate for RecordingGate {
     ) -> ApprovalOutcome {
         self.seen.lock().await.push(request.clone());
         if self.approve {
-            ApprovalOutcome::Approved
+            ApprovalOutcome::Approved { note: None }
         } else {
             ApprovalOutcome::Denied {
                 note: Some("denied by test gate".to_owned()),
@@ -129,7 +159,7 @@ impl ApprovalGate for RecordingGate {
 mod tests {
     use agentos_core::approval::ApprovalStatus;
     use agentos_core::ids::{AgentId, ApprovalId, TaskId, TaskRunId};
-    use agentos_core::permission::Capability;
+    use agentos_core::permission::{Capability, Effect};
     use agentos_core::risk::RiskLevel;
 
     use super::*;
@@ -145,6 +175,9 @@ mod tests {
             arguments: serde_json::json!({}),
             capability: Capability::new("email", "send"),
             risk: RiskLevel::High,
+            effect_before_taint: Effect::Ask,
+            asked_this_run: 1,
+            approval_budget: Some(10),
             reason: "policy".into(),
             explanation: "sends an email".into(),
             affected_resources: vec![],
@@ -164,6 +197,9 @@ mod tests {
             .await;
         assert!(!outcome.is_approved());
         assert!(matches!(outcome, ApprovalOutcome::Denied { .. }));
+        // Its refusals are the rule's, not a person's, and spend no budget.
+        assert!(!DenyAllGate.will_ask(&request()));
+        assert!(RecordingGate::approving().will_ask(&request()));
     }
 
     #[tokio::test]
