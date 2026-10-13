@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ApprovalView } from "../bindings/ApprovalView";
 import type { AuditRecordView } from "../bindings/AuditRecordView";
+import type { DelegationView } from "../bindings/DelegationView";
 import type { ExecutionView } from "../bindings/ExecutionView";
 import type { RunSummary } from "../bindings/RunSummary";
 import type { StepView } from "../bindings/StepView";
@@ -29,6 +30,8 @@ import { shortHash } from "./activityModel";
 import { firstLine } from "./dashboardModel";
 import type { Navigate } from "./route";
 import {
+  type DelegationPlacement,
+  type DelegationRow,
   type Entry,
   type FailureAnchor,
   LIVE_INTERVAL_MS,
@@ -42,13 +45,16 @@ import {
   buildTimeline,
   canRetry,
   coalesce,
-  concernsRun,
+  concernsAnyRun,
+  delegationRows,
   entriesFor,
   failureAnchor,
   marker,
   mergeEntries,
+  placeDelegations,
   shownState,
   transcript,
+  treeRunIds,
 } from "./runModel";
 
 /** How often a live run's timeline extends to the present when nothing else changes. */
@@ -103,28 +109,57 @@ export function Run({ runId, navigate }: { runId: string; navigate: Navigate }) 
     [taskId],
   );
   const audit = useAsync(() => api.auditForRun(runId), [runId]);
+  // The tree is read only for a run that delegated: every other run's tree
+  // is the run alone, and the trace already says everything about it.
+  const delegating = (trace.data?.delegations.length ?? 0) > 0;
+  const tree = useAsync(
+    () => (delegating ? api.delegationTree(runId) : Promise.resolve(null)),
+    [runId, delegating],
+  );
   const loadedAt = useLoadedAt(trace.data);
 
   const run = trace.data?.run ?? null;
   const live = run !== null && isLive(run.state);
 
+  // Every run whose events change this screen: this one, and each run it
+  // delegated to however far down, since a child's progress is drawn here.
+  const watched = useMemo(() => {
+    const ids = treeRunIds(tree.data);
+    ids.add(runId);
+    for (const delegation of trace.data?.delegations ?? []) {
+      if (delegation.child_run_id !== null) ids.add(delegation.child_run_id);
+    }
+    return ids;
+  }, [runId, tree.data, trace.data]);
+
   // One reload per burst of events for this run, and a slow timer behind it
   // for whatever the stream dropped. The timer reloads directly: through the
   // debounce, a run busy enough never to pause would hold it off as well.
-  const reloads = useRef({ trace: trace.reload, audit: audit.reload, runs: runs.reload });
-  reloads.current = { trace: trace.reload, audit: audit.reload, runs: runs.reload };
+  const reloads = useRef({
+    trace: trace.reload,
+    audit: audit.reload,
+    runs: runs.reload,
+    tree: tree.reload,
+  });
+  reloads.current = {
+    trace: trace.reload,
+    audit: audit.reload,
+    runs: runs.reload,
+    tree: tree.reload,
+  };
   const refresh = useMemo(
     () =>
       coalesce(() => {
         reloads.current.trace();
         reloads.current.audit();
         reloads.current.runs();
+        reloads.current.tree();
       }, REFRESH_DEBOUNCE_MS, REFRESH_MAX_WAIT_MS),
     [],
   );
   useEffect(() => () => refresh.cancel(), [refresh]);
   useLive(events.activity, (payload: unknown) => {
-    if (concernsRun(payload, runId)) refresh.schedule();
+    if (concernsAnyRun(payload, watched)) refresh.schedule();
   });
   useVisibleInterval(refresh.flush, live ? LIVE_INTERVAL_MS : SETTLED_INTERVAL_MS);
 
@@ -147,6 +182,10 @@ export function Run({ runId, navigate }: { runId: string; navigate: Navigate }) 
   const timeline = useMemo(() => (data ? buildTimeline(data, now) : null), [data, now]);
   const anchor = useMemo(
     () => (data ? failureAnchor(data.run, data.steps, data.executions) : null),
+    [data],
+  );
+  const placement = useMemo(
+    () => (data ? placeDelegations(data.executions, data.delegations) : null),
     [data],
   );
 
@@ -224,7 +263,7 @@ export function Run({ runId, navigate }: { runId: string; navigate: Navigate }) 
   const shown = shownState(data.run.state, cancelRequested);
   const attempts = runs.data ?? [];
   const latestId = runs.data?.at(-1)?.id ?? null;
-  const retryable = canRetry(data.run, latestId);
+  const retryable = canRetry(data.run, latestId, data.delegated_by !== null);
   const visible = entriesFor(mode, entries);
 
   return (
@@ -240,6 +279,9 @@ export function Run({ runId, navigate }: { runId: string; navigate: Navigate }) 
         }
         actions={<Attempts run={data.run} runs={attempts} navigate={navigate} />}
       />
+      {data.delegated_by ? (
+        <DelegatedBy delegation={data.delegated_by} navigate={navigate} />
+      ) : null}
 
       <div className="toolbar">
         {shown === "cancelling" ? (
@@ -375,8 +417,17 @@ export function Run({ runId, navigate }: { runId: string; navigate: Navigate }) 
           failure={data.run.failure}
           onToggle={toggle}
           onReveal={reveal}
+          rowsFor={(found) => delegationRows(data.agent_name, found, tree.data)}
+          placement={placement}
+          live={live}
+          navigate={navigate}
         />
       </div>
+      {tree.error && delegating ? (
+        <ErrorBanner
+          message={`The runs delegated beneath this one could not be read: ${tree.error}`}
+        />
+      ) : null}
 
       {data.approvals.length > 0 ? (
         <Approvals approvals={data.approvals} navigate={navigate} />
@@ -444,6 +495,10 @@ function TraceList({
   failure,
   onToggle,
   onReveal,
+  rowsFor,
+  placement,
+  live,
+  navigate,
 }: {
   mode: TraceMode;
   entries: readonly Entry[];
@@ -453,8 +508,22 @@ function TraceList({
   failure: string | null;
   onToggle: (id: string) => void;
   onReveal: (target: SpanTarget) => void;
+  /** The rows beneath a call, for the delegations it made. */
+  rowsFor: (found: readonly DelegationView[]) => DelegationRow[];
+  placement: DelegationPlacement | null;
+  live: boolean;
+  navigate: Navigate;
 }) {
-  if (entries.length === 0) {
+  // Beneath the call that made them, or in the Steps mode, where calls are
+  // not drawn, beneath the step that reports the call.
+  const beneath = (executionId: string | null) => {
+    const found = executionId === null ? undefined : placement?.byExecution.get(executionId);
+    return found === undefined ? null : (
+      <Delegations rows={rowsFor(found)} navigate={navigate} />
+    );
+  };
+  const unplaced = placement?.unplaced ?? [];
+  if (entries.length === 0 && unplaced.length === 0) {
     return (
       <Empty>
         {mode === "calls" ? "No tools were called." : "Nothing has been recorded yet."}
@@ -468,7 +537,9 @@ function TraceList({
         step={entry.step}
         failure={anchor?.kind === "step" && anchor.ordinal === entry.step.ordinal ? failure : null}
         onReveal={onReveal}
-      />
+      >
+        {mode === "steps" ? beneath(entry.step.tool_execution_id) : null}
+      </StepRow>
     ) : (
       <ExecutionRow
         key={entry.key}
@@ -476,9 +547,31 @@ function TraceList({
         open={expanded.has(entry.execution.id)}
         failure={anchor?.kind === "execution" && anchor.id === entry.execution.id ? failure : null}
         onToggle={() => onToggle(entry.execution.id)}
-      />
+      >
+        {beneath(entry.execution.id)}
+      </ExecutionRow>
     ),
   );
+  // A call is recorded when it ends, so the delegations of one still in
+  // progress have no row to sit under yet. They are drawn last, where that
+  // call will appear, rather than left off a trace that is meant to say
+  // what the run is doing.
+  if (unplaced.length > 0) {
+    rows.push(
+      <li key="delegations-unplaced">
+        <div className="row">
+          <span className="trace-marker" aria-hidden="true">
+            ▶
+          </span>
+          <div className="row-main">
+            <span className="mono">agent.delegate</span>{" "}
+            <span className="muted">{live ? "in progress" : "with no recorded call"}</span>
+          </div>
+        </div>
+        <Delegations rows={rowsFor(unplaced)} navigate={navigate} />
+      </li>,
+    );
+  }
   if (mode === "calls") {
     return (
       <ul className="plain-list" aria-labelledby="run-trace">
@@ -511,10 +604,13 @@ function StepRow({
   step,
   failure,
   onReveal,
+  children,
 }: {
   step: StepView;
   failure: string | null;
   onReveal: (target: SpanTarget) => void;
+  /** Drawn beneath the summary: the delegations the step's call made. */
+  children?: ReactNode;
 }) {
   const { glyph, label } = marker(step.kind);
   const executionId = step.tool_execution_id;
@@ -535,6 +631,7 @@ function StepRow({
             The run failed here: <Visible text={failure} />
           </div>
         ) : null}
+        {children}
       </div>
       {executionId !== null ? (
         <button
@@ -561,11 +658,14 @@ function ExecutionRow({
   open,
   failure,
   onToggle,
+  children,
 }: {
   execution: ExecutionView;
   open: boolean;
   failure: string | null;
   onToggle: () => void;
+  /** Drawn beneath the row whether or not it is open: the delegations the call made. */
+  children?: ReactNode;
 }) {
   const detailsId = `run-execution-${execution.id}-details`;
   return (
@@ -640,8 +740,89 @@ function ExecutionRow({
           </dl>
         </div>
       ) : null}
+      {children}
     </li>
   );
+}
+
+/**
+ * The run that asked for this one, above everything it did.
+ *
+ * A delegated run read on its own looks like a task nobody set; this line is
+ * the way back up to the run that set it.
+ */
+function DelegatedBy({
+  delegation,
+  navigate,
+}: {
+  delegation: DelegationView;
+  navigate: Navigate;
+}) {
+  return (
+    <p className="field-note">
+      Started by <strong>{delegation.parent_agent}</strong>
+      {" · "}
+      <button
+        type="button"
+        className="ghost mono"
+        onClick={() => navigate({ name: "tasks", runId: delegation.parent_run_id })}
+      >
+        <span className="visually-hidden">open the trace of the run that asked for this one, </span>
+        run {delegation.parent_run_id.slice(0, 8)} →
+      </button>
+    </p>
+  );
+}
+
+/**
+ * Runs another run asked for, beneath the call that asked.
+ *
+ * Depth is drawn as indentation alone, and said in words to a screen reader,
+ * which hears each row's asker before its agent. The taint mark is the one
+ * every run carries: a child's taint is its parent's, the tracker being one.
+ */
+function Delegations({ rows, navigate }: { rows: readonly DelegationRow[]; navigate: Navigate }) {
+  return (
+    <div role="list" aria-label="Work asked of other agents">
+      {rows.map((row) => (
+        <div
+          role="listitem"
+          key={row.key}
+          className="trace-delegation"
+          style={{ "--delegation-depth": row.depth } as CSSProperties}
+        >
+          <span className="visually-hidden">asked by {row.askedBy}: </span>
+          <strong>{row.agent}</strong>
+          <span className={`verdict ${row.tone}`}>
+            <span className="visually-hidden">delegation </span>
+            {sentence(row.state)}
+          </span>
+          <span className="muted">{row.steps === 1 ? "1 step" : `${row.steps} steps`}</span>
+          {row.tainted ? <Tainted /> : null}
+          <span className="muted prose">
+            <Visible text={row.objective} />
+          </span>
+          {row.runId !== null ? (
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => {
+                if (row.runId !== null) navigate({ name: "tasks", runId: row.runId });
+              }}
+            >
+              <span className="visually-hidden">{row.agent}'s </span>trace →
+            </button>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** A wire value as chip text, as the status chips write theirs. */
+function sentence(value: string): string {
+  const words = humanise(value);
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /** Approvals the run asked for. A pending one opens its card. */

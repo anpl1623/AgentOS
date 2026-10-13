@@ -14,6 +14,13 @@ pub struct ApprovalView {
     pub id: String,
     /// The agent asking.
     pub agent_name: String,
+    /// The agents from the root run down to the one asking, when the asking
+    /// run was delegated; empty when a person started it.
+    ///
+    /// A card that named only the asking agent would hide that a supervisor
+    /// chose this work, and the supervisor's policy is half of what let the
+    /// request get this far.
+    pub delegation_chain: Vec<String>,
     /// The task it is working on.
     pub task_id: String,
     /// The run.
@@ -65,6 +72,7 @@ impl ApprovalView {
         Self {
             id: request.id.to_string(),
             agent_name: request.agent_name.clone(),
+            delegation_chain: request.delegation_chain.clone(),
             task_id: request.task_id.to_string(),
             run_id: request.run_id.to_string(),
             objective,

@@ -31,6 +31,23 @@ pub struct AuditHealth {
     pub checked_at: String,
 }
 
+/// What the deliberate check of the whole log found.
+///
+/// Two questions, answered apart because they fail differently. A break
+/// means a record was altered, removed or reordered; the chain itself is in
+/// doubt. A gap means the chain is consistent but tells an incomplete story:
+/// a tool call that started and never ended, a grant with no request before
+/// it, a delegated run that left no records. Either one means the log cannot
+/// be taken at its word, so "intact" is shown only when both lists are empty.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct AuditVerificationView {
+    /// Every place the hash chain does not verify.
+    pub breaks: Vec<String>,
+    /// Every place the chain verifies but the records it holds are incomplete.
+    pub gaps: Vec<String>,
+}
+
 /// One audit record, with everything the chain stores for it.
 ///
 /// Unlike [`super::EventView`], nothing is summarised away: the payload is the

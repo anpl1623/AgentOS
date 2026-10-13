@@ -84,6 +84,7 @@ pub fn run() {
             commands::cancel_run,
             commands::get_trace,
             commands::get_task_trace,
+            commands::delegation_tree,
             commands::list_runs,
             commands::retry_task,
             commands::create_task,

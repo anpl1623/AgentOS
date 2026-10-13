@@ -118,6 +118,11 @@ define_id!(
     IntegrationAccountId,
     "integration_account"
 );
+define_id!(
+    /// Identifies one agent's request that another carry out an objective.
+    DelegationId,
+    "delegation"
+);
 
 #[cfg(test)]
 mod tests {

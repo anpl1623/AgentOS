@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use agentos_core::ids::TaskId;
-use agentos_core::task::{TaskRun, TaskState};
+use agentos_core::task::{Task, TaskRun, TaskState};
 use agentos_runtime::{Runtime, RuntimeError};
 use agentos_tools::ApprovalGate;
 use tauri::{AppHandle, State};
@@ -40,20 +40,16 @@ pub async fn retry_task(
     state: State<'_, AppState>,
     task_id: String,
 ) -> Answer<StartedTask> {
-    let approvals = state.approvals.clone();
-    retry(&state.runtime, &state.retrying, &task_id, |objective| {
-        desktop_gate(app, approvals, objective)
-    })
-    .await
+    let gate = desktop_gate(app, state.approvals.clone(), state.runtime.clone());
+    retry(&state.runtime, &state.retrying, &task_id, gate).await
 }
 
-/// Start another attempt at a task, behind the gate `gate` builds for its
-/// objective.
+/// Start another attempt at a task, behind `gate`.
 pub(crate) async fn retry(
     runtime: &Runtime,
     retrying: &Mutex<()>,
     task_id: &str,
-    gate: impl FnOnce(String) -> Arc<dyn ApprovalGate>,
+    gate: Arc<dyn ApprovalGate>,
 ) -> Answer<StartedTask> {
     let id: TaskId = parse_id("task", task_id)?;
 
@@ -63,20 +59,28 @@ pub(crate) async fn retry(
 
     let task = runtime.task(id).await?;
     let latest = runtime.database().runs().latest_for_task(id).await?;
-    may_retry(latest.as_ref())?;
+    may_retry(&task, latest.as_ref())?;
 
-    begin(runtime, &task, gate(task.objective.clone())).await
+    begin(runtime, &task, gate).await
 }
 
-/// Whether a task whose latest attempt is `latest` may be attempted again.
+/// Whether `task`, whose latest attempt is `latest`, may be attempted again.
 ///
 /// Only an attempt that failed or was cancelled. One still going would leave
 /// two attempts interleaving their traces under a single objective. One that
 /// succeeded would carry out a finished objective a second time, side effects
 /// and all; that is a new task, and asking for it should be as deliberate as
 /// writing one.
-pub(crate) fn may_retry(latest: Option<&TaskRun>) -> Answer<()> {
+///
+/// Never a task another agent's run delegated. It is carried out only as part
+/// of that run, under that run's policy as well as its own; the runtime
+/// refuses to start it alone, and saying so here gives the reason before
+/// anything is attempted.
+pub(crate) fn may_retry(task: &Task, latest: Option<&TaskRun>) -> Answer<()> {
     let refuse = |why: &str| Err(DesktopError::Rejected(why.to_owned()));
+    if task.parent_task_id.is_some() {
+        return refuse(agentos_runtime::DELEGATED_TASK);
+    }
     match latest.map(|run| run.state) {
         None => refuse("this task has never been run, so there is nothing to retry"),
         Some(TaskState::Failed | TaskState::Cancelled) => Ok(()),

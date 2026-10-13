@@ -9,6 +9,7 @@ use agentos_tools::ApprovalGate;
 use tauri::{AppHandle, State};
 use tokio_util::sync::CancellationToken;
 
+use super::delegation::trace_delegations;
 use super::{Answer, DesktopError, parse_id, task_summaries};
 use crate::dto::{
     ApprovalView, ExecutionView, RunSummary, StartedTask, StepView, TaskSummary, TraceView,
@@ -22,9 +23,9 @@ use crate::state::{AppState, ApprovalBridge, DesktopApprovalGate};
 pub(crate) fn desktop_gate(
     app: AppHandle,
     approvals: ApprovalBridge,
-    objective: String,
+    runtime: Runtime,
 ) -> Arc<dyn ApprovalGate> {
-    Arc::new(DesktopApprovalGate::new(app, approvals, objective))
+    Arc::new(DesktopApprovalGate::new(app, approvals, runtime))
 }
 
 /// Recent tasks.
@@ -47,20 +48,16 @@ pub async fn start_task(
     agent_id: String,
     objective: String,
 ) -> Answer<StartedTask> {
-    let approvals = state.approvals.clone();
-    start_new(&state.runtime, &agent_id, &objective, |objective| {
-        desktop_gate(app, approvals, objective)
-    })
-    .await
+    let gate = desktop_gate(app, state.approvals.clone(), state.runtime.clone());
+    start_new(&state.runtime, &agent_id, &objective, gate).await
 }
 
-/// Create a task and start it, behind the gate `gate` builds for its
-/// objective.
+/// Create a task and start it, behind `gate`.
 pub(crate) async fn start_new(
     runtime: &Runtime,
     agent_id: &str,
     objective: &str,
-    gate: impl FnOnce(String) -> Arc<dyn ApprovalGate>,
+    gate: Arc<dyn ApprovalGate>,
 ) -> Answer<StartedTask> {
     let id: AgentId = parse_id("agent", agent_id)?;
     if objective.trim().is_empty() {
@@ -72,7 +69,7 @@ pub(crate) async fn start_new(
     let task = runtime.create_task(id, objective, &[], None).await?;
     // The new task is pending, so a scheduler's tick can find it before this
     // claim lands; it then runs there, and the operator is told so.
-    begin(runtime, &task, gate(task.objective.clone())).await
+    begin(runtime, &task, gate).await
 }
 
 /// Start a run of `task`, as the caller read it.
@@ -106,7 +103,14 @@ pub async fn cancel_run(state: State<'_, AppState>, run_id: String) -> Answer<bo
 #[tauri::command]
 pub async fn get_trace(state: State<'_, AppState>, run_id: String) -> Answer<TraceView> {
     let id: TaskRunId = parse_id("run", &run_id)?;
-    let trace = state.runtime.trace(id).await?;
+    trace_view(&state.runtime, id).await
+}
+
+/// Everything recorded about one run, with both ends of its delegations.
+pub(crate) async fn trace_view(runtime: &Runtime, id: TaskRunId) -> Answer<TraceView> {
+    let trace = runtime.trace(id).await?;
+    let (delegations, delegated_by) =
+        trace_delegations(runtime, &trace.delegations, trace.delegated_by.as_ref()).await?;
     Ok(TraceView {
         run: RunSummary::from(&trace.run),
         task_id: trace.run.task_id.to_string(),
@@ -119,6 +123,8 @@ pub async fn get_trace(state: State<'_, AppState>, run_id: String) -> Answer<Tra
             .iter()
             .map(|request| ApprovalView::new(request, trace.objective.clone()))
             .collect(),
+        delegations,
+        delegated_by,
     })
 }
 

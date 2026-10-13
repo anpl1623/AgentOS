@@ -109,6 +109,14 @@ pub enum RuntimeError {
     )]
     TaskAlreadyClaimed(agentos_core::ids::TaskId),
 
+    /// A delegation was refused.
+    ///
+    /// An agent asking for one sees its refusal as a tool result, decided while
+    /// the call is planned, and never this. This is for the runtime's own
+    /// paths, where a delegation reaches the runtime having passed the tool.
+    #[error(transparent)]
+    Delegation(#[from] agentos_core::delegation::DelegationRefusal),
+
     /// The home directory could not be determined.
     #[error("cannot determine the home directory; set AGENTOS_HOME")]
     NoHomeDirectory,

@@ -7,7 +7,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Timestamp;
-use crate::ids::{AgentId, ApprovalId, EventId, MemoryId, TaskId, TaskRunId, ToolExecutionId};
+use crate::ids::{
+    AgentId, ApprovalId, DelegationId, EventId, MemoryId, TaskId, TaskRunId, ToolExecutionId,
+};
 use crate::permission::{Capability, Effect};
 use crate::risk::RiskLevel;
 use crate::task::{TaskState, TaskTrigger};
@@ -324,6 +326,63 @@ pub enum AgentEvent {
         reason: String,
     },
 
+    /// A run delegated part of its work to another agent, and the child run
+    /// that will carry it out has been prepared.
+    ///
+    /// Recorded once the child run exists, so the record can name it: the
+    /// edge between the two runs is sealed in this payload, inside the hash,
+    /// rather than reconstructed later from a table that can be edited. The
+    /// `delegations` row was written earlier still, before anything started,
+    /// so a delegation that could not be recorded was never performed.
+    #[serde(rename = "agent.delegation.started")]
+    AgentDelegated {
+        /// The delegation.
+        delegation_id: DelegationId,
+        /// The run that asked.
+        parent_run_id: TaskRunId,
+        /// The agent asked, by name, so the record reads after it is deleted.
+        child_agent: String,
+        /// The task created for the child.
+        child_task_id: TaskId,
+        /// The run carrying it out.
+        child_run_id: TaskRunId,
+        /// What the child was asked to do.
+        objective: String,
+        /// How far below the root run the child sits.
+        depth: u8,
+    },
+
+    /// A delegated run ended, however it ended.
+    ///
+    /// A failed child is recorded here as well as a successful one: it is a
+    /// result the parent reads, not an error it raises.
+    #[serde(rename = "agent.delegation.completed")]
+    DelegationCompleted {
+        /// The delegation.
+        delegation_id: DelegationId,
+        /// The run that carried it out.
+        child_run_id: TaskRunId,
+        /// The state the child run ended in.
+        state: TaskState,
+        /// Model turns the child run took.
+        steps: u32,
+        /// Whether the child had read untrusted data by the time it finished.
+        tainted: bool,
+    },
+
+    /// A run asked for a delegation it may not make.
+    ///
+    /// Security-relevant for the reason an unknown tool is: an agent reaching
+    /// past what it was given, whether to an agent that does not exist, to one
+    /// already on its own chain, or beyond the depth or width the operator set.
+    #[serde(rename = "agent.delegation.refused")]
+    DelegationRefused {
+        /// The agent it asked for, by the name it used.
+        child_agent: String,
+        /// Why it was refused.
+        reason: String,
+    },
+
     /// An operator installed a policy for an agent.
     ///
     /// The document is carried whole. The policies table keeps only the
@@ -633,6 +692,9 @@ impl AgentEvent {
             Self::MemoryRecorded { .. } => "agent.memory.recorded",
             Self::ScheduleFired { .. } => "schedule.fired",
             Self::TaskAbandoned { .. } => "agent.task.abandoned",
+            Self::AgentDelegated { .. } => "agent.delegation.started",
+            Self::DelegationCompleted { .. } => "agent.delegation.completed",
+            Self::DelegationRefused { .. } => "agent.delegation.refused",
             Self::PolicyChanged { .. } => "operator.policy.changed",
             Self::AgentCreated { .. } => "operator.agent.created",
             Self::AgentEnabledChanged { .. } => "operator.agent.enabled_changed",
@@ -678,6 +740,7 @@ impl AgentEvent {
             Self::UnknownToolRequested { .. } => true,
             Self::TaintRaised { .. } => true,
             Self::ToolManifestExceeded { .. } => true,
+            Self::DelegationRefused { .. } => true,
             // What an agent may do is decided by these. A grant widened before
             // a bad action is part of the explanation of that action.
             Self::PolicyChanged { .. }
@@ -724,7 +787,11 @@ impl AgentEvent {
             | Self::ToolExecutionFailed { .. }
             | Self::MemoryRecorded { .. }
             | Self::ScheduleFired { .. }
-            | Self::TaskAbandoned { .. } => false,
+            | Self::TaskAbandoned { .. }
+            // A delegation that was allowed is the policy working. Whatever the
+            // child then does is recorded, and classified, on its own.
+            | Self::AgentDelegated { .. }
+            | Self::DelegationCompleted { .. } => false,
         }
     }
 
@@ -884,6 +951,7 @@ pub const SECURITY_KINDS: &[&str] = &[
     "tool.unknown",
     "agent.taint.raised",
     "tool.manifest_exceeded",
+    "agent.delegation.refused",
     "operator.policy.changed",
     "operator.agent.created",
     "operator.agent.enabled_changed",
@@ -974,7 +1042,7 @@ mod tests {
     /// How many variants [`AgentEvent`] has.
     ///
     /// Kept beside [`variant_index`] because the two change together.
-    const VARIANT_COUNT: usize = 47;
+    const VARIANT_COUNT: usize = 50;
 
     /// A dense index per variant, in declaration order.
     ///
@@ -1031,6 +1099,9 @@ mod tests {
             AgentEvent::CredentialUsed { .. } => 44,
             AgentEvent::IntegrationBound { .. } => 45,
             AgentEvent::IntegrationUnbound { .. } => 46,
+            AgentEvent::AgentDelegated { .. } => 47,
+            AgentEvent::DelegationCompleted { .. } => 48,
+            AgentEvent::DelegationRefused { .. } => 49,
         }
     }
 
@@ -1265,6 +1336,26 @@ mod tests {
                 label: "work".into(),
                 host: "https://api.github.com".into(),
                 private_network: false,
+            },
+            AgentEvent::AgentDelegated {
+                delegation_id: DelegationId::new(),
+                parent_run_id: TaskRunId::new(),
+                child_agent: "researcher".into(),
+                child_task_id: TaskId::new(),
+                child_run_id: TaskRunId::new(),
+                objective: "o".into(),
+                depth: 1,
+            },
+            AgentEvent::DelegationCompleted {
+                delegation_id: DelegationId::new(),
+                child_run_id: TaskRunId::new(),
+                state: TaskState::Failed,
+                steps: 3,
+                tainted: true,
+            },
+            AgentEvent::DelegationRefused {
+                child_agent: "sales".into(),
+                reason: "that delegation would close a cycle: sales -> researcher -> sales".into(),
             },
         ]
     }
@@ -1555,6 +1646,7 @@ mod tests {
         assert_eq!(
             flagged,
             vec![
+                "agent.delegation.refused",
                 "agent.taint.raised",
                 "approval.denied",
                 "network.credential.used",
@@ -1585,6 +1677,28 @@ mod tests {
                 "tool.unknown",
             ]
         );
+    }
+
+    #[test]
+    fn a_delegation_record_seals_both_ends_of_the_edge() {
+        // Coverage verification finds a child run through this payload alone,
+        // so the fields it reads are pinned: a rename here would leave every
+        // delegated run unreachable from its parent's records.
+        let parent_run_id = TaskRunId::new();
+        let child_run_id = TaskRunId::new();
+        let event = AgentEvent::AgentDelegated {
+            delegation_id: DelegationId::new(),
+            parent_run_id,
+            child_agent: "researcher".into(),
+            child_task_id: TaskId::new(),
+            child_run_id,
+            objective: "o".into(),
+            depth: 1,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["event"], "agent.delegation.started");
+        assert_eq!(json["parent_run_id"], parent_run_id.to_string());
+        assert_eq!(json["child_run_id"], child_run_id.to_string());
     }
 
     #[test]

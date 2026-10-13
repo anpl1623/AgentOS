@@ -1,7 +1,8 @@
 //! SQLite persistence for AgentOS.
 //!
 //! One embedded database holds everything: agents, their policies, tasks, runs,
-//! execution traces, approvals, memory and the audit log. It lives on the user's
+//! the delegations between runs, execution traces, approvals, memory and the
+//! audit log. It lives on the user's
 //! machine and nothing here talks to a network.
 //!
 //! Repositories are thin: they map rows to domain types and back, and contain no
@@ -18,6 +19,7 @@ pub mod error;
 pub mod agents;
 pub mod approvals;
 pub mod audit_sink;
+pub mod delegations;
 pub mod executions;
 pub mod integrations;
 pub mod memories;
@@ -36,6 +38,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 pub use agents::AgentRepository;
 pub use approvals::ApprovalRepository;
 pub use audit_sink::SqliteAuditSink;
+pub use delegations::DelegationRepository;
 pub use error::DbError;
 pub use executions::{ExecutionRepository, ToolExecutionRecord, ToolUsage};
 pub use integrations::{IntegrationAccount, IntegrationAccountsRepository};
@@ -138,6 +141,12 @@ impl Database {
     #[must_use]
     pub fn approvals(&self) -> ApprovalRepository {
         ApprovalRepository::new(self.pool.clone())
+    }
+
+    /// Delegations between runs.
+    #[must_use]
+    pub fn delegations(&self) -> DelegationRepository {
+        DelegationRepository::new(self.pool.clone())
     }
 
     /// Agent memory.

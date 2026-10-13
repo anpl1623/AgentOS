@@ -7,8 +7,13 @@
 //!
 //! Nothing here formats text. Text logs are a rendering of events, produced by
 //! whoever is displaying them.
+//!
+//! Verifying the log is two questions. [`verify_chain`] asks whether the records
+//! are as they were written; [`verify_coverage`] asks whether they account for
+//! everything they say happened, across a run and every run it delegated to.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod coverage;
 pub mod record;
 
 use std::fmt;
@@ -20,6 +25,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 use tokio::sync::{Mutex, broadcast};
 
+pub use coverage::{CoverageGap, CoverageReport, verify_coverage, verify_log_coverage};
 pub use record::{
     AuditRecord, ChainBreak, ChainVerification, GENESIS_HASH, verify_chain, verify_chain_from,
 };

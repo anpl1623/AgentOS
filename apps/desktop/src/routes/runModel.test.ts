@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ApprovalView } from "../bindings/ApprovalView";
+import type { DelegationTreeView } from "../bindings/DelegationTreeView";
+import type { DelegationView } from "../bindings/DelegationView";
 import type { ExecutionView } from "../bindings/ExecutionView";
 import type { RunSummary } from "../bindings/RunSummary";
 import type { StepView } from "../bindings/StepView";
@@ -14,16 +16,22 @@ import {
   buildTimeline,
   canRetry,
   coalesce,
+  concernsAnyRun,
   concernsRun,
+  delegateRequests,
+  delegationRows,
+  delegationTone,
   entriesFor,
   failureAnchor,
   hhmmss,
   marker,
   mergeEntries,
+  placeDelegations,
   runWindow,
   shownState,
   toolLook,
   transcript,
+  treeRunIds,
   unionLength,
   waitingSummary,
 } from "./runModel";
@@ -99,6 +107,7 @@ function approval(
   return {
     id,
     agent_name: "sales",
+    delegation_chain: [],
     task_id: "task-1",
     run_id: "run-1",
     objective: "o",
@@ -130,6 +139,66 @@ function trace(extra: Partial<TraceView> = {}): TraceView {
     steps: [],
     executions: [],
     approvals: [],
+    delegations: [],
+    delegated_by: null,
+    ...extra,
+  };
+}
+
+function delegation(
+  id: string,
+  agent: string,
+  objective: string,
+  minute: number,
+  extra: Partial<DelegationView> = {},
+): DelegationView {
+  return {
+    id,
+    parent_run_id: "run-1",
+    parent_agent: "sales",
+    child_agent: agent,
+    objective,
+    state: "completed",
+    child_run_id: `run-${agent}`,
+    steps: 3,
+    tainted: false,
+    depth: 1,
+    requested_at: at(minute, 30),
+    duration_ms: 60_000,
+    ...extra,
+  };
+}
+
+/** An `agent.delegate` call asking each of `requests`, as the tool's arguments carry them. */
+function delegate(
+  id: string,
+  minute: number,
+  requests: [agent: string, objective: string][],
+): ExecutionView {
+  return execution(id, minute, {
+    tool: "agent.delegate",
+    arguments: JSON.stringify(
+      { requests: requests.map(([agent, objective]) => ({ agent, objective })) },
+      null,
+      2,
+    ),
+    duration_ms: 2 * 60_000,
+  });
+}
+
+function node(
+  agent: string,
+  children: DelegationTreeView[] = [],
+  extra: Partial<DelegationTreeView> = {},
+): DelegationTreeView {
+  return {
+    run_id: `run-${agent}`,
+    agent,
+    objective: `${agent}'s work`,
+    state: "completed",
+    tainted: false,
+    steps: 2,
+    children,
     ...extra,
   };
 }
@@ -149,6 +218,18 @@ describe("concernsRun", () => {
     expect(concernsRun(null, "run-1")).toBe(false);
     expect(concernsRun("run-1", "run-1")).toBe(false);
     expect(concernsRun(undefined, "run-1")).toBe(false);
+  });
+});
+
+describe("concernsAnyRun", () => {
+  it("matches an event from any run the screen draws, and nothing else", () => {
+    const watched = new Set(["run-1", "run-child"]);
+    expect(concernsAnyRun({ run_id: "run-child" }, watched)).toBe(true);
+    expect(concernsAnyRun({ run_id: "run-1" }, watched)).toBe(true);
+    expect(concernsAnyRun({ run_id: "run-other" }, watched)).toBe(false);
+    expect(concernsAnyRun({ run_id: null }, watched)).toBe(false);
+    expect(concernsAnyRun(null, watched)).toBe(false);
+    expect(concernsAnyRun("run-1", watched)).toBe(false);
   });
 });
 
@@ -301,12 +382,19 @@ describe("the run's state and actions", () => {
   });
 
   it("offers Retry only on a failed or cancelled latest attempt", () => {
-    expect(canRetry(run({ state: "failed" }), "run-1")).toBe(true);
-    expect(canRetry(run({ state: "cancelled" }), null)).toBe(true);
-    expect(canRetry(run({ state: "completed" }), "run-1")).toBe(false);
-    expect(canRetry(run({ state: "executing" }), "run-1")).toBe(false);
+    expect(canRetry(run({ state: "failed" }), "run-1", false)).toBe(true);
+    expect(canRetry(run({ state: "cancelled" }), null, false)).toBe(true);
+    expect(canRetry(run({ state: "completed" }), "run-1", false)).toBe(false);
+    expect(canRetry(run({ state: "executing" }), "run-1", false)).toBe(false);
     // An older attempt: the runtime would retry the latest, not this one.
-    expect(canRetry(run({ state: "failed" }), "run-2")).toBe(false);
+    expect(canRetry(run({ state: "failed" }), "run-2", false)).toBe(false);
+  });
+
+  it("never offers Retry on a run another agent delegated", () => {
+    // Retried alone it would run under its own policy only, outside the
+    // policy of the agent that asked; the runtime refuses it.
+    expect(canRetry(run({ state: "failed" }), "run-1", true)).toBe(false);
+    expect(canRetry(run({ state: "cancelled" }), null, true)).toBe(false);
   });
 
   it("names the attempt among several, and says nothing about a lone one", () => {
@@ -590,6 +678,155 @@ describe("transcript", () => {
 
   it("says a run read nothing untrusted rather than leaving the line out", () => {
     expect(transcript(trace())).toMatch(/^Taint: none$/m);
+  });
+});
+
+describe("delegation", () => {
+  it("reads the agents and objectives a call asked for, and nothing from arguments it cannot read", () => {
+    expect(
+      delegateRequests('{"requests":[{"agent":"writer","objective":"Draft it."},{"agent":7}]}'),
+    ).toEqual([{ agent: "writer", objective: "Draft it." }]);
+    expect(delegateRequests("not json")).toEqual([]);
+    expect(delegateRequests("null")).toEqual([]);
+    expect(delegateRequests('{"requests":"writer"}')).toEqual([]);
+  });
+
+  it("puts each delegation under the call that asked for it", () => {
+    const first = delegate("d1", 1, [
+      ["writer", "Draft it."],
+      ["reader", "Read it."],
+    ]);
+    const second = delegate("d2", 5, [["writer", "Draft it."]]);
+    const delegations = [
+      delegation("w2", "writer", "Draft it.", 5),
+      delegation("w1", "writer", "Draft it.", 1),
+      delegation("r1", "reader", "Read it.", 1),
+    ];
+    const placement = placeDelegations([second, first], delegations);
+    // The same request twice: the earlier call takes the earlier delegation.
+    expect(placement.byExecution.get("d1")?.map((each) => each.id)).toEqual(["w1", "r1"]);
+    expect(placement.byExecution.get("d2")?.map((each) => each.id)).toEqual(["w2"]);
+    expect(placement.unplaced).toEqual([]);
+  });
+
+  it("leaves the delegations of a call still in progress unplaced, not under the call before it", () => {
+    // The finished call asked the writer; the one in progress has no record
+    // yet, and its delegation must not be drawn under the finished one, which
+    // a window of time after that call would do.
+    const finished = delegate("d1", 1, [["writer", "Draft it."]]);
+    const inProgress = delegation("r1", "reader", "Read it.", 3);
+    const placement = placeDelegations(
+      [finished],
+      [delegation("w1", "writer", "Draft it.", 1), inProgress],
+    );
+    expect(placement.byExecution.get("d1")?.map((each) => each.id)).toEqual(["w1"]);
+    expect(placement.unplaced).toEqual([inProgress]);
+  });
+
+  it("does not hand a call a delegation recorded before the call began", () => {
+    const early = delegation("w0", "writer", "Draft it.", 0);
+    const placement = placeDelegations([delegate("d1", 4, [["writer", "Draft it."]])], [early]);
+    expect(placement.byExecution.size).toBe(0);
+    expect(placement.unplaced).toEqual([early]);
+  });
+
+  it("ignores every tool but agent.delegate", () => {
+    const lookalike = execution("x", 0, {
+      tool: "filesystem.read",
+      arguments: JSON.stringify({ requests: [{ agent: "writer", objective: "Draft it." }] }),
+    });
+    const placement = placeDelegations([lookalike], [delegation("w1", "writer", "Draft it.", 1)]);
+    expect(placement.byExecution.size).toBe(0);
+    expect(placement.unplaced).toHaveLength(1);
+  });
+
+  it("tones a delegation by how it ended, and an unknown state as nothing", () => {
+    expect(delegationTone("running")).toBe("live");
+    expect(delegationTone("requested")).toBe("live");
+    expect(delegationTone("completed")).toBe("ok");
+    expect(delegationTone("failed")).toBe("danger");
+    expect(delegationTone("refused")).toBe("blocked");
+    expect(delegationTone("cancelled")).toBe("neutral");
+    expect(delegationTone("constructor")).toBe("neutral");
+  });
+
+  it("nests the runs a child delegated to beneath it, one level deeper each", () => {
+    const tree = node("sales", [
+      node("writer", [], { state: "failed" }),
+      node("researcher", [node("reader", [node("fetcher")], { tainted: true })], {
+        state: "executing",
+      }),
+    ]);
+    const rows = delegationRows(
+      "sales",
+      [
+        delegation("w", "writer", "Draft it.", 1, { state: "failed" }),
+        delegation("r", "researcher", "Find it.", 2, { state: "running", tainted: true }),
+      ],
+      tree,
+    );
+    expect(rows.map((row) => [row.agent, row.depth, row.askedBy, row.tone])).toEqual([
+      ["writer", 1, "sales", "danger"],
+      ["researcher", 1, "sales", "live"],
+      ["reader", 2, "researcher", "ok"],
+      ["fetcher", 3, "reader", "ok"],
+    ]);
+    // An ended delegation speaks for itself; one under way, and every
+    // deeper row, for its run.
+    expect(rows[0]?.state).toBe("failed");
+    expect(rows[1]?.state).toBe("executing");
+    expect(rows[2]?.tainted).toBe(true);
+    expect(rows[2]?.runId).toBe("run-reader");
+  });
+
+  it("draws the direct rows before the tree has loaded, and a delegation with no run without a link", () => {
+    const refused = delegation("x", "writer", "Draft it.", 1, {
+      state: "refused",
+      child_run_id: null,
+      steps: 0,
+    });
+    const rows = delegationRows("sales", [refused], null);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.runId).toBeNull();
+    expect(rows[0]?.tone).toBe("blocked");
+  });
+
+  it("stops at a run it has already drawn, so a malformed tree cannot repeat or recurse forever", () => {
+    const looped = node("researcher");
+    looped.children.push(looped);
+    const rows = delegationRows(
+      "sales",
+      [delegation("r", "researcher", "Find it.", 1)],
+      node("sales", [looped]),
+    );
+    expect(rows.map((row) => row.agent)).toEqual(["researcher"]);
+    expect([...treeRunIds(node("sales", [looped]))]).toEqual(["run-sales", "run-researcher"]);
+    expect(treeRunIds(null).size).toBe(0);
+  });
+
+  it("copies the run that started this one, and each delegation beneath its call", () => {
+    const text = transcript(
+      trace({
+        run: run({ state: "executing" }),
+        executions: [delegate("d1", 1, [["writer", "Draft it."]])],
+        delegations: [
+          delegation("w1", "writer", "Draft it.", 1, { state: "failed", steps: 8 }),
+          delegation("r1", "researcher", "Find it.", 4, { state: "running", tainted: true }),
+        ],
+        delegated_by: delegation("p", "sales", "Find the overdue follow-ups.", 0, {
+          parent_agent: "supervisor",
+          parent_run_id: "run-root",
+        }),
+      }),
+    );
+    expect(text).toMatch(/^Agent: sales\nStarted by: supervisor, run run-root\nRun: run-1$/m);
+    expect(text).toContain(
+      `${hhmmss(at(1))} tool agent.delegate decision=allow outcome=success\n` +
+        "    └─ writer · failed · 8 steps\n",
+    );
+    expect(text).toContain(
+      `agent.delegate in progress\n    └─ researcher · running · 3 steps · ${TAINT_LABEL}\n`,
+    );
   });
 });
 

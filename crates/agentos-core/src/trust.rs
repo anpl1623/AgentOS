@@ -113,6 +113,18 @@ pub enum DataSource {
         /// The API path that was read, e.g. `/repos/acme/widgets/issues/412`.
         endpoint: String,
     },
+    /// The report of another agent this run delegated to.
+    ///
+    /// A model's prose about whatever it read on the way, so it is as
+    /// attacker-influenced as the most hostile thing the child touched. Treating
+    /// it as clean would launder every taint the child picked up through one
+    /// sentence of summary. The child's taint already reaches the parent through
+    /// the tracker they share; labelling the report as well is what lets the
+    /// approval card say which agent the parent heard it from.
+    Agent {
+        /// The name of the agent that wrote the report.
+        agent: String,
+    },
 }
 
 impl DataSource {
@@ -153,6 +165,7 @@ impl DataSource {
                 account,
                 endpoint,
             } => format!("{integration}:{account}@{endpoint}"),
+            Self::Agent { agent } => format!("agent:{agent}"),
         }
     }
 
@@ -171,7 +184,8 @@ impl DataSource {
             | Self::File { .. }
             | Self::Terminal { .. }
             | Self::Screen { .. }
-            | Self::Integration { .. } => true,
+            | Self::Integration { .. }
+            | Self::Agent { .. } => true,
         }
     }
 }
@@ -793,6 +807,17 @@ mod tests {
         };
         assert!(screen.is_externally_influenced());
         assert_eq!(screen.label(), "screen:Mail");
+        // A delegate's report is a model summarising what it read, so it taints
+        // exactly as what it read would have.
+        let report = DataSource::Agent {
+            agent: "researcher".into(),
+        };
+        assert!(report.is_externally_influenced());
+        assert_eq!(report.label(), "agent:researcher");
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            serde_json::json!({"kind": "agent", "agent": "researcher"})
+        );
         assert!(!DataSource::User.is_externally_influenced());
         assert!(!DataSource::Runtime.is_externally_influenced());
     }

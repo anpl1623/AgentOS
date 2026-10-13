@@ -31,6 +31,7 @@ use agentos_providers::{
 use agentos_tools::{TaintTracker, ToolContext, ToolPipeline};
 use tokio_util::sync::CancellationToken;
 
+use crate::budget::RunBudget;
 use crate::error::RuntimeError;
 use crate::prompt::{PLANNING_MEMORY_KINDS, memory_message, system_prompt};
 use crate::state::RunStateMachine;
@@ -87,6 +88,10 @@ const MEMORY_CHANNEL: &str = "memory";
 /// its taint from an earlier attempt at the same task.
 const RETRY_CHANNEL: &str = "retry";
 
+/// What [`AgentEvent::TaintRaised`] names as the way in when the run inherited
+/// its taint from the run that delegated to it.
+const DELEGATION_CHANNEL: &str = "agent.delegate";
+
 /// Drives one run from start to finish.
 pub struct AgentLoop {
     agent: Agent,
@@ -97,7 +102,10 @@ pub struct AgentLoop {
     machine: Arc<RunStateMachine>,
     context: ToolContext,
     taint: Arc<TaintTracker>,
+    budget: Arc<RunBudget>,
     cancel: CancellationToken,
+    /// How the taint this run starts with reached it, for its own trail.
+    inherited_through: &'static str,
 
     conversation: Vec<Message>,
     ordinal: u32,
@@ -132,6 +140,7 @@ impl AgentLoop {
         machine: Arc<RunStateMachine>,
         context: ToolContext,
         taint: Arc<TaintTracker>,
+        budget: Arc<RunBudget>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
@@ -143,13 +152,25 @@ impl AgentLoop {
             machine,
             context,
             taint,
+            budget,
             cancel,
+            inherited_through: RETRY_CHANNEL,
             conversation: Vec::new(),
             ordinal: 0,
             last_response: None,
             pending_failure: None,
             recovery_attempts: 0,
         }
+    }
+
+    /// Mark this run as one another run delegated to.
+    ///
+    /// Its record starts with whatever its delegator had read, and the trail
+    /// says so under that name rather than as a retry it never was.
+    #[must_use]
+    pub(crate) const fn delegated(mut self) -> Self {
+        self.inherited_through = DELEGATION_CHANNEL;
+        self
     }
 
     /// Run to a terminal state.
@@ -161,9 +182,10 @@ impl AgentLoop {
     /// a failed [`RunOutcome`]: an agent being unable to do something is a
     /// result, not an exception.
     pub async fn run(mut self, objective: &str) -> Result<RunOutcome, RuntimeError> {
-        // A retry starts with what earlier attempts read. Its tracker is seeded
-        // tainted, so nothing in this run will flip it; without a record here
-        // its own trail would never say why it began that way.
+        // A retry starts with what earlier attempts read, and a delegated run
+        // with what its delegator read. Its tracker is already tainted, so
+        // nothing in this run will flip it; without a record here its own
+        // trail would never say why it began that way.
         let inherited = self.run.taint_sources.clone();
         let raised_by = self.seed_conversation(objective).await?;
 
@@ -177,7 +199,7 @@ impl AgentLoop {
             self.machine
                 .emit(AgentEvent::TaintRaised {
                     source,
-                    tool: RETRY_CHANNEL.to_owned(),
+                    tool: self.inherited_through.to_owned(),
                 })
                 .await;
         }
@@ -226,6 +248,14 @@ impl AgentLoop {
                 }
             };
 
+            // The gate moves the machine itself, and a run cancelled while a
+            // person was deciding is already `Cancelled` by the time the
+            // handler returns. Applying the handler's trigger on top would be
+            // an illegal transition out of a terminal state, and would skip
+            // the clean-up below that a cancelled run needs most.
+            if self.machine.current().await.is_terminal() {
+                break;
+            }
             self.machine.apply(trigger).await?;
         }
 
@@ -283,10 +313,25 @@ impl AgentLoop {
     }
 
     /// Ask the model what to do next.
+    ///
+    /// Two limits apply. The agent's own `max_steps` bounds this run, as the
+    /// operator set it for this agent; the budget bounds the whole delegation
+    /// tree the run belongs to. For a run that delegates to nothing the budget
+    /// was granted exactly `max_steps` and only this run spends it, so the two
+    /// agree turn for turn and the run stops where it always did.
     async fn plan(&mut self) -> Result<TaskTrigger, RuntimeError> {
         if self.run.steps_taken >= self.agent.max_steps {
             self.pending_failure = Some(TaskFailure::StepBudgetExhausted {
                 limit: self.agent.max_steps,
+            });
+            return Ok(TaskTrigger::UnrecoverableError);
+        }
+        // Taken before the provider is called, so that two runs of one tree
+        // cannot both be promised its last turn, and given back below if the
+        // call produces no turn.
+        if !self.budget.try_spend() {
+            self.pending_failure = Some(TaskFailure::StepBudgetExhausted {
+                limit: self.budget.granted(),
             });
             return Ok(TaskTrigger::UnrecoverableError);
         }
@@ -318,6 +363,9 @@ impl AgentLoop {
         let response = match self.call_provider(request).await {
             Ok(response) => response,
             Err(error) => {
+                // Not a turn: the run record does not count it, so the tree's
+                // budget must not either.
+                self.budget.refund();
                 self.machine
                     .emit(AgentEvent::ModelRequestFailed {
                         provider: self.provider.id().to_owned(),
@@ -712,4 +760,130 @@ fn truncate(text: &str, max: usize) -> String {
         cut -= 1;
     }
     format!("{}…", &text[..cut])
+}
+
+#[cfg(test)]
+mod tests {
+    use agentos_core::agent::ModelConfig;
+    use agentos_providers::{MockProvider, ScriptedTurn};
+    use agentos_secrets::InMemorySecretStore;
+    use agentos_tools::RecordingGate;
+
+    use crate::{FixedProviderFactory, Runtime};
+
+    use super::*;
+
+    /// An agent named `solo`, offered `filesystem.list`, under `policy` when
+    /// one is given, answered by `script`.
+    async fn solo(
+        dir: &tempfile::TempDir,
+        script: Vec<ScriptedTurn>,
+        policy: Option<&str>,
+    ) -> (Runtime, agentos_core::agent::Agent) {
+        let mut runtime = Runtime::in_memory(
+            std::fs::canonicalize(dir.path()).unwrap(),
+            Arc::new(InMemorySecretStore::new()),
+        )
+        .await
+        .unwrap();
+        runtime.set_provider_factory(Arc::new(FixedProviderFactory::new(Arc::new(
+            MockProvider::new(script),
+        ))));
+        let agent = runtime
+            .create_agent(
+                "solo",
+                "i",
+                ModelConfig::new("mock", "m"),
+                vec!["filesystem.list".to_owned()],
+            )
+            .await
+            .unwrap();
+        if let Some(policy) = policy {
+            runtime
+                .database()
+                .agents()
+                .set_policy(agent.id, policy)
+                .await
+                .unwrap();
+        }
+        (runtime, agent)
+    }
+
+    #[tokio::test]
+    async fn a_run_stopped_while_a_person_decides_ends_cancelled_rather_than_in_error() {
+        #[derive(Debug)]
+        struct StoppedWhileDeciding;
+
+        #[async_trait::async_trait]
+        impl agentos_tools::ApprovalGate for StoppedWhileDeciding {
+            async fn request(
+                &self,
+                _request: &agentos_core::approval::ApprovalRequest,
+                _cancel: CancellationToken,
+            ) -> agentos_tools::ApprovalOutcome {
+                agentos_tools::ApprovalOutcome::Cancelled
+            }
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let (runtime, agent) = solo(
+            &dir,
+            vec![ScriptedTurn::call(
+                "c1",
+                "filesystem.list",
+                serde_json::json!({"path": "."}),
+            )],
+            Some("default: ask\npermissions: {}\n"),
+        )
+        .await;
+
+        let outcome = runtime
+            .run_objective(
+                agent.id,
+                "List.",
+                Arc::new(StoppedWhileDeciding),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.state, TaskState::Cancelled, "{outcome:?}");
+        assert!(runtime.running_runs().await.is_empty());
+    }
+
+    /// A run of an agent allowed one turn, whose provider fails until the
+    /// loop has given up on it once and then answers.
+    async fn run_with_one_step(script: Vec<ScriptedTurn>) -> RunOutcome {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (runtime, mut agent) = solo(&dir, script, None).await;
+        agent.max_steps = 1;
+        runtime.database().agents().update(&agent).await.unwrap();
+
+        runtime
+            .run_objective(
+                agent.id,
+                "Answer.",
+                Arc::new(RecordingGate::approving()),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_turn_the_provider_never_produced_is_not_spent() {
+        // Every attempt the loop makes at its first turn fails, so it recovers
+        // and plans again. The failed turn was never taken: before the budget
+        // was shared it cost nothing, and a run allowed one turn still gets it.
+        let failing = (0..=PROVIDER_RETRIES).map(|_| ScriptedTurn::Error("overloaded".into()));
+        let outcome = run_with_one_step(
+            failing
+                .chain(std::iter::once(ScriptedTurn::text("Answered.")))
+                .collect(),
+        )
+        .await;
+
+        assert_eq!(outcome.state, TaskState::Completed, "{outcome:?}");
+        assert_eq!(outcome.steps, 1);
+        assert_eq!(outcome.result.as_deref(), Some("Answered."));
+    }
 }

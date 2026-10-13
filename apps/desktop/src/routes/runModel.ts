@@ -9,6 +9,8 @@
  * hostile string cannot rearrange itself on paste.
  */
 
+import type { DelegationTreeView } from "../bindings/DelegationTreeView";
+import type { DelegationView } from "../bindings/DelegationView";
 import type { EventView } from "../bindings/EventView";
 import type { ExecutionView } from "../bindings/ExecutionView";
 import type { RunSummary } from "../bindings/RunSummary";
@@ -22,7 +24,7 @@ import {
   type TrackSpan,
   elapsed,
 } from "../components/charts";
-import { outcomeTone } from "../components/status";
+import { type VerdictTone, outcomeTone, runTone } from "../components/status";
 import { instant } from "../sdk/eventStream";
 import { duration, humanise, isLive } from "../sdk/format";
 import { decisionTone } from "./approvalsModel";
@@ -69,11 +71,20 @@ export const SETTLED_INTERVAL_MS = 60_000;
  * rather than assumed.
  */
 export function concernsRun(payload: unknown, runId: string): boolean {
-  return (
-    typeof payload === "object" &&
-    payload !== null &&
-    (payload as Partial<EventView>).run_id === runId
-  );
+  return concernsAnyRun(payload, new Set([runId]));
+}
+
+/**
+ * Whether a streamed event concerns any of `runIds`.
+ *
+ * A run that delegated is changed by its children's events as well as its
+ * own: a child's step moves the rows beneath the call, and a child's taint is
+ * the parent's taint.
+ */
+export function concernsAnyRun(payload: unknown, runIds: ReadonlySet<string>): boolean {
+  if (typeof payload !== "object" || payload === null) return false;
+  const runId = (payload as Partial<EventView>).run_id;
+  return typeof runId === "string" && runIds.has(runId);
 }
 
 /**
@@ -240,10 +251,15 @@ export function shownState(state: string, cancelRequested: boolean): string {
  * after an attempt the operator is not looking at. `latestId` is `null` while
  * the attempts are unknown; the shown attempt is then taken as the latest, and
  * the runtime's refusal is the backstop.
+ *
+ * Never a run another agent delegated. Its task is carried out only inside the
+ * run that asked for it, under that run's policy as well as its own, and the
+ * runtime refuses to start it alone; a button that could only be refused is
+ * not offered.
  */
-export function canRetry(run: RunSummary, latestId: string | null): boolean {
+export function canRetry(run: RunSummary, latestId: string | null, delegated: boolean): boolean {
   const ended = run.state === "failed" || run.state === "cancelled";
-  return ended && (latestId === null || latestId === run.id);
+  return !delegated && ended && (latestId === null || latestId === run.id);
 }
 
 /** `attempt {n} of {total}`, once there is more than one. */
@@ -299,6 +315,216 @@ export function failureAnchor(
   );
   const step = quoting.at(-1);
   return step ? { kind: "step", ordinal: step.ordinal } : null;
+}
+
+// ---------------------------------------------------------------------------
+// Delegation
+// ---------------------------------------------------------------------------
+
+/** The tool through which one agent asks another to do part of its work. */
+export const DELEGATE_TOOL = "agent.delegate";
+
+/**
+ * How far below a run its delegation tree is walked.
+ *
+ * The runtime bounds the tree it returns by the configured depth, which is
+ * two; this is the window's own bound, matching the sixteen hops the store
+ * walks an ancestry, so a malformed answer cannot recurse without end.
+ */
+export const MAX_DELEGATION_DEPTH = 16;
+
+/** The agents and objectives one `agent.delegate` call asked for, as its arguments say. */
+export function delegateRequests(json: string): { agent: string; objective: string }[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  const requests = (parsed as { requests?: unknown } | null)?.requests;
+  if (!Array.isArray(requests)) return [];
+  return requests.flatMap((request: unknown) => {
+    const { agent, objective } = (request ?? {}) as { agent?: unknown; objective?: unknown };
+    return typeof agent === "string" && typeof objective === "string" ? [{ agent, objective }] : [];
+  });
+}
+
+/** Which call each delegation belongs to, and those no recorded call accounts for. */
+export interface DelegationPlacement {
+  /** By execution id, in the order the call asked. */
+  byExecution: Map<string, DelegationView[]>;
+  /**
+   * Delegations no recorded call asked for. A call is recorded when it ends,
+   * so on a live run these are the work of the call still in progress.
+   */
+  unplaced: DelegationView[];
+}
+
+/**
+ * Each delegation under the `agent.delegate` call that made it.
+ *
+ * Matched by what the call asked for, not by time. A delegation names neither
+ * its call nor the moment the call ended, and a call still in progress has no
+ * record yet; a window of time would hand that call's delegations to the
+ * finished call before it. Its arguments name each agent and objective it
+ * asked for, and the runtime writes the delegations in that order, so the
+ * calls are walked in the order they started and each request takes the
+ * earliest unclaimed delegation it describes that was not recorded before
+ * the call began. A time that cannot be read rules nothing out.
+ */
+export function placeDelegations(
+  executions: readonly ExecutionView[],
+  delegations: readonly DelegationView[],
+): DelegationPlacement {
+  const pool = [...delegations]
+    .map((delegation, order) => ({ delegation, order, ms: instant(delegation.requested_at) }))
+    .sort((a, b) => compareInstants(a.ms, b.ms) || a.order - b.order);
+  const claimed = new Set<number>();
+  const byExecution = new Map<string, DelegationView[]>();
+  const calls = mergeEntries([], executions).filter(
+    (entry): entry is Extract<Entry, { kind: "execution" }> =>
+      entry.kind === "execution" && entry.execution.tool === DELEGATE_TOOL,
+  );
+  for (const { execution, ms: started } of calls) {
+    const placed: DelegationView[] = [];
+    for (const request of delegateRequests(execution.arguments)) {
+      const match = pool.find(
+        (candidate) =>
+          !claimed.has(candidate.order) &&
+          candidate.delegation.child_agent === request.agent &&
+          candidate.delegation.objective === request.objective &&
+          !(Number.isFinite(started) && candidate.ms < started),
+      );
+      if (match === undefined) continue;
+      claimed.add(match.order);
+      placed.push(match.delegation);
+    }
+    if (placed.length > 0) byExecution.set(execution.id, placed);
+  }
+  return {
+    byExecution,
+    unplaced: pool.filter((each) => !claimed.has(each.order)).map((each) => each.delegation),
+  };
+}
+
+/** Delegation states that are not yet an outcome. */
+const OPEN_DELEGATION = new Set(["requested", "running"]);
+
+const DELEGATION_TONES = {
+  requested: "live",
+  running: "live",
+  completed: "ok",
+  failed: "danger",
+  refused: "blocked",
+  cancelled: "neutral",
+} as const satisfies Record<string, VerdictTone>;
+
+/**
+ * A delegation's state as a verdict tone.
+ *
+ * A refusal is the accent of a policy or a limit working, as a refused call
+ * is; a child that failed is a failure, though the parent goes on. A state
+ * this build does not know is neutral, never a guess at a verdict.
+ */
+export function delegationTone(state: string): VerdictTone {
+  return Object.hasOwn(DELEGATION_TONES, state)
+    ? DELEGATION_TONES[state as keyof typeof DELEGATION_TONES]
+    : "neutral";
+}
+
+/** One line beneath a call: a run another run asked for. */
+export interface DelegationRow {
+  key: string;
+  /** 1 for a run this run asked for, 2 for one that run asked for, and so on. */
+  depth: number;
+  /** The agent that asked, so depth is said in words as well as drawn. */
+  askedBy: string;
+  agent: string;
+  objective: string;
+  state: string;
+  tone: VerdictTone;
+  steps: number;
+  tainted: boolean;
+  /** The child's run, when one was prepared; its trace is a link. */
+  runId: string | null;
+}
+
+/**
+ * The rows beneath a call: each delegation it made, followed by every run
+ * delegated beneath that one, depth first.
+ *
+ * A direct delegation that has ended is shown in its own state, which is the
+ * outcome the asking run was given, and says whether it was refused before a
+ * run existed. One still under way is shown in its run's state, as the
+ * command line shows it; and a run further down in its run state, since the
+ * tree carries runs. `tree` is this run's delegation tree,
+ * or `null` before it has loaded, when only the direct rows are known.
+ */
+export function delegationRows(
+  asker: string,
+  delegations: readonly DelegationView[],
+  tree: DelegationTreeView | null,
+): DelegationRow[] {
+  const rows: DelegationRow[] = [];
+  const seen = new Set<string>(tree === null ? [] : [tree.run_id]);
+  const below = (node: DelegationTreeView, depth: number) => {
+    if (depth > MAX_DELEGATION_DEPTH) return;
+    for (const child of node.children) {
+      if (seen.has(child.run_id)) continue;
+      seen.add(child.run_id);
+      rows.push({
+        key: `run-${child.run_id}`,
+        depth,
+        askedBy: node.agent,
+        agent: child.agent,
+        objective: child.objective,
+        state: child.state,
+        tone: runTone(child.state),
+        steps: child.steps,
+        tainted: child.tainted,
+        runId: child.run_id,
+      });
+      below(child, depth + 1);
+    }
+  };
+  for (const delegation of delegations) {
+    const node =
+      delegation.child_run_id === null
+        ? undefined
+        : tree?.children.find((child) => child.run_id === delegation.child_run_id);
+    // Under way, the child's run says how far it has got, which "running"
+    // does not: waiting on a person is the state an operator is looking for.
+    const underWay = node !== undefined && OPEN_DELEGATION.has(delegation.state);
+    rows.push({
+      key: `delegation-${delegation.id}`,
+      depth: 1,
+      askedBy: asker,
+      agent: delegation.child_agent,
+      objective: delegation.objective,
+      state: underWay ? node.state : delegation.state,
+      tone: underWay ? runTone(node.state) : delegationTone(delegation.state),
+      steps: delegation.steps,
+      tainted: delegation.tainted,
+      runId: delegation.child_run_id,
+    });
+    if (node !== undefined && !seen.has(node.run_id)) {
+      seen.add(node.run_id);
+      below(node, 2);
+    }
+  }
+  return rows;
+}
+
+/** Every run in a delegation tree, the root included. */
+export function treeRunIds(tree: DelegationTreeView | null): Set<string> {
+  const ids = new Set<string>();
+  const walk = (node: DelegationTreeView, depth: number) => {
+    if (depth > MAX_DELEGATION_DEPTH || ids.has(node.run_id)) return;
+    ids.add(node.run_id);
+    for (const child of node.children) walk(child, depth + 1);
+  };
+  if (tree !== null) walk(tree, 0);
+  return ids;
 }
 
 // ---------------------------------------------------------------------------
@@ -567,28 +793,50 @@ function continued(text: string, indent: string): string {
 
 const INDENT = "    ";
 
-/** One entry as one transcript line, and its error indented beneath. */
-function entryLine(entry: Entry): string {
+/**
+ * One delegation as a transcript line, in the shape the command line prints:
+ * agent, state, steps, and taint when there is any.
+ */
+function delegationLine(delegation: DelegationView): string {
+  const parts = [
+    plain(delegation.child_agent),
+    humanise(delegation.state),
+    `${delegation.steps} steps`,
+    ...(delegation.tainted ? [TAINT_LABEL] : []),
+  ];
+  return `${INDENT}└─ ${parts.join(" · ")}`;
+}
+
+/**
+ * One entry as one transcript line, its error indented beneath, and beneath
+ * a delegating call the delegations it made.
+ */
+function entryLine(entry: Entry, placement: DelegationPlacement): string {
   if (entry.kind === "step") {
     const { step } = entry;
     return `${hhmmss(step.at)} ${step.kind} ${continued(plain(step.summary), INDENT)}`;
   }
   const { execution } = entry;
-  const line =
+  const lines = [
     `${hhmmss(execution.started_at)} tool ${plain(execution.tool)} ` +
-    `decision=${execution.effect} outcome=${execution.outcome}`;
-  return execution.error
-    ? `${line}\n${INDENT}${continued(plain(execution.error), INDENT)}`
-    : line;
+      `decision=${execution.effect} outcome=${execution.outcome}`,
+  ];
+  if (execution.error) lines.push(`${INDENT}${continued(plain(execution.error), INDENT)}`);
+  for (const delegation of placement.byExecution.get(execution.id) ?? []) {
+    lines.push(delegationLine(delegation));
+  }
+  return lines.join("\n");
 }
 
 /**
  * The run as plain text, for pasting into a ticket or a message.
  *
- * Objective, agent, run, attempt, state, taint and tokens, then the failure or
- * result when there is one, then one line per entry of the merged timeline:
- * `HH:MM:SS kind summary`, a tool call annotated with its decision and
- * outcome, and an error indented beneath the call that raised it.
+ * Objective, agent, the run that started this one if another did, run,
+ * attempt, state, taint and tokens, then the failure or result when there is
+ * one, then one line per entry of the merged timeline: `HH:MM:SS kind
+ * summary`, a tool call annotated with its decision and outcome, an error
+ * indented beneath the call that raised it, and the delegations a call made
+ * beneath it.
  */
 export function transcript(trace: TraceView, shown: string = trace.run.state): string {
   const { run } = trace;
@@ -606,9 +854,24 @@ export function transcript(trace: TraceView, shown: string = trace.run.state): s
     `Taint: ${taint}`,
     `Tokens: ${run.input_tokens} in, ${run.output_tokens} out`,
   ];
+  if (trace.delegated_by) {
+    const by = trace.delegated_by;
+    head.splice(2, 0, `Started by: ${plain(by.parent_agent)}, run ${by.parent_run_id}`);
+  }
   if (run.failure) head.push(`Failure: ${continued(plain(run.failure), INDENT)}`);
   if (run.result) head.push(`Result: ${continued(plain(run.result), INDENT)}`);
-  const entries = mergeEntries(trace.steps, trace.executions).map(entryLine);
+  const placement = placeDelegations(trace.executions, trace.delegations);
+  const entries = mergeEntries(trace.steps, trace.executions).map((entry) =>
+    entryLine(entry, placement),
+  );
+  if (placement.unplaced.length > 0) {
+    entries.push(
+      isLive(run.state)
+        ? `${DELEGATE_TOOL} in progress`
+        : `${DELEGATE_TOOL} with no recorded call`,
+      ...placement.unplaced.map(delegationLine),
+    );
+  }
   return `${[...head, "", ...entries].join("\n")}\n`;
 }
 

@@ -190,6 +190,11 @@
   --s-10: 24px;
   --s-11: 40px;
 
+  /* How far each level of delegation steps in beneath the call that made it.
+   * A step of the scale rather than a length of its own, so a density layer
+   * that remaps the scale reaches the trace's indentation as well. */
+  --delegation-indent: var(--s-9);
+
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;

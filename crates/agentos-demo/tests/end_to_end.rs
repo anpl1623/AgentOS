@@ -70,7 +70,10 @@ impl Harness {
         let pool = Arc::new(agentos_browser::BrowserPool::new(BrowserOptions::new(
             root.join("browser-profiles"),
         )));
-        runtime.set_registry(agentos_runtime::build_registry_sharing(&pool));
+        runtime.set_registry(agentos_runtime::build_registry_sharing_with(
+            &pool,
+            runtime.delegation_broker(),
+        ));
 
         let agent = runtime
             .create_agent(

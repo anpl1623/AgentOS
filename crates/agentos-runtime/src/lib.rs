@@ -10,8 +10,10 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod agent_loop;
+pub mod budget;
 pub mod config;
 pub mod credentials;
+pub mod delegation;
 pub mod error;
 pub mod gate;
 pub mod grants;
@@ -26,27 +28,30 @@ use std::sync::Arc;
 
 use agentos_audit::AuditLog;
 use agentos_core::agent::Agent;
+use agentos_core::delegation::{Delegation, DelegationRefusal, DelegationState};
 use agentos_core::ids::{AgentId, TaskId, TaskRunId};
 use agentos_core::task::{Task, TaskRun, TaskState, TaskStatus, TaskTrigger};
 use agentos_integrations::account::{AccountDirectory, InMemoryDirectory};
 use agentos_permissions::{
-    ApprovalPolicy, DenyAllEngine, PermissionEngine, Policy, PolicyDocument, PolicyEngine,
+    ApprovalPolicy, DenyAllEngine, IntersectionEngine, PermissionEngine, Policy, PolicyDocument,
+    PolicyEngine,
 };
 use agentos_persistence::Database;
 use agentos_secrets::{ChainSecretStore, SecretStore};
 use agentos_tools::egress::{AddressPolicy, Egress};
 use agentos_tools::{ApprovalGate, TaintTracker, ToolContext, ToolPipeline, ToolRegistry};
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 pub use agent_loop::{AgentLoop, RunOutcome};
 pub use agentos_permissions::Reach;
 pub use agentos_tools::ToolRegistry as Registry;
+pub use budget::RunBudget;
 pub use config::{
-    FixedProviderFactory, ProviderFactory, RuntimeConfig, SecretBackedProviderFactory,
-    build_provider,
+    DelegationLimits, FixedProviderFactory, ProviderFactory, RuntimeConfig,
+    SecretBackedProviderFactory, build_provider,
 };
 pub use credentials::SecretStoreResolver;
+pub use delegation::{DelegateTool, DelegationBroker, ParentRunHandle};
 pub use error::RuntimeError;
 pub use gate::RunApprovalGate;
 pub use grants::{CapabilityGrant, ToolGrant};
@@ -56,6 +61,11 @@ pub use scheduler::{
     TickReport,
 };
 pub use state::RunStateMachine;
+
+/// Why a task created by a delegation cannot be started on its own.
+pub const DELEGATED_TASK: &str = "this task was delegated by another agent's run and is carried \
+     out only as part of that run, under its policy as well as this agent's own, so it cannot be \
+     started on its own; to try it again, start the work from the agent that delegated it";
 
 /// Everything a running AgentOS installation needs.
 #[derive(Debug, Clone)]
@@ -71,11 +81,15 @@ pub struct Runtime {
     providers: Arc<dyn ProviderFactory>,
     /// Cancellation tokens for runs currently in flight, so the operator can
     /// stop an agent that is already working.
-    running: Arc<Mutex<std::collections::HashMap<TaskRunId, CancellationToken>>>,
+    running: Arc<LiveRuns>,
     /// Tells other processes on this data directory that this one drives
     /// runs, so none of them reaps a run that is still alive here. Absent for
     /// an in-memory runtime, whose database no other process can see.
     runs_lock: Option<Arc<liveness::RunsLock>>,
+    /// The runs that may delegate. The registry's `agent.delegate` holds the
+    /// same broker, so every clone of this runtime registers runs where the
+    /// tool will look for them.
+    broker: Arc<DelegationBroker>,
 }
 
 impl Runtime {
@@ -107,17 +121,19 @@ impl Runtime {
         let database = Database::open(&config.database_path).await?;
         let audit = Arc::new(AuditLog::open(Arc::new(database.audit_sink())).await?);
         let accounts = Arc::new(SqliteAccountDirectory::new(database.clone()));
+        let broker = Arc::new(DelegationBroker::new(config.delegation));
 
         Ok(Self {
             database,
             audit,
-            registry: build_registry_for(&config, accounts.clone()),
+            registry: runtime_registry(&config, accounts.clone(), broker.clone()),
             accounts,
             providers: Arc::new(SecretBackedProviderFactory::new(secrets.clone())),
             secrets,
             runs_lock: Some(Arc::new(liveness::RunsLock::in_directory(&config.data_dir))),
             config,
-            running: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            running: Arc::new(LiveRuns::default()),
+            broker,
         })
     }
 
@@ -137,17 +153,19 @@ impl Runtime {
         // Over the database just opened: an in-memory one cannot be found
         // again by a path.
         let accounts = Arc::new(SqliteAccountDirectory::new(database.clone()));
+        let broker = Arc::new(DelegationBroker::new(config.delegation));
 
         Ok(Self {
             database,
             audit,
-            registry: build_registry_for(&config, accounts.clone()),
+            registry: runtime_registry(&config, accounts.clone(), broker.clone()),
             accounts,
             providers: Arc::new(SecretBackedProviderFactory::new(secrets.clone())),
             secrets,
             config,
-            running: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            running: Arc::new(LiveRuns::default()),
             runs_lock: None,
+            broker,
         })
     }
 
@@ -193,7 +211,21 @@ impl Runtime {
         &self.secrets
     }
 
+    /// The broker this runtime registers its runs with.
+    ///
+    /// For composing a registry whose `agent.delegate` can perform this
+    /// runtime's delegations, as [`compose_registry_with`] does. A registry
+    /// composed around any other broker offers the tool and refuses every
+    /// call to it.
+    #[must_use]
+    pub fn delegation_broker(&self) -> Arc<DelegationBroker> {
+        self.broker.clone()
+    }
+
     /// Replace the tool registry. Used by tests and, later, by plugin loading.
+    ///
+    /// Delegation keeps working only if the new registry's `agent.delegate`
+    /// was built around [`Self::delegation_broker`].
     pub fn set_registry(&mut self, registry: Arc<ToolRegistry>) {
         self.registry = registry;
     }
@@ -315,16 +347,103 @@ impl Runtime {
     /// `task`, which is what the caller read: a task cancelled, run or given
     /// something to wait for since then is not started on the strength of the
     /// old read. A caller that loses gets [`RuntimeError::TaskAlreadyClaimed`]
-    /// having written nothing: no run row, no audit record, no model request. Everything that can refuse for a
-    /// reason of its own is checked first, so a refusal leaves the task as it
-    /// was rather than claimed by nobody.
+    /// having written nothing: no run row, no audit record, no model request.
+    /// Everything that can refuse for a reason of its own is checked first, so
+    /// a refusal leaves the task as it was rather than claimed by nobody.
+    ///
+    /// A task created by a delegation is refused. It runs only through
+    /// [`Self::prepare_delegated_run`], under every policy above it, on the
+    /// tree's step budget and within its depth; started here it would be a
+    /// root run held to its own policy alone, so retrying a failed child would
+    /// grant what the delegation withheld. The parent link is checked as well
+    /// as the delegation's row because the task is written first, and a task
+    /// is given a parent by nothing but delegation.
     async fn prepare_run(
         &self,
         task: &Task,
         approvals: Arc<dyn ApprovalGate>,
         cancel: CancellationToken,
     ) -> Result<PreparedRun, RuntimeError> {
+        if task.parent_task_id.is_some()
+            || self
+                .database
+                .delegations()
+                .find_by_child_task(task.id)
+                .await?
+                .is_some()
+        {
+            return Err(RuntimeError::Rejected(DELEGATED_TASK.to_owned()));
+        }
         let agent = self.database.agents().get(task.agent_id).await?;
+        self.prepare(task, agent, approvals, cancel, None).await
+    }
+
+    /// Assemble the run that carries out a delegation, as [`Self::start_task`]
+    /// assembles any other, under everything its delegator is held to.
+    ///
+    /// The differences are exactly what delegation must not widen. The run is
+    /// evaluated by an [`IntersectionEngine`] over the delegator's engine and
+    /// the child's own policy, so it may do only what both permit, and since
+    /// the delegator's engine is itself an intersection for a delegated run,
+    /// a grandchild answers to every policy up to the root. It shares the
+    /// delegator's taint tracker and step budget rather than starting its own,
+    /// and its token is a child of the delegator's. Its approvals go to the
+    /// operator's gate the delegator was given, wrapped afresh around the
+    /// child's own state machine, naming the chain of agents that asked, and
+    /// held to the stricter of the two policies' approval budgets. Its run is
+    /// registered with the broker one level deeper, so that it can delegate in
+    /// turn under the same limits.
+    ///
+    /// The delegation's task must already be written, as a child of the
+    /// delegator's task and for `child_agent`.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Delegation`] if the delegator may not delegate any
+    /// deeper, [`RuntimeError::Rejected`] if the task is not the delegation's,
+    /// and otherwise as [`Self::start_task`].
+    pub async fn prepare_delegated_run(
+        &self,
+        parent: &ParentRunHandle,
+        delegation: &Delegation,
+        child_agent: Agent,
+    ) -> Result<PreparedRun, RuntimeError> {
+        let limit = self.config.delegation.max_depth;
+        if parent.depth >= limit {
+            return Err(DelegationRefusal::DepthExceeded { limit }.into());
+        }
+        let task = self.database.tasks().get(delegation.child_task_id).await?;
+        if task.agent_id != child_agent.id
+            || delegation.child_agent_id != child_agent.id
+            || task.parent_task_id != Some(parent.task_id)
+            || delegation.parent_run_id != parent.run_id
+        {
+            return Err(RuntimeError::Rejected(
+                "that task was not created for this delegation".to_owned(),
+            ));
+        }
+        self.prepare(
+            &task,
+            child_agent,
+            parent.approvals.clone(),
+            parent.cancel.child_token(),
+            Some(parent),
+        )
+        .await
+    }
+
+    /// What [`Self::prepare_run`] and [`Self::prepare_delegated_run`] share.
+    ///
+    /// `parent` is the delegator, for a delegated run, and `None` for a root
+    /// run. Every difference between the two is decided here, in one place.
+    async fn prepare(
+        &self,
+        task: &Task,
+        agent: Agent,
+        approvals: Arc<dyn ApprovalGate>,
+        cancel: CancellationToken,
+        parent: Option<&ParentRunHandle>,
+    ) -> Result<PreparedRun, RuntimeError> {
         if !agent.is_enabled() {
             return Err(RuntimeError::DisabledAgent(agent.name));
         }
@@ -340,18 +459,38 @@ impl Runtime {
         // agent with no policy is denied everything and never asks, so the
         // budget it gets is moot; it gets the default all the same.
         let policy = self.policy_for(agent.id).await?;
-        let budget = policy
+        let own_budget = policy
             .as_ref()
             .map_or_else(ApprovalPolicy::default, |policy| policy.approvals)
             .max_per_run;
-        let engine = engine_from(policy);
+        let own_engine = engine_from(policy);
+        let (engine, approval_budget): (Arc<dyn PermissionEngine>, _) = match parent {
+            None => (own_engine, own_budget),
+            Some(parent) => (
+                Arc::new(IntersectionEngine::new(vec![
+                    parent.engine.clone(),
+                    own_engine,
+                ])),
+                stricter_budget(parent.approval_budget, own_budget),
+            ),
+        };
 
         let workspace = self.config.workspace_for(&agent.name);
         std::fs::create_dir_all(&workspace).map_err(|source| {
             RuntimeError::io(format!("creating {}", workspace.display()), source)
         })?;
 
-        let run = self.next_run(task.id).await?;
+        let mut run = self.next_run(task.id).await?;
+        if let Some(parent) = parent {
+            // Written into the row from the start, so a delegated run is never
+            // on record as clean for even the moment before its first turn.
+            run.tainted |= parent.taint.is_tainted();
+            for source in parent.taint.sources() {
+                if !run.taint_sources.contains(&source) {
+                    run.taint_sources.push(source);
+                }
+            }
+        }
         // The claim and the run row are one write, so the task is never
         // running without a run for the reaper to find.
         if !self
@@ -363,7 +502,13 @@ impl Runtime {
             return Err(RuntimeError::TaskAlreadyClaimed(task.id));
         }
 
-        self.running.lock().await.insert(run.id, cancel.clone());
+        self.running.lock().insert(run.id, cancel.clone());
+        // From here on, however the run ends or is abandoned, it is forgotten.
+        let live = LiveRun {
+            runs: self.running.clone(),
+            broker: self.broker.clone(),
+            run_id: run.id,
+        };
 
         let machine = Arc::new(RunStateMachine::new(
             agent.id,
@@ -374,18 +519,68 @@ impl Runtime {
             self.audit.clone(),
         ));
 
+        let chain = match parent {
+            None => vec![agent.name.clone()],
+            Some(parent) => {
+                let mut chain = parent.chain.clone();
+                chain.push(agent.name.clone());
+                chain
+            }
+        };
         let gate: Arc<dyn ApprovalGate> = Arc::new(
-            RunApprovalGate::new(approvals, self.database.clone(), machine.clone())
-                .with_budget(budget),
+            RunApprovalGate::new(approvals.clone(), self.database.clone(), machine.clone())
+                .with_budget(approval_budget)
+                // A run nobody delegated to names no chain: the card already
+                // says which agent is asking.
+                .with_delegation_chain(if parent.is_some() {
+                    chain.clone()
+                } else {
+                    Vec::new()
+                }),
         );
 
-        let pipeline = ToolPipeline::new(self.registry.clone(), engine, gate, self.audit.clone());
+        let pipeline = ToolPipeline::new(
+            self.registry.clone(),
+            engine.clone(),
+            gate,
+            self.audit.clone(),
+        );
 
         // The store's own resolver. The pipeline narrows it, call by call, to
         // the credentials each authorised plan named, and keeps the ledger
         // that redaction and the audit record are made from.
         let context = ToolContext::new(agent.id, task.id, run.id, workspace)
             .with_credentials(Arc::new(SecretStoreResolver::new(self.secrets.clone())));
+
+        let (taint, budget) = match parent {
+            None => (
+                Arc::new(TaintTracker::seeded(run.tainted, run.taint_sources.clone())),
+                RunBudget::of(agent.max_steps),
+            ),
+            Some(parent) => (parent.taint.clone(), parent.budget.clone()),
+        };
+
+        let mut ancestry = parent.map_or_else(Vec::new, |parent| parent.ancestry.clone());
+        ancestry.push(agent.id);
+        self.broker.register(
+            run.id,
+            Arc::new(ParentRunHandle {
+                runtime: self.clone(),
+                agent: agent.clone(),
+                run_id: run.id,
+                task_id: task.id,
+                engine,
+                approvals,
+                approval_budget,
+                taint: taint.clone(),
+                budget: budget.clone(),
+                cancel: cancel.clone(),
+                depth: parent.map_or(0, |parent| parent.depth.saturating_add(1)),
+                ancestry,
+                chain,
+                children_started: std::sync::atomic::AtomicU16::new(0),
+            }),
+        );
 
         Ok(PreparedRun {
             objective: task.objective.clone(),
@@ -395,7 +590,11 @@ impl Runtime {
             pipeline,
             machine,
             context,
+            taint,
+            budget,
+            delegated: parent.is_some(),
             cancel,
+            live,
         })
     }
 
@@ -431,28 +630,47 @@ impl Runtime {
     }
 
     /// Drive a prepared run to a terminal state.
+    ///
+    /// The run is forgotten as live, and as able to delegate, however it
+    /// ends: by the guard the prepared run carries, which goes when this
+    /// returns or when this future is dropped unfinished. One that ended in a
+    /// runtime error, or whose driver was dropped, is not being driven by
+    /// anyone, and left in the live set it would hold a scheduler slot, be
+    /// spared by the reaper and keep its runtime alive in the broker, for the
+    /// life of the process.
     async fn drive(&self, prepared: PreparedRun) -> Result<RunOutcome, RuntimeError> {
-        let objective = prepared.objective;
-        let taint = Arc::new(TaintTracker::seeded(
-            prepared.run.tainted,
-            prepared.run.taint_sources.clone(),
-        ));
-        let agent_loop = AgentLoop::new(
-            prepared.agent,
-            prepared.run,
-            self.database.clone(),
-            prepared.provider,
-            prepared.pipeline,
-            prepared.machine,
-            prepared.context,
+        let PreparedRun {
+            objective,
+            agent,
+            run,
+            provider,
+            pipeline,
+            machine,
+            context,
             taint,
-            prepared.cancel,
+            budget,
+            delegated,
+            cancel,
+            live,
+        } = prepared;
+        let mut agent_loop = AgentLoop::new(
+            agent,
+            run,
+            self.database.clone(),
+            provider,
+            pipeline,
+            machine,
+            context,
+            taint,
+            budget,
+            cancel,
         );
+        if delegated {
+            agent_loop = agent_loop.delegated();
+        }
 
         let outcome = agent_loop.run(&objective).await;
-        if let Ok(report) = &outcome {
-            self.running.lock().await.remove(&report.run_id);
-        }
+        drop(live);
         outcome
     }
 
@@ -476,9 +694,14 @@ impl Runtime {
     ///
     /// Returns whether a live run was found. The operator must always be able
     /// to stop an agent, so this cancels the token the loop and every tool
-    /// inside it are watching.
+    /// inside it are watching. Every run it delegated to watches a token
+    /// descended from that one, so they stop with it.
+    ///
+    /// The run stays live until it has actually stopped, so that what counts
+    /// live runs, the scheduler among them, does not count a run that is
+    /// still winding down as already gone.
     pub async fn cancel_run(&self, run_id: TaskRunId) -> bool {
-        match self.running.lock().await.remove(&run_id) {
+        match self.running.lock().get(&run_id) {
             Some(token) => {
                 token.cancel();
                 true
@@ -501,8 +724,12 @@ impl Runtime {
     }
 
     /// Run identifiers currently executing.
+    ///
+    /// Every live run, delegated runs among them: a run that has asked three
+    /// others to work is four runs using a model at once, and anything that
+    /// limits concurrency must see four.
     pub async fn running_runs(&self) -> Vec<TaskRunId> {
-        self.running.lock().await.keys().copied().collect()
+        self.running.lock().keys().copied().collect()
     }
 
     /// Mark runs abandoned by a previous process as failed, and close the
@@ -576,6 +803,28 @@ impl Runtime {
                 .tasks()
                 .set_status(run.task_id, TaskStatus::Failed)
                 .await?;
+            // A delegated run's edge would otherwise say it is still running
+            // for as long as the record is kept.
+            if let Some(edge) = self
+                .database
+                .delegations()
+                .find_by_child_run(run.id)
+                .await?
+                && !edge.state.is_terminal()
+            {
+                self.database
+                    .delegations()
+                    .complete(edge.id, DelegationState::Failed, run.steps_taken)
+                    .await?;
+            }
+            // And so would the edges it opened, which nothing is left to
+            // conclude. One still `requested` names no run, so it is found
+            // only from this end: the process died before the child's run was
+            // attached, or before a refusal to prepare one was written.
+            self.close_abandoned_delegations(run.id).await?;
+            // Whatever the tools still hold for it is released, as the loop
+            // would have released it had the run ended normally.
+            self.registry.end_run(run.id).await;
         }
 
         let expired = self
@@ -593,6 +842,34 @@ impl Runtime {
         Ok(count)
     }
 
+    /// End every delegation an abandoned run left open.
+    ///
+    /// A child run that has itself ended keeps its ending: the work was done
+    /// or stopped, whatever became of the run that asked for it. Every other
+    /// edge failed, since no run is left to carry it out.
+    async fn close_abandoned_delegations(&self, parent: TaskRunId) -> Result<(), RuntimeError> {
+        let delegations = self.database.delegations();
+        for edge in delegations.list_open_for_parent_run(parent).await? {
+            let child = match edge.child_run_id {
+                Some(id) => self.database.runs().find(id).await?,
+                None => None,
+            };
+            let (state, steps) = match &child {
+                Some(run) => (
+                    match run.state {
+                        TaskState::Completed => DelegationState::Completed,
+                        TaskState::Cancelled => DelegationState::Cancelled,
+                        _ => DelegationState::Failed,
+                    },
+                    run.steps_taken,
+                ),
+                None => (DelegationState::Failed, 0),
+            };
+            delegations.complete(edge.id, state, steps).await?;
+        }
+        Ok(())
+    }
+
     /// Read a run's full execution trace.
     ///
     /// # Errors
@@ -608,7 +885,80 @@ impl Runtime {
             steps: self.database.steps().list_for_run(run_id).await?,
             executions: self.database.executions().list_for_run(run_id).await?,
             approvals: self.database.approvals().list_for_run(run_id).await?,
+            delegations: self
+                .database
+                .delegations()
+                .list_for_parent_run(run_id)
+                .await?,
+            delegated_by: self
+                .database
+                .delegations()
+                .find_by_child_run(run_id)
+                .await?,
             run,
+        })
+    }
+
+    /// The delegation tree below a run, depth first.
+    ///
+    /// Read to at most the configured depth plus one level below `run_id`,
+    /// and never through the same run twice, so a corrupt row that pointed a
+    /// run at its own ancestor cannot make the read go on forever. A
+    /// delegation whose run was never prepared has no node of its own; it is
+    /// in [`RunTrace::delegations`] for the run that asked.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::Database`] on failure, or if `run_id` does not exist.
+    pub async fn delegation_tree(&self, run_id: TaskRunId) -> Result<DelegationNode, RuntimeError> {
+        let delegation = self
+            .database
+            .delegations()
+            .find_by_child_run(run_id)
+            .await?;
+        let levels = usize::from(self.config.delegation.max_depth) + 1;
+        let mut seen = std::collections::HashSet::from([run_id]);
+        self.delegation_node(run_id, delegation, levels, &mut seen)
+            .await
+    }
+
+    async fn delegation_node(
+        &self,
+        run_id: TaskRunId,
+        delegation: Option<Delegation>,
+        levels: usize,
+        seen: &mut std::collections::HashSet<TaskRunId>,
+    ) -> Result<DelegationNode, RuntimeError> {
+        let run = self.database.runs().get(run_id).await?;
+        let task = self.database.tasks().get(run.task_id).await?;
+        let agent = self.database.agents().get(task.agent_id).await?;
+
+        let mut children = Vec::new();
+        if levels > 0 {
+            for edge in self
+                .database
+                .delegations()
+                .list_for_parent_run(run_id)
+                .await?
+            {
+                let Some(child_run) = edge.child_run_id else {
+                    continue;
+                };
+                if !seen.insert(child_run) {
+                    continue;
+                }
+                children.push(
+                    Box::pin(self.delegation_node(child_run, Some(edge), levels - 1, seen)).await?,
+                );
+            }
+        }
+
+        Ok(DelegationNode {
+            run,
+            agent_name: agent.name,
+            objective: task.objective,
+            delegation,
+            children,
         })
     }
 
@@ -616,6 +966,13 @@ impl Runtime {
     ///
     /// A log whose oldest records were removed does not verify: the first
     /// record left must be the first record written.
+    ///
+    /// A delegation tree needs nothing more. The chain is one per
+    /// installation, so it already orders every record of every run in a tree
+    /// against every other, and each edge between two runs is sealed inside
+    /// the hashed payload of its `agent.delegation.started` record. The record
+    /// format is unchanged by delegation, deliberately: changing what is
+    /// hashed would mean a migration over a log that cannot be rewritten.
     ///
     /// # Errors
     ///
@@ -720,7 +1077,7 @@ fn engine_from(policy: Option<Policy>) -> Arc<dyn PermissionEngine> {
 }
 
 /// Build the registry every client gets: the built-in tools, the browser,
-/// computer control, the network and the integrations.
+/// computer control, the network, the integrations and delegation.
 ///
 /// The composition root owns this so that the CLI and the desktop application
 /// cannot end up offering different tools for the same installation — and so
@@ -730,7 +1087,9 @@ fn engine_from(policy: Option<Policy>) -> Arc<dyn PermissionEngine> {
 /// Public and free of side effects: listing the tools should not create a
 /// database, launch a browser, or ask macOS for the Accessibility permission.
 /// The integrations' accounts are read from the configuration's database the
-/// first time a tool asks for one, which listing never does.
+/// first time a tool asks for one, which listing never does. Its
+/// `agent.delegate` belongs to no runtime, so it lists the tool and can
+/// perform no delegation; a [`Runtime`] builds its own around its broker.
 #[must_use]
 pub fn build_registry(config: &RuntimeConfig) -> Arc<ToolRegistry> {
     build_registry_for(
@@ -740,19 +1099,27 @@ pub fn build_registry(config: &RuntimeConfig) -> Arc<ToolRegistry> {
 }
 
 /// The same registry, with the integrations reading `accounts`.
-///
-/// What a [`Runtime`] builds for itself, around the database it already has
-/// open.
 #[must_use]
 pub fn build_registry_for(
     config: &RuntimeConfig,
     accounts: Arc<dyn AccountDirectory>,
 ) -> Arc<ToolRegistry> {
-    compose_registry(
+    runtime_registry(config, accounts, unattached_broker(config.delegation))
+}
+
+/// What a [`Runtime`] builds for itself, around the database it already has
+/// open and the broker it registers its runs with.
+fn runtime_registry(
+    config: &RuntimeConfig,
+    accounts: Arc<dyn AccountDirectory>,
+    broker: Arc<DelegationBroker>,
+) -> Arc<ToolRegistry> {
+    compose_registry_with(
         &Arc::new(agentos_browser::BrowserPool::new(
             agentos_browser::BrowserOptions::new(config.browser_profiles()),
         )),
         accounts,
+        broker,
     )
 }
 
@@ -761,20 +1128,52 @@ pub fn build_registry_for(
 /// Only a test needs this: to assert that a run released its browser it has to
 /// be looking at the same pool the tools are using, and a second pool would make
 /// the assertion pass by being empty. No accounts are bound in it, so an
-/// integration tool called through it answers that none is.
+/// integration tool called through it answers that none is, and its
+/// `agent.delegate` refuses every call; [`build_registry_sharing_with`] gives
+/// it a runtime's broker.
 #[must_use]
 pub fn build_registry_sharing(pool: &Arc<agentos_browser::BrowserPool>) -> Arc<ToolRegistry> {
-    compose_registry(pool, Arc::new(InMemoryDirectory::default()))
+    build_registry_sharing_with(pool, unattached_broker(DelegationLimits::default()))
+}
+
+/// [`build_registry_sharing`], with `agent.delegate` performing the
+/// delegations of the runtime whose [`Runtime::delegation_broker`] this is.
+#[must_use]
+pub fn build_registry_sharing_with(
+    pool: &Arc<agentos_browser::BrowserPool>,
+    broker: Arc<DelegationBroker>,
+) -> Arc<ToolRegistry> {
+    compose_registry_with(pool, Arc::new(InMemoryDirectory::default()), broker)
 }
 
 /// The registry itself, around a browser pool and the integrations' accounts.
+///
+/// As [`compose_registry_with`], with an `agent.delegate` that belongs to no
+/// runtime and so refuses every call. A caller composing a registry for a
+/// runtime it will run agents on passes that runtime's broker to
+/// [`compose_registry_with`] instead.
+#[must_use]
+pub fn compose_registry(
+    pool: &Arc<agentos_browser::BrowserPool>,
+    accounts: Arc<dyn AccountDirectory>,
+) -> Arc<ToolRegistry> {
+    compose_registry_with(
+        pool,
+        accounts,
+        unattached_broker(DelegationLimits::default()),
+    )
+}
+
+/// The registry itself, around a browser pool, the integrations' accounts and
+/// the broker delegations are performed through.
 ///
 /// This is where every tool is registered, the network and the integrations
 /// among them, and the only place: a tool added anywhere else is how the CLI
 /// and the desktop end up offering different catalogues. A caller composes one
 /// directly only to change the browser — the demonstration runs it headed, so
 /// that a human can watch — and passes its runtime's
-/// [`Runtime::integration_accounts`], so that nothing else differs.
+/// [`Runtime::integration_accounts`] and [`Runtime::delegation_broker`], so
+/// that nothing else differs.
 /// `network.request` is built here with the strict address policy, public
 /// addresses only, and nothing a caller passes can loosen it.
 ///
@@ -786,10 +1185,15 @@ pub fn build_registry_sharing(pool: &Arc<agentos_browser::BrowserPool>) -> Arc<T
 /// address policy a GitHub call connects under is the account's, which only
 /// the operator sets when binding it; the transport handed over here is
 /// strict, and nothing a tool argument says reaches either.
+///
+/// `agent.delegate` is registered last, and like every other tool is offered
+/// to an agent only if the agent lists it and performs nothing its policy
+/// does not grant.
 #[must_use]
-pub fn compose_registry(
+pub fn compose_registry_with(
     pool: &Arc<agentos_browser::BrowserPool>,
     accounts: Arc<dyn AccountDirectory>,
+    broker: Arc<DelegationBroker>,
 ) -> Arc<ToolRegistry> {
     let mut registry = agentos_tools::standard_registry();
     for tool in agentos_browser::browser_tools(Arc::clone(pool)) {
@@ -804,7 +1208,23 @@ pub fn compose_registry(
     for tool in agentos_integrations::github::build(Egress::new(AddressPolicy::Strict), accounts) {
         registry.register(tool);
     }
+    registry.register(Arc::new(DelegateTool::new(broker)));
     Arc::new(registry)
+}
+
+/// A broker no runtime registers runs with, for a registry that lists
+/// `agent.delegate` without being able to perform a delegation.
+fn unattached_broker(limits: DelegationLimits) -> Arc<DelegationBroker> {
+    Arc::new(DelegationBroker::new(limits))
+}
+
+/// The stricter of two approval budgets, where `None` is no limit.
+const fn stricter_budget(first: Option<u32>, second: Option<u32>) -> Option<u32> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(if first < second { first } else { second }),
+        (Some(only), None) | (None, Some(only)) => Some(only),
+        (None, None) => None,
+    }
 }
 
 /// A run that has been assembled but not started.
@@ -812,7 +1232,7 @@ pub fn compose_registry(
 /// Splitting assembly from execution is what lets a caller learn a run's
 /// identity before it finishes — the row exists and the state machine is ready,
 /// but no model has been called yet.
-struct PreparedRun {
+pub struct PreparedRun {
     objective: String,
     agent: Agent,
     run: TaskRun,
@@ -820,7 +1240,65 @@ struct PreparedRun {
     pipeline: ToolPipeline,
     machine: Arc<RunStateMachine>,
     context: ToolContext,
+    /// The tracker the loop observes into, shared with the rest of the tree
+    /// for a delegated run, so the loop does not build one of its own.
+    taint: Arc<TaintTracker>,
+    budget: Arc<RunBudget>,
+    delegated: bool,
     cancel: CancellationToken,
+    /// Forgets the run as live when the run is done with, driven or not.
+    live: LiveRun,
+}
+
+/// The runs this process is driving, each with the token that stops it.
+///
+/// Behind a plain mutex, held only for a lookup and never across an await,
+/// so that a run can be forgotten from a destructor.
+#[derive(Debug, Default)]
+struct LiveRuns(std::sync::Mutex<std::collections::HashMap<TaskRunId, CancellationToken>>);
+
+impl LiveRuns {
+    fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<TaskRunId, CancellationToken>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Forgets a run as live, and as able to delegate, when dropped.
+///
+/// Made as the run is claimed and carried by it until `drive` returns, so the
+/// forgetting cannot be skipped: not by a run that fails to start, nor by a
+/// driver dropped part way, as a tool call is when its run is torn down.
+struct LiveRun {
+    runs: Arc<LiveRuns>,
+    broker: Arc<DelegationBroker>,
+    run_id: TaskRunId,
+}
+
+impl Drop for LiveRun {
+    fn drop(&mut self) {
+        self.runs.lock().remove(&self.run_id);
+        // The tool does this as the run releases its tools, but a registry
+        // swapped in without `agent.delegate` never tells it to.
+        self.broker.forget(self.run_id);
+    }
+}
+
+impl PreparedRun {
+    /// The run that was written.
+    #[must_use]
+    pub const fn run_id(&self) -> TaskRunId {
+        self.run.id
+    }
+
+    /// The task it carries out.
+    #[must_use]
+    pub const fn task_id(&self) -> TaskId {
+        self.run.task_id
+    }
 }
 
 impl std::fmt::Debug for PreparedRun {
@@ -847,6 +1325,26 @@ pub struct RunTrace {
     pub executions: Vec<agentos_persistence::ToolExecutionRecord>,
     /// Approvals raised during the run.
     pub approvals: Vec<agentos_core::approval::ApprovalRequest>,
+    /// The delegations this run made, in the order it asked.
+    pub delegations: Vec<Delegation>,
+    /// The delegation that started this run, if another run asked for it.
+    pub delegated_by: Option<Delegation>,
+}
+
+/// One run in a delegation tree, and the runs it delegated to.
+#[derive(Debug, Clone)]
+pub struct DelegationNode {
+    /// The run.
+    pub run: TaskRun,
+    /// The agent that performed it.
+    pub agent_name: String,
+    /// What it was asked to do.
+    pub objective: String,
+    /// The edge that started it; `None` for the run the tree was read from
+    /// when nothing delegated to it.
+    pub delegation: Option<Delegation>,
+    /// The runs it delegated to, in the order it asked.
+    pub children: Vec<DelegationNode>,
 }
 
 /// The path from `from` to `to` following dependency edges, if one exists.

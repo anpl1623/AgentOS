@@ -9,6 +9,7 @@
  */
 
 import type { AgentSummary } from "../bindings/AgentSummary";
+import type { AuditVerificationView } from "../bindings/AuditVerificationView";
 import type { IntegrationAccountView } from "../bindings/IntegrationAccountView";
 import type { IntegrationTestView } from "../bindings/IntegrationTestView";
 import type { IntegrationView } from "../bindings/IntegrationView";
@@ -324,12 +325,58 @@ export function schedulerNotices(view: SchedulerView | null, refusal: string | n
 export interface Verification {
   /** When it finished, as an ISO time. */
   at: string;
-  /** Every break found; empty when the chain is intact. */
+  /**
+   * Everything found, chain breaks first and coverage gaps after; empty only
+   * when the chain is intact and complete.
+   */
   problems: string[];
 }
 
-function problemCount(count: number): string {
-  return count === 1 ? "1 problem" : `${count} problems`;
+/** A finished verification with what it found kept apart by kind, as the screen lists it. */
+export interface AuditFindings extends Verification {
+  /** Where the hash chain does not verify. */
+  breaks: string[];
+  /** Where the chain verifies but the story it holds is incomplete. */
+  gaps: string[];
+}
+
+/**
+ * What the full check answered, finished at `at`.
+ *
+ * A gap counts as a problem as a break does. A chain that verifies but holds
+ * a tool call with no end, or a delegated run with no records, is consistent
+ * and still not the whole story, and "intact" must not be said of it.
+ */
+export function auditFindings(at: string, view: AuditVerificationView): AuditFindings {
+  return {
+    at,
+    breaks: [...view.breaks],
+    gaps: [...view.gaps],
+    problems: [...view.breaks, ...view.gaps],
+  };
+}
+
+/** What the full check found, each kind kept apart. */
+export type Found = Pick<AuditFindings, "breaks" | "gaps">;
+
+function counted(count: number, one: string, many: string): string {
+  return count === 1 ? `1 ${one}` : `${count} ${many}`;
+}
+
+/**
+ * What was found, named by kind: `1 break`, `2 coverage gaps`, or both.
+ * `null` when nothing was.
+ *
+ * Never one count of "problems". A break means a record was altered; a gap
+ * means the records that are there do not account for something. Summed, a
+ * log with only a gap would read like a chain that failed to verify.
+ */
+export function findingsSummary(found: Found): string | null {
+  const parts = [
+    found.breaks.length > 0 ? counted(found.breaks.length, "break", "breaks") : null,
+    found.gaps.length > 0 ? counted(found.gaps.length, "coverage gap", "coverage gaps") : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length === 0 ? null : parts.join(", ");
 }
 
 /**
@@ -337,17 +384,33 @@ function problemCount(count: number): string {
  * what was found. Never checked this session says so, so the absence of a
  * result is not taken for a clean one.
  */
-export function verificationLine(last: Verification | null, now: number): string {
+export function verificationLine(last: AuditFindings | null, now: number): string {
   if (last === null) return "not verified since the window opened";
-  const found = last.problems.length === 0 ? "intact" : problemCount(last.problems.length);
-  return `verified ${relative(last.at, now)} · ${found}`;
+  return `verified ${relative(last.at, now)} · ${findingsSummary(last) ?? "intact"}`;
 }
 
 /** The sentence a screen reader hears when a verification finishes. */
-export function verificationAnnouncement(problems: readonly string[]): string {
-  return problems.length === 0
-    ? "Audit chain verified intact."
-    : `Audit chain verification found ${problemCount(problems.length)}.`;
+export function verificationAnnouncement(found: Found): string {
+  const breaks = counted(found.breaks.length, "break", "breaks");
+  const gaps = counted(found.gaps.length, "coverage gap", "coverage gaps");
+  if (found.breaks.length > 0) {
+    return found.gaps.length > 0
+      ? `Audit chain verification found ${breaks}, and ${gaps}.`
+      : `Audit chain verification found ${breaks}.`;
+  }
+  return found.gaps.length > 0
+    ? `Audit chain verified, but its records have ${gaps}.`
+    : "Audit chain verified intact.";
+}
+
+/**
+ * The sentence above the coverage gaps. It may say the chain verifies only
+ * when no break is listed above it.
+ */
+export function gapsNote(found: Found): string {
+  return found.breaks.length > 0
+    ? "Separately from the breaks above, the records do not tell the whole story."
+    : "The chain verifies, but the records it holds do not tell the whole story.";
 }
 
 // ---------------------------------------------------------------------------

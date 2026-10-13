@@ -5,7 +5,7 @@ use agentos_persistence::ToolExecutionRecord;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{ApprovalView, at, maybe_at};
+use super::{ApprovalView, DelegationView, at, maybe_at};
 
 /// A task and the state of its latest attempt.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -201,6 +201,10 @@ pub struct TraceView {
     pub executions: Vec<ExecutionView>,
     /// Approvals raised during the run.
     pub approvals: Vec<ApprovalView>,
+    /// The work this run handed to other agents, in the order it asked.
+    pub delegations: Vec<DelegationView>,
+    /// The delegation that started this run, when another run asked for it.
+    pub delegated_by: Option<DelegationView>,
 }
 
 /// The result of starting a task.

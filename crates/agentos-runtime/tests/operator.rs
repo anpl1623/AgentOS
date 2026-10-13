@@ -235,6 +235,7 @@ fn pending_request(run: &TaskRun, agent: &agentos_core::agent::Agent) -> Approva
         effect_before_taint: Effect::Ask,
         asked_this_run: 1,
         approval_budget: Some(10),
+        delegation_chain: vec![],
         reason: "policy requires approval".into(),
         explanation: "writes a file".into(),
         affected_resources: vec![],

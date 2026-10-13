@@ -18,6 +18,8 @@
 //! 4. Rule-level risk ceiling.
 //! 5. Taint escalation: `allow` becomes `ask` once the run has read untrusted data.
 
+use std::sync::Arc;
+
 use agentos_core::permission::{Effect, PermissionDecision, PermissionRequest};
 
 use crate::policy::{Policy, is_immutably_denied};
@@ -170,6 +172,79 @@ impl PermissionEngine for DenyAllEngine {
         )
         .with_rule("builtin:deny-all")
     }
+}
+
+/// Several engines at once, where every one of them must agree.
+///
+/// A delegated run is evaluated by this, over its parent's engine and its own,
+/// so it can do only what both policies permit: whatever its own policy grants,
+/// a child cannot exceed its delegator, and whatever the delegator grants, a
+/// child's own restrictions still hold. Nested delegation nests the
+/// intersection, so a grandchild answers to every policy above it.
+///
+/// Each member evaluates the request against its own live policy and the
+/// strictest effect wins — the fold the pipeline makes across a call's
+/// capabilities. The alternative, merging two rule sets into one policy ahead
+/// of time, would be a second policy evaluator that has to agree with the
+/// first on every specificity tie and every ceiling; asking both engines needs
+/// no such agreement.
+///
+/// The decision returned is the winning member's own, unaltered, so the rule
+/// it names is the rule that actually refused or asked. Where members tie on
+/// the effect, the one whose rules were stricter before taint escalation wins,
+/// and otherwise the first: a card then says the policy asked when any member's
+/// policy asked, and says taint alone is the reason only when it is the reason
+/// for every member.
+#[derive(Debug, Clone)]
+pub struct IntersectionEngine {
+    engines: Vec<Arc<dyn PermissionEngine>>,
+}
+
+impl IntersectionEngine {
+    /// Intersect `engines`, the delegator's first.
+    ///
+    /// Order decides only which of two identical answers is reported. An empty
+    /// list denies everything: the absence of a policy must never read as the
+    /// absence of a restriction.
+    #[must_use]
+    pub fn new(engines: Vec<Arc<dyn PermissionEngine>>) -> Self {
+        Self { engines }
+    }
+
+    /// The engines being intersected, in the order given.
+    #[must_use]
+    pub fn engines(&self) -> &[Arc<dyn PermissionEngine>] {
+        &self.engines
+    }
+}
+
+impl PermissionEngine for IntersectionEngine {
+    fn evaluate(&self, request: &PermissionRequest) -> PermissionDecision {
+        let mut winner: Option<PermissionDecision> = None;
+        for engine in &self.engines {
+            let decision = engine.evaluate(request);
+            winner = match winner {
+                Some(current) if !outranks(&decision, &current) => Some(current),
+                _ => Some(decision),
+            };
+        }
+        winner.unwrap_or_else(|| {
+            PermissionDecision::new(Effect::Deny, "no policy was supplied")
+                .with_rule("builtin:intersection-empty")
+        })
+    }
+}
+
+/// Whether `challenger` is strictly stricter than `incumbent`: by effect, and
+/// on an equal effect by what the rules said before taint escalation.
+fn outranks(challenger: &PermissionDecision, incumbent: &PermissionDecision) -> bool {
+    let rank = |decision: &PermissionDecision| {
+        (
+            decision.effect.precedence(),
+            decision.effect_before_taint.precedence(),
+        )
+    };
+    rank(challenger) > rank(incumbent)
 }
 
 #[cfg(test)]
@@ -414,5 +489,172 @@ mod tests {
                 Effect::Deny
             );
         }
+    }
+
+    /// An engine that gives one fixed answer, so a test can choose exactly
+    /// what each member of an intersection says.
+    #[derive(Debug)]
+    struct Fixed(PermissionDecision);
+
+    impl PermissionEngine for Fixed {
+        fn evaluate(&self, _request: &PermissionRequest) -> PermissionDecision {
+            self.0.clone()
+        }
+    }
+
+    fn says(effect: Effect, rule: &str) -> Arc<dyn PermissionEngine> {
+        Arc::new(Fixed(PermissionDecision::new(effect, rule).with_rule(rule)))
+    }
+
+    fn any_request() -> PermissionRequest {
+        request("filesystem", "write", RiskLevel::Medium)
+    }
+
+    #[test]
+    fn a_child_cannot_do_what_its_parent_denies() {
+        let both = IntersectionEngine::new(vec![
+            says(Effect::Deny, "parent-deny"),
+            says(Effect::Allow, "child-allow"),
+        ]);
+        let decision = both.evaluate(&any_request());
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("parent-deny"));
+    }
+
+    #[test]
+    fn a_parent_cannot_lift_what_the_child_denies() {
+        let both = IntersectionEngine::new(vec![
+            says(Effect::Allow, "parent-allow"),
+            says(Effect::Deny, "child-deny"),
+        ]);
+        let decision = both.evaluate(&any_request());
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("child-deny"));
+    }
+
+    #[test]
+    fn an_ask_on_either_side_asks() {
+        for (parent, child, asker) in [
+            (Effect::Ask, Effect::Allow, "parent"),
+            (Effect::Allow, Effect::Ask, "child"),
+        ] {
+            let both = IntersectionEngine::new(vec![says(parent, "parent"), says(child, "child")]);
+            let decision = both.evaluate(&any_request());
+            assert_eq!(decision.effect, Effect::Ask);
+            assert_eq!(decision.matched_rule.as_deref(), Some(asker));
+        }
+    }
+
+    #[test]
+    fn agreement_reports_the_first_engine() {
+        let both = IntersectionEngine::new(vec![
+            says(Effect::Allow, "parent-allow"),
+            says(Effect::Allow, "child-allow"),
+        ]);
+        let decision = both.evaluate(&any_request());
+        assert_eq!(decision.effect, Effect::Allow);
+        assert_eq!(decision.matched_rule.as_deref(), Some("parent-allow"));
+    }
+
+    #[test]
+    fn an_empty_intersection_denies() {
+        let decision = IntersectionEngine::new(Vec::new()).evaluate(&any_request());
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(
+            decision.matched_rule.as_deref(),
+            Some("builtin:intersection-empty")
+        );
+    }
+
+    #[test]
+    fn taint_is_named_as_the_reason_only_when_it_is_the_reason_for_every_policy() {
+        // The parent's rules allow and only taint makes it ask; the child's
+        // rules ask regardless. The card must not say that the rules would
+        // have let this through silently, because the child's would not.
+        let escalated: Arc<dyn PermissionEngine> = Arc::new(Fixed(
+            PermissionDecision::new(Effect::Ask, "escalated")
+                .with_rule("parent-allow")
+                .with_effect_before_taint(Effect::Allow),
+        ));
+        let both = IntersectionEngine::new(vec![escalated.clone(), says(Effect::Ask, "child-ask")]);
+        let decision = both.evaluate(&any_request());
+        assert_eq!(decision.effect, Effect::Ask);
+        assert_eq!(decision.effect_before_taint, Effect::Ask);
+        assert_eq!(decision.matched_rule.as_deref(), Some("child-ask"));
+        assert!(!decision.was_escalated_by_taint());
+
+        // When taint is what makes both of them ask, the card says so.
+        let both = IntersectionEngine::new(vec![escalated.clone(), escalated]);
+        assert!(both.evaluate(&any_request()).was_escalated_by_taint());
+    }
+
+    #[test]
+    fn real_policies_intersect_through_their_own_rules() {
+        // The supervisor may write anywhere under /work; the worker only
+        // under /work/out. The worker's write elsewhere under /work is denied
+        // by the worker's default, and its write outside /work by both.
+        let supervisor = Policy::deny_all("supervisor").with_rule(
+            PolicyRule::new("supervisor-write", "filesystem", "write", Effect::Allow)
+                .with_resources(vec![ResourcePattern::path_prefix(PathBuf::from("/work"))]),
+        );
+        let worker = Policy::deny_all("worker").with_rule(
+            PolicyRule::new("worker-write", "filesystem", "write", Effect::Allow).with_resources(
+                vec![ResourcePattern::path_prefix(PathBuf::from("/work/out"))],
+            ),
+        );
+        let both = IntersectionEngine::new(vec![
+            Arc::new(PolicyEngine::new(supervisor)),
+            Arc::new(PolicyEngine::new(worker)),
+        ]);
+
+        let inside = both.evaluate(&path_request("write", "/work/out/r.txt", RiskLevel::Medium));
+        assert_eq!(inside.effect, Effect::Allow);
+        assert_eq!(inside.matched_rule.as_deref(), Some("supervisor-write"));
+
+        let beside = both.evaluate(&path_request("write", "/work/notes.txt", RiskLevel::Medium));
+        assert_eq!(beside.effect, Effect::Deny);
+        assert!(
+            beside.reason.contains("policy default"),
+            "{}",
+            beside.reason
+        );
+
+        // Escalation happens inside each member, so a tainted run asks even
+        // though neither policy's rules would have.
+        let tainted = both
+            .evaluate(&path_request("write", "/work/out/r.txt", RiskLevel::Medium).tainted(true));
+        assert_eq!(tainted.effect, Effect::Ask);
+        assert!(tainted.was_escalated_by_taint());
+    }
+
+    #[test]
+    fn a_grandchild_answers_to_every_policy_above_it() {
+        let parent_and_child = IntersectionEngine::new(vec![
+            says(Effect::Allow, "root-allow"),
+            says(Effect::Deny, "middle-deny"),
+        ]);
+        let grandchild = IntersectionEngine::new(vec![
+            Arc::new(parent_and_child),
+            says(Effect::Allow, "leaf-allow"),
+        ]);
+        let decision = grandchild.evaluate(&any_request());
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("middle-deny"));
+    }
+
+    #[test]
+    fn no_policy_in_an_intersection_can_grant_self_modification() {
+        let everything = || -> Arc<dyn PermissionEngine> {
+            Arc::new(PolicyEngine::new(
+                Policy::deny_all("p").with_rule(PolicyRule::new("all", "*", "*", Effect::Allow)),
+            ))
+        };
+        let both = IntersectionEngine::new(vec![everything(), everything()]);
+        let decision = both.evaluate(&request("runtime", "modify_policy", RiskLevel::Low));
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(
+            decision.matched_rule.as_deref(),
+            Some("builtin:immutable-deny")
+        );
     }
 }

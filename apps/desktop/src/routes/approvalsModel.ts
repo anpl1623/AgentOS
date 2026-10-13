@@ -71,6 +71,23 @@ export function askedOnlyForTaint(approval: ApprovalView): boolean {
 }
 
 /**
+ * Who asked, when the asking run was started by another agent rather than by
+ * a person: the asking agent, then each agent above it up to the root.
+ *
+ * `["supervisor", "worker"]` reads "worker, asked by supervisor", as the
+ * runtime's `ApprovalRequest::attribution` writes it for the terminal, so
+ * the two clients name a chain alike. `null` for a run a person started,
+ * whose chain is empty. The chain is the runtime's,
+ * stamped on the request before it was stored, so the card says who chose
+ * this work without the operator opening a single trace; and every agent
+ * above the asking one holds a policy that also had to let the call this far.
+ */
+export function chainLine(chain: readonly string[]): string | null {
+  if (chain.length < 2) return null;
+  return [...chain].reverse().join(", asked by ");
+}
+
+/**
  * What to announce when requests arrive, and the ids seen so far.
  *
  * Arrivals are announced as one line rather than by making the card list a

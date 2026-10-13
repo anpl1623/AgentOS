@@ -17,10 +17,11 @@ import { useAsync } from "../sdk/useAsync";
 import type { Navigate } from "./route";
 import {
   type AccountRow,
+  type AuditFindings,
   type CatalogueEntry,
   type CredentialRow,
-  type Verification,
   accountRows,
+  auditFindings,
   bindReady,
   catalogue,
   countEntries,
@@ -35,6 +36,8 @@ import {
   schedulerNotices,
   schedulerSummary,
   testLine,
+  findingsSummary,
+  gapsNote,
   verificationAnnouncement,
   verificationLine,
 } from "./settingsModel";
@@ -57,7 +60,7 @@ const SCHEDULER_MS = 10_000;
  * Held in memory only: a result read back from disk after a restart would be
  * a claim about a chain that may since have changed.
  */
-let lastVerification: Verification | null = null;
+let lastVerification: AuditFindings | null = null;
 
 /**
  * The machine-level controls, and the one question only this screen answers:
@@ -1216,7 +1219,7 @@ function FactPair({
 
 function AuditLog() {
   const now = useNow();
-  const [last, setLast] = useState<Verification | null>(() => lastVerification);
+  const [last, setLast] = useState<AuditFindings | null>(() => lastVerification);
   const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1224,8 +1227,7 @@ function AuditLog() {
     setVerifying(true);
     setError(null);
     try {
-      const problems = await api.verifyAudit();
-      const result = { at: new Date().toISOString(), problems };
+      const result = auditFindings(new Date().toISOString(), await api.verifyAudit());
       lastVerification = result;
       setLast(result);
     } catch (failure) {
@@ -1255,35 +1257,51 @@ function AuditLog() {
                     </Fact>
                   ) : (
                     <Fact tone="danger" noun="audit chain">
-                      {last.problems.length === 1
-                        ? "1 problem"
-                        : `${last.problems.length} problems`}
+                      {findingsSummary(last) ?? ""}
                     </Fact>
                   )}
-                  <span className="visually-hidden">
-                    {" "}
-                    {verificationAnnouncement(last.problems)}
-                  </span>
+                  <span className="visually-hidden"> {verificationAnnouncement(last)}</span>
                 </>
               ) : null}
             </span>
             <span className="faint">{verificationLine(last, now)}</span>
           </div>
           <p className="field-note">
-            Recomputes every hash and checks each record still points at the one before it.
+            Recomputes every hash and checks each record still points at the one before it, then
+            that the records are complete: every tool call that started ended, every approval
+            granted was asked for, and every run an agent delegated to left records of its own.
           </p>
-          {last && last.problems.length > 0 ? (
-            <div className="stack reveal">
-              {last.problems.map((problem, index) => (
-                <div key={`${index}:${problem}`} className="banner error flush">
-                  {problem}
-                </div>
-              ))}
-            </div>
-          ) : null}
+          <Findings
+            title="Chain breaks"
+            note="The chain does not verify here: a record was altered, removed or reordered."
+            found={last?.breaks ?? []}
+          />
+          <Findings
+            title="Coverage gaps"
+            note={gapsNote(last ?? { breaks: [], gaps: [] })}
+            found={last?.gaps ?? []}
+          />
         </div>
       </div>
     </Section>
+  );
+}
+
+/** One kind of finding from the full check, under a heading that says what it means. */
+function Findings({ title, note, found }: { title: string; note: string; found: string[] }) {
+  const id = useId();
+  if (found.length === 0) return null;
+  return (
+    <div className="stack reveal" role="group" aria-labelledby={id}>
+      <p className="field-note" id={id}>
+        <strong>{title}.</strong> {note}
+      </p>
+      {found.map((problem, index) => (
+        <div key={`${index}:${problem}`} className="banner error flush">
+          {problem}
+        </div>
+      ))}
+    </div>
   );
 }
 

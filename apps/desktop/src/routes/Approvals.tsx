@@ -32,6 +32,7 @@ import {
   askedOnlyForTaint,
   blockedFor,
   budgetLine,
+  chainLine,
   decisionTone,
   describedWarning,
   idleSelection,
@@ -431,6 +432,7 @@ function ApprovalCard({
   const noteId = `approval-${id}-note`;
   const stop = offersStop(approval);
   const budget = budgetLine(approval.asked_this_run, approval.approval_budget);
+  const chain = chainLine(approval.delegation_chain);
   const described = describedWarning(approval);
   const kind = intent?.kind ?? null;
 
@@ -481,6 +483,12 @@ function ApprovalCard({
             {approval.agent_name} wants to run <span className="mono">{approval.tool}</span>
           </h2>
           <div className="row-meta">
+            {chain === null ? null : (
+              <span>
+                <span className="visually-hidden">delegated: </span>
+                {chain}
+              </span>
+            )}
             <span>blocked for {blockedFor(approval.requested_at, now)}</span>
             {budget === null ? null : <span>{budget}</span>}
           </div>
