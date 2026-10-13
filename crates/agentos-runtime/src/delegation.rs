@@ -417,13 +417,17 @@ impl Tool for DelegateTool {
         // that nothing between the plan and here can spend them twice.
         let limit = self.broker.limits().max_children_per_run;
         let wanted = u16::try_from(args.requests.len()).unwrap_or(u16::MAX);
-        if handle
+        #[allow(
+            deprecated,
+            reason = "fetch_update's new name, try_update, is stable from Rust 1.95; rust-version is 1.94"
+        )]
+        let exceeded = handle
             .children_started
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |started| {
                 started.checked_add(wanted).filter(|total| *total <= limit)
             })
-            .is_err()
-        {
+            .is_err();
+        if exceeded {
             return Err(denied(&DelegationRefusal::FanOutExceeded { limit }));
         }
 

@@ -38,6 +38,10 @@ impl RunBudget {
     /// running concurrently spend from the same counter: two of them reading
     /// one remaining turn must not both take it. The same reason
     /// `TaintTracker::observe` uses `swap`.
+    #[allow(
+        deprecated,
+        reason = "fetch_update's new name, try_update, is stable from Rust 1.95; rust-version is 1.94"
+    )]
     pub fn try_spend(&self) -> bool {
         self.remaining
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
@@ -55,6 +59,10 @@ impl RunBudget {
     /// the budget equal to the turns the runs record, and a run that never
     /// delegates exactly where it was. Never raises the budget above what was
     /// granted.
+    #[allow(
+        deprecated,
+        reason = "fetch_update's new name, try_update, is stable from Rust 1.95; rust-version is 1.94"
+    )]
     pub fn refund(&self) {
         let _ = self
             .remaining
