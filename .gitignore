@@ -20,3 +20,6 @@ apps/desktop/src-tauri/gen/
 
 # Output of `npm run screenshots`, regenerated on demand from fixtures
 apps/desktop/screenshots/
+
+# Other checkouts of this repository made by coding agents; never part of it
+/.claude/worktrees/
