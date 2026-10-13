@@ -533,3 +533,50 @@ fn github_is_offered_before_an_account_is_bound_and_says_how_to_bind_one() {
         );
     }
 }
+
+#[test]
+fn a_run_nobody_delegated_is_a_tree_of_one() {
+    // `--tree` has to work on the ordinary case too, or it is a flag somebody
+    // learns to avoid; and the flat view must not grow lineage it does not have.
+    let guard = TempDir::new().unwrap();
+    let home = guard.path();
+    run_ok(
+        home,
+        &[
+            "agent",
+            "create",
+            "--name",
+            "solo",
+            "--provider",
+            "mock",
+            "--model",
+            "scripted",
+        ],
+    );
+    run_ok(home, &["task", "run", "Check in.", "--agent", "solo"]);
+
+    let list = run_ok(home, &["task", "list"]);
+    let task = list
+        .lines()
+        .find(|line| line.contains("Check in."))
+        .and_then(|line| line.split_whitespace().next())
+        .unwrap_or_else(|| panic!("the task should be listed: {list}"))
+        .to_owned();
+
+    let tree = run_ok(home, &["task", "show", &task, "--tree"]);
+    let lines: Vec<&str> = tree.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "solo · completed · 1 step".to_owned(),
+            "   Check in.".to_owned(),
+            format!("   task {task}"),
+        ],
+        "{tree}"
+    );
+
+    let flat = run_ok(home, &["task", "show", &task]);
+    assert!(flat.contains("Check in."), "{flat}");
+    assert!(!flat.contains("Asked by"), "{flat}");
+    assert!(!flat.contains("Delegated"), "{flat}");
+}

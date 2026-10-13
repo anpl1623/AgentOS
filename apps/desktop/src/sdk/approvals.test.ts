@@ -18,6 +18,7 @@ function approval(id: string, requestedAt = "2026-09-29T10:00:00Z"): ApprovalVie
   return {
     id,
     agent_name: "sales",
+    delegation_chain: [],
     task_id: "task",
     run_id: "run",
     objective: "follow up",

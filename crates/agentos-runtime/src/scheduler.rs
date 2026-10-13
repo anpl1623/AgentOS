@@ -9,7 +9,7 @@
 //!    like one nobody has got to yet. So is everything downstream of it, in the
 //!    same tick: a dead chain resolves at once rather than one layer per tick.
 //! 3. **Start what is runnable.** Tasks whose clock has arrived and whose
-//!    dependencies have all succeeded, up to a concurrency limit.
+//!    dependencies have all succeeded, up to a limit on live runs.
 //!
 //! # Nobody is watching
 //!
@@ -26,12 +26,18 @@
 //!
 //! # What the concurrency limit counts
 //!
-//! [`SchedulerOptions::max_concurrent_runs`] counts the tasks this scheduler
-//! started, not every run that is live. Today those are the same thing, because
-//! a run cannot start another run. Wave 6 (delegation) makes them different — a
-//! scheduled run that spawns three more would occupy one slot and consume four
-//! — and must change this calculation to count live runs instead. It is left as
-//! it is deliberately, and this note is the reminder.
+//! [`SchedulerOptions::max_concurrent_runs`] limits live runs, not the tasks
+//! this scheduler started. A run can delegate, and a scheduled run that asks
+//! three other agents to work is four runs calling a model and touching the
+//! world at once; counting it as one slot would let a limit of one mean four.
+//! So the scheduler starts nothing while [`Runtime::running_runs`], which
+//! counts every live run including delegated ones, is at the limit. The same
+//! count includes runs other clients of this runtime started — a person's run
+//! in the desktop application takes a slot as well — which is the point: the
+//! limit is on how much is happening, not on who started it.
+//!
+//! The scheduler's own handles are kept for reaping and draining. They track
+//! what it must wait for, not how much is running.
 //!
 //! # One scheduler, and one start per task
 //!
@@ -630,10 +636,11 @@ impl Scheduler {
     }
 
     async fn start_runnable(&self) -> Result<Vec<TaskId>, RuntimeError> {
+        // Live runs, delegated ones among them; see the module documentation.
         let capacity = self
             .options
             .max_concurrent_runs
-            .saturating_sub(self.in_flight.lock().await.len());
+            .saturating_sub(self.runtime.running_runs().await.len());
         if capacity == 0 {
             return Ok(Vec::new());
         }

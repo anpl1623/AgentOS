@@ -178,6 +178,7 @@ mod tests {
             effect_before_taint: Effect::Ask,
             asked_this_run: 1,
             approval_budget: Some(10),
+            delegation_chain: vec![],
             reason: "policy".into(),
             explanation: "sends an email".into(),
             affected_resources: vec![],

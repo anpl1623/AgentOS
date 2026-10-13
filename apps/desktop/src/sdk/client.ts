@@ -17,12 +17,14 @@ import type { ApprovalDecisionInput } from "../bindings/ApprovalDecisionInput";
 import type { ApprovalView } from "../bindings/ApprovalView";
 import type { AuditHealth } from "../bindings/AuditHealth";
 import type { AuditRecordView } from "../bindings/AuditRecordView";
+import type { AuditVerificationView } from "../bindings/AuditVerificationView";
 import type { CadenceInput } from "../bindings/CadenceInput";
 import type { CadencePreview } from "../bindings/CadencePreview";
 import type { CreateAgentInput } from "../bindings/CreateAgentInput";
 import type { CreateScheduleInput } from "../bindings/CreateScheduleInput";
 import type { CreateTaskInput } from "../bindings/CreateTaskInput";
 import type { DashboardView } from "../bindings/DashboardView";
+import type { DelegationTreeView } from "../bindings/DelegationTreeView";
 import type { EventView } from "../bindings/EventView";
 import type { IntegrationTestView } from "../bindings/IntegrationTestView";
 import type { IntegrationView } from "../bindings/IntegrationView";
@@ -83,6 +85,11 @@ export const api = {
   cancelRun: (runId: string) => call<boolean>("cancel_run", { runId }),
   getTrace: (runId: string) => call<TraceView>("get_trace", { runId }),
   getTaskTrace: (taskId: string) => call<TraceView>("get_task_trace", { taskId }),
+  /**
+   * A run and every run delegated beneath it, depth first. The trace already
+   * carries the runs it asked for directly; this reaches the ones they asked.
+   */
+  delegationTree: (runId: string) => call<DelegationTreeView>("delegation_tree", { runId }),
   /** Every attempt at a task, oldest first. */
   listRuns: (taskId: string) => call<RunSummary[]>("list_runs", { taskId }),
   /** Start another attempt. Refused unless the latest one failed or was cancelled. */
@@ -139,8 +146,12 @@ export const api = {
    */
   activity: (limit?: number, securityOnly?: boolean) =>
     call<EventView[]>("activity", { limit: limit ?? null, securityOnly: securityOnly ?? null }),
-  /** Rehash the whole chain. Deliberate and slow; Settings offers it as a button. */
-  verifyAudit: () => call<string[]>("verify_audit"),
+  /**
+   * Rehash the whole chain, then check it is complete: every call that
+   * started ended, every grant was asked for, every delegated run left
+   * records. Deliberate and slow; Settings offers it as a button.
+   */
+  verifyAudit: () => call<AuditVerificationView>("verify_audit"),
   /** The chain's health, verifying only records written since the last check. */
   auditHealth: () => call<AuditHealth>("audit_health"),
   /** One audit record in full, hashes and payload included. */

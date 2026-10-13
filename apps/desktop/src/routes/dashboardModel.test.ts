@@ -32,6 +32,7 @@ function approval(id: string, risk: string, waited: number): ApprovalView {
   return {
     id,
     agent_name: "sales",
+    delegation_chain: [],
     task_id: "task-1",
     run_id: "run-1",
     objective: "Follow up",

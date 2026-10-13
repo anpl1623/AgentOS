@@ -6,16 +6,17 @@ use tauri::State;
 use tokio::sync::Mutex;
 
 use super::{Answer, DesktopError, parse_id};
-use crate::dto::{AuditHealth, AuditRecordView};
+use crate::dto::{AuditHealth, AuditRecordView, AuditVerificationView};
 use crate::state::{AppState, AuditWatch};
 
-/// Verify the whole audit chain, rehashing every record.
+/// Verify the whole audit chain, rehashing every record, and check that the
+/// records it holds account for every run they name.
 ///
-/// The deliberate check Settings offers. Its verdict also replaces the routine
-/// health check's, so the dashboard cannot call intact a chain this has just
-/// found broken, or the reverse.
+/// The deliberate check Settings offers. Its verdict on the chain also
+/// replaces the routine health check's, so the dashboard cannot call intact a
+/// chain this has just found broken, or the reverse.
 #[tauri::command]
-pub async fn verify_audit(state: State<'_, AppState>) -> Answer<Vec<String>> {
+pub async fn verify_audit(state: State<'_, AppState>) -> Answer<AuditVerificationView> {
     verify_whole_chain(&state.runtime, &state.audit).await
 }
 
@@ -79,21 +80,29 @@ pub(crate) async fn check_audit_health(
     })
 }
 
-/// Rehash the whole chain, and check the stretch since the checkpoint against
-/// the checkpoint, reporting what either finds.
+/// Rehash the whole chain, check the stretch since the checkpoint against the
+/// checkpoint, and check the log's coverage, reporting what any of them finds.
 ///
-/// The whole-chain pass alone is not the stricter of the two. It proves the
-/// log is consistent with itself, and a log rewritten consistently from some
-/// record onwards is; only the checkpoint remembers what that record's hash
-/// was when this process last proved it. So the deliberate check includes
-/// the routine one, and its verdict, which replaces the watch's, can only
-/// clear a break that neither of them can find any more.
+/// The whole-chain pass alone is not the stricter of the two chain checks. It
+/// proves the log is consistent with itself, and a log rewritten consistently
+/// from some record onwards is; only the checkpoint remembers what that
+/// record's hash was when this process last proved it. So the deliberate check
+/// includes the routine one, and its verdict, which replaces the watch's, can
+/// only clear a break that neither of them can find any more.
+///
+/// Coverage is the question neither chain check can answer: a log can verify
+/// perfectly and still hold a tool call that never ended or a delegated run
+/// that wrote nothing. It is read from the same records as the rehash, read
+/// once, and is reported beside the breaks rather than folded into the watch,
+/// whose verdict speaks for the chain alone and is what the dashboard polls.
 pub(crate) async fn verify_whole_chain(
     runtime: &Runtime,
     watch: &Mutex<AuditWatch>,
-) -> Answer<Vec<String>> {
+) -> Answer<AuditVerificationView> {
     let mut watch = watch.lock().await;
-    let whole = runtime.verify_audit().await?;
+    let records = runtime.database().audit_sink().all().await?;
+    let whole = agentos_audit::verify_chain(&records);
+    let coverage = agentos_audit::verify_log_coverage(&records);
     let (since, verified) = runtime.verify_audit_from(Some(&watch.verified)).await?;
     watch.verified = verified;
 
@@ -104,5 +113,8 @@ pub(crate) async fn verify_whole_chain(
         }
     }
     watch.intact = breaks.is_empty();
-    Ok(breaks.iter().map(ToString::to_string).collect())
+    Ok(AuditVerificationView {
+        breaks: breaks.iter().map(ToString::to_string).collect(),
+        gaps: coverage.gaps.iter().map(ToString::to_string).collect(),
+    })
 }

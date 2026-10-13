@@ -11,7 +11,9 @@ use clap::Subcommand;
 use tokio_util::sync::CancellationToken;
 
 use crate::gate::InteractiveGate;
-use crate::render::{Style, pad, rule, trace as render_trace};
+use crate::render::{
+    DelegationEdge, Lineage, Style, delegation_tree, pad, rule, trace as render_trace,
+};
 
 /// Task subcommands.
 #[derive(Debug, Subcommand)]
@@ -71,6 +73,11 @@ pub enum TaskCommand {
     Show {
         /// Task identifier.
         task: String,
+
+        /// Show the delegation tree below the run instead: every agent it
+        /// asked, and every agent they asked in turn.
+        #[arg(long)]
+        tree: bool,
     },
 
     /// Stop a run that is currently executing.
@@ -129,7 +136,8 @@ pub async fn run(command: TaskCommand, config: &RuntimeConfig) -> Result<()> {
                 .await?;
 
             let trace = runtime.trace(outcome.run_id).await?;
-            print!("{}", render_trace(&trace, &style, false));
+            let lineage = lineage(&runtime, &trace).await?;
+            print!("{}", render_trace(&trace, &lineage, &style, false));
 
             println!("{}", rule());
             println!(
@@ -223,7 +231,7 @@ pub async fn run(command: TaskCommand, config: &RuntimeConfig) -> Result<()> {
             }
         }
 
-        TaskCommand::Show { task } => {
+        TaskCommand::Show { task, tree } => {
             let task_id: TaskId = task.parse().context("task ids are UUIDs")?;
             let task = runtime.task(task_id).await?;
             let run = runtime
@@ -232,8 +240,27 @@ pub async fn run(command: TaskCommand, config: &RuntimeConfig) -> Result<()> {
                 .latest_for_task(task.id)
                 .await?
                 .context("this task has never been run")?;
-            let trace = runtime.trace(run.id).await?;
-            print!("{}", render_trace(&trace, &style, true));
+
+            // Flat unless asked: somebody debugging one run should not have
+            // to page through every run it led to.
+            if tree {
+                print!(
+                    "{}",
+                    delegation_tree(&runtime.delegation_tree(run.id).await?, &style)
+                );
+                if let Some(root) = root_task(&runtime, run.id).await? {
+                    println!();
+                    println!(
+                        "{} {}",
+                        style.dim("This run was delegated. The whole tree:"),
+                        style.bold(&format!("agentos task show {root} --tree"))
+                    );
+                }
+            } else {
+                let trace = runtime.trace(run.id).await?;
+                let lineage = lineage(&runtime, &trace).await?;
+                print!("{}", render_trace(&trace, &lineage, &style, true));
+            }
         }
 
         TaskCommand::Cancel { run } => {
@@ -279,6 +306,59 @@ pub(crate) async fn resolve_agent(
                 .join(", ")
         ),
     }
+}
+
+/// Resolve the names and runs at the far end of a trace's delegations.
+///
+/// The trace carries the edges as the runtime stores them, by identifier;
+/// rendering them wants the agent's name and the state of its run.
+pub(crate) async fn lineage(
+    runtime: &agentos_runtime::Runtime,
+    trace: &agentos_runtime::RunTrace,
+) -> Result<Lineage> {
+    let database = runtime.database();
+    let delegated_by = match &trace.delegated_by {
+        Some(delegation) => Some(DelegationEdge {
+            agent: database
+                .agents()
+                .get(delegation.parent_agent_id)
+                .await?
+                .name,
+            run: database.runs().find(delegation.parent_run_id).await?,
+            delegation: delegation.clone(),
+        }),
+        None => None,
+    };
+    let mut children = Vec::with_capacity(trace.delegations.len());
+    for delegation in &trace.delegations {
+        let run = match delegation.child_run_id {
+            Some(run_id) => database.runs().find(run_id).await?,
+            None => None,
+        };
+        children.push(DelegationEdge {
+            agent: database.agents().get(delegation.child_agent_id).await?.name,
+            run,
+            delegation: delegation.clone(),
+        });
+    }
+    Ok(Lineage {
+        delegated_by,
+        children,
+    })
+}
+
+/// The task at the root of the tree a delegated run belongs to, if it was
+/// delegated at all.
+async fn root_task(
+    runtime: &agentos_runtime::Runtime,
+    run_id: TaskRunId,
+) -> Result<Option<TaskId>> {
+    let ancestry = runtime.database().delegations().ancestry(run_id).await?;
+    let Some(top) = ancestry.last() else {
+        return Ok(None);
+    };
+    let root = runtime.database().runs().get(top.parent_run_id).await?;
+    Ok(Some(root.task_id))
 }
 
 fn truncate(text: &str, max: usize) -> String {

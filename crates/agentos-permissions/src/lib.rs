@@ -15,7 +15,8 @@
 //!   default ports.
 //! * [`policy`] holds the rules and the specificity ordering that resolves
 //!   conflicts between them.
-//! * [`engine`] evaluates a request against a policy and produces a decision.
+//! * [`engine`] evaluates a request against a policy and produces a decision,
+//!   or against several at once for a delegated run.
 //! * [`grant`] reads a policy for what it grants, by the same rules.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -28,7 +29,7 @@ pub mod pattern;
 pub mod policy;
 pub mod yaml;
 
-pub use engine::{DenyAllEngine, PermissionEngine, PolicyEngine};
+pub use engine::{DenyAllEngine, IntersectionEngine, PermissionEngine, PolicyEngine};
 pub use error::{OriginError, PathError, PatternError, PolicyError};
 pub use grant::Reach;
 pub use origin::normalise_origin;

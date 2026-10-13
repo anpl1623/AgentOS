@@ -40,9 +40,9 @@ impl ApprovalRepository {
                                     capability, risk, reason, explanation, affected_resources,
                                     tainted, taint_sources, status, requested_at, decided_at,
                                     decision_note, effect_before_taint, asked_this_run,
-                                    approval_budget)
+                                    approval_budget, delegation_chain)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                     ?19, ?20, ?21)",
+                     ?19, ?20, ?21, ?22)",
         )
         .bind(request.id.to_string())
         .bind(request.agent_id.to_string())
@@ -70,6 +70,7 @@ impl ApprovalRepository {
         .bind(request.effect_before_taint.as_str())
         .bind(i64::from(request.asked_this_run))
         .bind(request.approval_budget.map(i64::from))
+        .bind(write_json("delegation_chain", &request.delegation_chain)?)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -240,6 +241,11 @@ fn hydrate(row: &sqlx::sqlite::SqliteRow) -> Result<ApprovalRequest, DbError> {
             row.try_get::<String, _>("agent_id")?.as_str(),
         )?,
         agent_name: row.try_get("agent_name")?,
+        delegation_chain: read_json(
+            TABLE,
+            "delegation_chain",
+            row.try_get::<String, _>("delegation_chain")?.as_str(),
+        )?,
         task_id: read_id(
             TABLE,
             "task_id",
@@ -336,6 +342,7 @@ pub(crate) mod tests {
             id: ApprovalId::new(),
             agent_id: ctx.agent_id,
             agent_name: "approver".to_owned(),
+            delegation_chain: Vec::new(),
             task_id: ctx.task_id,
             run_id: ctx.run_id,
             tool: tool.to_owned(),
@@ -425,6 +432,71 @@ pub(crate) mod tests {
             recent.iter().map(|r| r.id).collect::<Vec<_>>(),
             vec![ids[1]]
         );
+    }
+
+    #[tokio::test]
+    async fn a_request_written_before_migration_8_reads_as_undelegated() {
+        // Every approval raised before delegation existed was raised by a run
+        // nobody delegated, and must read as exactly that.
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:")
+                    .unwrap()
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        crate::MIGRATOR.run_to(7, &pool).await.unwrap();
+        let db = Database { pool };
+
+        let agent = sample_agent("approver");
+        db.agents().insert(&agent).await.unwrap();
+        let task = Task::new(agent.id, "o");
+        db.tasks().insert(&task).await.unwrap();
+        let run = TaskRun::new(task.id, 1);
+        db.runs().insert(&run).await.unwrap();
+
+        let id = ApprovalId::new();
+        sqlx::query(
+            "INSERT INTO approvals (id, agent_id, agent_name, task_id, run_id, tool,
+                                    arguments, capability, risk, reason, explanation,
+                                    affected_resources, tainted, taint_sources, status,
+                                    requested_at)
+             VALUES (?1, ?2, 'approver', ?3, ?4, 'email.send', '{}',
+                     '{\"domain\":\"email\",\"action\":\"send\"}', 'high', 'policy',
+                     'sends', '[]', 0, '[]', 'pending', ?5)",
+        )
+        .bind(id.to_string())
+        .bind(agent.id.to_string())
+        .bind(task.id.to_string())
+        .bind(run.id.to_string())
+        .bind(write_time(&agentos_core::now()))
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        crate::MIGRATOR.run(db.pool()).await.unwrap();
+
+        let old = db.approvals().get(id).await.unwrap();
+        assert!(old.delegation_chain.is_empty());
+        assert_eq!(old.attribution(), None);
+    }
+
+    #[tokio::test]
+    async fn the_agents_a_request_was_made_on_behalf_of_round_trip() {
+        let ctx = seeded().await;
+        let mut written = request(&ctx, "email.send");
+        written.delegation_chain = vec!["supervisor".to_owned(), "approver".to_owned()];
+        ctx.db.approvals().insert(&written).await.unwrap();
+
+        let loaded = ctx.db.approvals().get(written.id).await.unwrap();
+        assert_eq!(loaded.delegation_chain, written.delegation_chain);
+        assert_eq!(
+            loaded.attribution().as_deref(),
+            Some("approver, asked by supervisor")
+        );
+        assert_eq!(ctx.db.approvals().list_pending().await.unwrap()[0], written);
     }
 
     #[tokio::test]

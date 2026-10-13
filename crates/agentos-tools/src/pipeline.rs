@@ -391,17 +391,18 @@ impl ToolPipeline {
         )
         .await;
 
-        let execution = tokio::time::timeout(
-            context.timeout,
-            tool.execute(arguments, context, cancel.clone()),
-        )
-        .await;
+        let limit = tool.time_limit(context);
+        let running = tool.execute(arguments, context, cancel.clone());
+        let execution = match limit {
+            Some(limit) => tokio::time::timeout(limit, running).await,
+            None => Ok(running.await),
+        };
 
         let output = match execution {
             Err(_elapsed) => {
                 let error = ToolError::TimedOut {
                     tool: call.tool.clone(),
-                    seconds: context.timeout.as_secs(),
+                    seconds: limit.unwrap_or_default().as_secs(),
                 };
                 self.emit(
                     context,
@@ -949,6 +950,8 @@ fn build_approval_request(
         // enforced, so the number a person is shown is the number enforced.
         asked_this_run: 0,
         approval_budget: None,
+        // Stamped by the same gate, which alone knows who delegated to this run.
+        delegation_chain: Vec::new(),
         reason,
         explanation: plan.summary.clone(),
         affected_resources: plan.affected_resources.clone(),
@@ -1651,6 +1654,129 @@ mod tests {
         );
         assert!(released.is_empty());
         assert!(!sink.contains_kind("network.credential.used").await);
+    }
+
+    /// Holds its call open until released, saying when it has started, and
+    /// declares no time limit of its own when `unlimited`.
+    #[derive(Debug)]
+    struct Container {
+        metadata: agentos_core::tool::ToolMetadata,
+        unlimited: bool,
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::Tool for Container {
+        fn metadata(&self) -> &agentos_core::tool::ToolMetadata {
+            &self.metadata
+        }
+
+        fn validate(&self, arguments: &serde_json::Value) -> Result<serde_json::Value, ToolError> {
+            Ok(arguments.clone())
+        }
+
+        async fn plan(
+            &self,
+            _arguments: &serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolPlan, ToolError> {
+            Ok(ToolPlan::new(RiskLevel::Low, "contain")
+                .requiring(Capability::new("runtime", "delegate")))
+        }
+
+        fn time_limit(&self, context: &ToolContext) -> Option<std::time::Duration> {
+            (!self.unlimited).then_some(context.timeout)
+        }
+
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+            _context: &ToolContext,
+            _cancel: CancellationToken,
+        ) -> Result<ToolOutput, ToolError> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(ToolOutput::text(
+                DataSource::Tool {
+                    tool: "contain".into(),
+                },
+                "done",
+            ))
+        }
+    }
+
+    /// Run one call to a [`Container`] under a one-second limit, letting an
+    /// hour of the paused clock pass while it is held open.
+    async fn hold_for_an_hour(unlimited: bool) -> ExecutionReport {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(Container {
+            metadata: crate::tool::metadata_for::<serde_json::Value>(
+                "runtime.contain",
+                "holds a call open",
+                RiskLevel::Low,
+                vec![Capability::new("runtime", "delegate")],
+                false,
+            ),
+            unlimited,
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        }));
+        let (audit, _sink) = AuditLog::in_memory().await.unwrap();
+        let policy = agentos_permissions::Policy::deny_all("t").with_rule(
+            agentos_permissions::policy::PolicyRule::new(
+                "contain",
+                "runtime",
+                "delegate",
+                Effect::Allow,
+            ),
+        );
+        let pipeline = ToolPipeline::new(
+            Arc::new(registry),
+            Arc::new(agentos_permissions::PolicyEngine::new(policy)),
+            Arc::new(crate::DenyAllGate),
+            Arc::new(audit),
+        );
+        let context = ToolContext::new(
+            agentos_core::ids::AgentId::new(),
+            agentos_core::ids::TaskId::new(),
+            agentos_core::ids::TaskRunId::new(),
+            std::env::temp_dir(),
+        )
+        .with_timeout(std::time::Duration::from_secs(1));
+
+        let call = tokio::spawn(async move {
+            pipeline
+                .execute(
+                    &ToolCall::new("1", "runtime.contain", serde_json::json!({})),
+                    &context,
+                    &TaintTracker::new(),
+                    "agent",
+                    &["runtime.contain".to_owned()],
+                    &CancellationToken::new(),
+                )
+                .await
+        });
+        started.notified().await;
+        // The clock is paused, so this hour passes as soon as nothing else
+        // can run: any limit the pipeline set on the call has fired by then.
+        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        release.notify_one();
+        call.await.unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_tool_that_declares_no_time_limit_is_not_cut_off() {
+        let report = hold_for_an_hour(true).await;
+        assert!(report.is_success(), "{:?}", report.error);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn every_other_tool_is_held_to_the_context_timeout() {
+        let report = hold_for_an_hour(false).await;
+        assert_eq!(report.outcome, ToolOutcome::TimedOut);
     }
 
     #[test]

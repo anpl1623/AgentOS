@@ -393,6 +393,22 @@ pre.code.wrap {
   text-align: center;
   color: var(--text-dim);
 }
+/* A run another run asked for, beneath the call that asked. Depth is
+ * indentation and nothing else: the row sets --delegation-depth from the
+ * data, and each level steps in by one --delegation-indent. The edge is the
+ * strong border, not a hue, so the verdict and taint marks inside keep the
+ * only colour on the line. */
+.trace-delegation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-2) var(--s-4);
+  margin: 0 var(--s-8) var(--s-2)
+    calc(var(--s-8) + var(--delegation-indent) * var(--delegation-depth, 1));
+  padding: var(--s-1) var(--s-6);
+  border-left: 2px solid var(--border-strong);
+  font-size: var(--fs-small);
+}
 
 /* --- activity feed ------------------------------------------------------- */
 

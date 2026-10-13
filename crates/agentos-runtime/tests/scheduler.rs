@@ -681,3 +681,270 @@ async fn a_scheduled_run_cannot_approve_on_a_persons_behalf() {
     let scheduler = Scheduler::new(harness.runtime.clone(), SchedulerOptions::default());
     assert!(format!("{scheduler:?}").contains("DenyAllGate"));
 }
+
+/// A scheduled run that delegates.
+///
+/// Kept apart from [`Harness`], whose one agent may do nothing: here a
+/// supervisor may ask a worker, and the worker's model holds its turn until
+/// the test releases it or the run is cancelled, so the child is live for
+/// exactly as long as the test needs it to be.
+mod delegating {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use agentos_core::agent::{Agent, ModelConfig};
+    use agentos_core::ids::{TaskId, TaskRunId};
+    use agentos_core::task::{TaskState, TaskStatus};
+    use agentos_providers::{
+        CompletionRequest, CompletionResponse, MockProvider, ModelProvider, ProviderCapabilities,
+        ProviderError, ScriptedTurn, SharedProvider,
+    };
+    use agentos_runtime::{ProviderFactory, Runtime, RuntimeError, Scheduler, SchedulerOptions};
+    use agentos_secrets::InMemorySecretStore;
+    use agentos_tools::{ApprovalGate, RecordingGate};
+    use tempfile::TempDir;
+    use tokio::sync::Notify;
+    use tokio_util::sync::CancellationToken;
+
+    use super::POLICY;
+
+    /// How long a test waits on something that should happen at once before
+    /// calling it hung.
+    const HUNG: Duration = Duration::from_secs(10);
+
+    /// A model that takes its turn only when released, and gives it up
+    /// promptly when its run is cancelled.
+    #[derive(Debug)]
+    struct Held {
+        entered: Notify,
+        release: Notify,
+        then: MockProvider,
+    }
+
+    #[async_trait::async_trait]
+    impl ModelProvider for Held {
+        fn id(&self) -> &str {
+            self.then.id()
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            self.then.capabilities()
+        }
+
+        async fn complete(
+            &self,
+            request: CompletionRequest,
+            cancel: CancellationToken,
+        ) -> Result<CompletionResponse, ProviderError> {
+            self.entered.notify_one();
+            tokio::select! {
+                () = cancel.cancelled() => Err(ProviderError::Cancelled),
+                () = self.release.notified() => self.then.complete(request, cancel).await,
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct Models(HashMap<&'static str, SharedProvider>);
+
+    impl ProviderFactory for Models {
+        fn build(
+            &self,
+            agent_name: &str,
+            _model: &ModelConfig,
+        ) -> Result<SharedProvider, RuntimeError> {
+            Ok(self
+                .0
+                .get(agent_name)
+                .cloned()
+                .unwrap_or_else(|| Arc::new(MockProvider::answering("Done."))))
+        }
+    }
+
+    struct Delegating {
+        runtime: Runtime,
+        supervisor: Agent,
+        bystander: Agent,
+        worker: Arc<Held>,
+        _guard: TempDir,
+    }
+
+    impl Delegating {
+        async fn new() -> Self {
+            let guard = TempDir::new().unwrap();
+            let root = std::fs::canonicalize(guard.path()).unwrap();
+            let mut runtime = Runtime::in_memory(root, Arc::new(InMemorySecretStore::new()))
+                .await
+                .unwrap();
+
+            let worker = Arc::new(Held {
+                entered: Notify::new(),
+                release: Notify::new(),
+                then: MockProvider::answering("Done."),
+            });
+            let supervisor_model = Arc::new(MockProvider::new(vec![
+                ScriptedTurn::call(
+                    "d1",
+                    "agent.delegate",
+                    serde_json::json!({
+                        "requests": [{ "agent": "worker", "objective": "Do the slow part." }]
+                    }),
+                ),
+                ScriptedTurn::text("Done."),
+            ]));
+            runtime.set_provider_factory(Arc::new(Models(HashMap::from([
+                ("supervisor", supervisor_model as SharedProvider),
+                ("worker", worker.clone() as SharedProvider),
+            ]))));
+
+            let mut agents = Vec::new();
+            for (name, tools, policy) in [
+                (
+                    "supervisor",
+                    vec!["agent.delegate".to_owned()],
+                    "default: deny\npermissions:\n  runtime:\n    delegate: [worker]\n",
+                ),
+                ("worker", vec![], POLICY),
+                ("bystander", vec![], POLICY),
+            ] {
+                let agent = runtime
+                    .create_agent(
+                        name,
+                        "Do the work.",
+                        ModelConfig::new("mock", "scripted"),
+                        tools,
+                    )
+                    .await
+                    .unwrap();
+                runtime
+                    .database()
+                    .agents()
+                    .set_policy(agent.id, policy)
+                    .await
+                    .unwrap();
+                agents.push(agent);
+            }
+            let [supervisor, _worker, bystander] = <[Agent; 3]>::try_from(agents).unwrap();
+
+            Self {
+                runtime,
+                supervisor,
+                bystander,
+                worker,
+                _guard: guard,
+            }
+        }
+
+        fn scheduler(&self, max_concurrent_runs: usize) -> Scheduler {
+            Scheduler::new(
+                self.runtime.clone(),
+                SchedulerOptions::default()
+                    .with_max_concurrent_runs(max_concurrent_runs)
+                    .with_tick(Duration::from_millis(10)),
+            )
+            .with_approvals(Arc::new(RecordingGate::approving()) as Arc<dyn ApprovalGate>)
+        }
+
+        /// Start the supervisor's task through the scheduler and wait until
+        /// the worker it delegated to is live and holding its turn.
+        async fn start_supervisor(&self, scheduler: &Scheduler) -> TaskId {
+            let task = self
+                .runtime
+                .create_task(self.supervisor.id, "Supervise.", &[], None)
+                .await
+                .unwrap();
+            assert_eq!(scheduler.tick().await.unwrap().started, vec![task.id]);
+            tokio::time::timeout(HUNG, self.worker.entered.notified())
+                .await
+                .expect("the supervisor never delegated");
+            task.id
+        }
+
+        /// The run that carried out the supervisor's one delegation.
+        async fn child_of(&self, task: TaskId) -> TaskRunId {
+            let parent = self
+                .runtime
+                .database()
+                .runs()
+                .list_for_task(task)
+                .await
+                .unwrap()[0]
+                .id;
+            self.runtime
+                .database()
+                .delegations()
+                .list_for_parent_run(parent)
+                .await
+                .unwrap()[0]
+                .child_run_id
+                .expect("the child run was never attached")
+        }
+
+        async fn status(&self, id: TaskId) -> TaskStatus {
+            self.runtime.task(id).await.unwrap().status
+        }
+    }
+
+    #[tokio::test]
+    async fn a_delegated_child_takes_a_concurrency_slot_of_its_own() {
+        // Two slots, not one. With one, the supervisor alone fills the limit
+        // whether or not its child is counted, and the test would pass
+        // against a scheduler that counts only the tasks it started.
+        let harness = Delegating::new().await;
+        let scheduler = harness.scheduler(2);
+        let supervisor = harness.start_supervisor(&scheduler).await;
+        assert_eq!(
+            harness.runtime.running_runs().await.len(),
+            2,
+            "the supervisor and its child are both live"
+        );
+
+        let waiting = harness
+            .runtime
+            .create_task(harness.bystander.id, "Wait your turn.", &[], None)
+            .await
+            .unwrap();
+        assert!(
+            scheduler.tick().await.unwrap().started.is_empty(),
+            "one task started, two runs live: there is no slot left"
+        );
+        assert_eq!(harness.status(waiting.id).await, TaskStatus::Pending);
+
+        // Once the tree has finished, the slots come back. Draining waits on
+        // the supervisor's run itself, which cannot end before the child it
+        // is waiting on, rather than on a guess at how long both take.
+        harness.worker.release.notify_one();
+        tokio::time::timeout(HUNG, scheduler.drain())
+            .await
+            .expect("the tree never finished");
+        assert_eq!(harness.status(supervisor).await, TaskStatus::Succeeded);
+        assert!(harness.runtime.running_runs().await.is_empty());
+        assert_eq!(scheduler.tick().await.unwrap().started, vec![waiting.id]);
+        scheduler.drain().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_a_run_whose_delegate_is_still_working() {
+        // The worker never takes its turn unless it is cancelled. A child
+        // whose token did not descend from the scheduler's would hold the
+        // supervisor, and the shutdown with it, forever.
+        let harness = Delegating::new().await;
+        let scheduler = harness.scheduler(1);
+        let supervisor = harness.start_supervisor(&scheduler).await;
+        let child = harness.child_of(supervisor).await;
+
+        tokio::time::timeout(HUNG, scheduler.shutdown())
+            .await
+            .expect("shutdown did not drain a run with a live child");
+
+        let child_run = harness.runtime.database().runs().get(child).await.unwrap();
+        assert_eq!(child_run.state, TaskState::Cancelled);
+        assert_eq!(harness.status(supervisor).await, TaskStatus::Cancelled);
+        assert_eq!(
+            harness.status(child_run.task_id).await,
+            TaskStatus::Cancelled
+        );
+        assert!(harness.runtime.running_runs().await.is_empty());
+    }
+}

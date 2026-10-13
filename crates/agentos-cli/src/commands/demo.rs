@@ -58,12 +58,13 @@ pub async fn run(args: DemoArgs, config: &RuntimeConfig) -> Result<()> {
         // The shared registry is built headless at open time, so watching the
         // agent work means composing a registry with headed browser tools and
         // installing it. Everything else about the run is identical, the
-        // bound integration accounts included.
+        // bound integration accounts and the delegation broker included.
         let options = agentos_browser::BrowserOptions::new(config.browser_profiles()).headed(true);
         let pool = std::sync::Arc::new(agentos_browser::BrowserPool::new(options));
-        runtime.set_registry(agentos_runtime::compose_registry(
+        runtime.set_registry(agentos_runtime::compose_registry_with(
             &pool,
             runtime.integration_accounts(),
+            runtime.delegation_broker(),
         ));
     }
 
@@ -162,7 +163,8 @@ pub async fn run(args: DemoArgs, config: &RuntimeConfig) -> Result<()> {
     };
 
     let trace = runtime.trace(outcome.run_id).await?;
-    print!("{}", render_trace(&trace, &style, false));
+    let lineage = super::task::lineage(&runtime, &trace).await?;
+    print!("{}", render_trace(&trace, &lineage, &style, false));
 
     // The summary that makes the point.
     println!("{}", rule());

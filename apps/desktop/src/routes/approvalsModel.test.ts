@@ -8,6 +8,7 @@ import {
   askedOnlyForTaint,
   blockedFor,
   budgetLine,
+  chainLine,
   decisionTone,
   describedWarning,
   idleSelection,
@@ -26,6 +27,7 @@ function approval(
   const view: ApprovalView = {
     id,
     agent_name: "sales",
+    delegation_chain: [],
     task_id: "task",
     run_id: "run",
     objective: "follow up",
@@ -303,5 +305,26 @@ describe("the description's hidden characters", () => {
         approval("a", "low", "2026-10-01T10:00:00Z", { objective: "x\u202ey" }),
       ),
     ).toMatch(/holds 1 invisible or direction-changing character,/);
+  });
+});
+
+describe("the delegation chain", () => {
+  it("names the asking agent, then each agent above it up to the root", () => {
+    expect(chainLine(["supervisor", "worker"])).toBe("worker, asked by supervisor");
+    expect(chainLine(["supervisor", "researcher", "reader"])).toBe(
+      "reader, asked by researcher, asked by supervisor",
+    );
+  });
+
+  it("says nothing for a run a person started", () => {
+    expect(chainLine([])).toBeNull();
+    // A chain of one is the asking agent alone, which the card's title names.
+    expect(chainLine(["sales"])).toBeNull();
+  });
+
+  it("does not reorder the chain it was given", () => {
+    const chain = ["supervisor", "worker"];
+    chainLine(chain);
+    expect(chain).toEqual(["supervisor", "worker"]);
   });
 });

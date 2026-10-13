@@ -23,7 +23,7 @@ use tokio::sync::{Mutex, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::{Answer, DesktopError};
-use crate::dto::{ApprovalView, EventView, summarise_event};
+use crate::dto::{EventView, summarise_event};
 
 /// Event emitted when an agent needs a human decision.
 pub const APPROVAL_REQUESTED: &str = "agentos://approval-requested";
@@ -86,22 +86,26 @@ impl ApprovalBridge {
 /// Pushes the request to the interface and waits. Cancelling the run stops the
 /// wait — an operator must never have to answer a prompt for work they have
 /// already stopped.
+///
+/// One gate serves a whole delegation tree: every run a desktop run delegates
+/// to asks through it. So it holds no objective of its own; each card names
+/// the objective of the run that asked, read from that run's task.
 #[derive(Debug)]
 pub struct DesktopApprovalGate {
     app: AppHandle,
     bridge: ApprovalBridge,
-    /// The objective the run is pursuing, shown on the card for context.
-    objective: String,
+    /// Where the objective of the run asking is read from.
+    runtime: Runtime,
 }
 
 impl DesktopApprovalGate {
-    /// Build a gate for one run.
+    /// Build a gate for one run and every run it delegates to.
     #[must_use]
-    pub const fn new(app: AppHandle, bridge: ApprovalBridge, objective: String) -> Self {
+    pub const fn new(app: AppHandle, bridge: ApprovalBridge, runtime: Runtime) -> Self {
         Self {
             app,
             bridge,
-            objective,
+            runtime,
         }
     }
 }
@@ -114,7 +118,7 @@ impl ApprovalGate for DesktopApprovalGate {
         cancel: CancellationToken,
     ) -> ApprovalOutcome {
         let receiver = self.bridge.register(request.id).await;
-        let view = ApprovalView::new(request, self.objective.clone());
+        let view = crate::commands::approval_view(&self.runtime, request).await;
 
         if let Err(error) = self.app.emit(APPROVAL_REQUESTED, &view) {
             // With no interface listening there is nobody to approve, and

@@ -59,6 +59,17 @@ pub struct ApprovalRequest {
     pub agent_id: AgentId,
     /// Its name, denormalised so the UI need not join.
     pub agent_name: String,
+    /// The agents that delegated their way to this request, by name, from the
+    /// root run to the agent asking; empty when nobody delegated.
+    ///
+    /// A delegate's request goes to the same person as its delegator's, and a
+    /// card that names only the delegate hides who set it to work. "worker"
+    /// asking to send an email reads differently once it says "worker, asked by
+    /// supervisor". Stamped by the run's approval gate before the request is
+    /// stored or shown, as the count beside it is. Defaulted so that a request
+    /// serialised before the field existed still reads, as undelegated.
+    #[serde(default)]
+    pub delegation_chain: Vec<String>,
     /// The task.
     pub task_id: TaskId,
     /// The run.
@@ -117,6 +128,28 @@ pub struct ApprovalRequest {
     pub decided_at: Option<Timestamp>,
     /// Free-text note from the human.
     pub decision_note: Option<String>,
+}
+
+impl ApprovalRequest {
+    /// Who is asking, and on whose behalf: `worker, asked by supervisor`.
+    ///
+    /// `None` when nobody delegated, so a client prints the agent's name as it
+    /// always has. The chain is read from the asking end, because the agent
+    /// that will act is the one a person is deciding about, and each further
+    /// name is one step further from the action.
+    #[must_use]
+    pub fn attribution(&self) -> Option<String> {
+        let (asking, above) = self.delegation_chain.split_last()?;
+        if above.is_empty() {
+            return None;
+        }
+        let mut line = asking.clone();
+        for delegator in above.iter().rev() {
+            line.push_str(", asked by ");
+            line.push_str(delegator);
+        }
+        Some(line)
+    }
 }
 
 /// A human's answer.
@@ -230,6 +263,61 @@ mod tests {
 
         let exact = "é".repeat(MAX_DECISION_NOTE_CHARS);
         assert_eq!(clean_decision_note(&exact).as_deref(), Some(exact.as_str()));
+    }
+
+    fn request_with_chain(chain: &[&str]) -> ApprovalRequest {
+        ApprovalRequest {
+            id: ApprovalId::new(),
+            agent_id: AgentId::new(),
+            agent_name: chain.last().copied().unwrap_or("solo").to_owned(),
+            delegation_chain: chain.iter().map(|name| (*name).to_owned()).collect(),
+            task_id: TaskId::new(),
+            run_id: TaskRunId::new(),
+            tool: "email.send".to_owned(),
+            arguments: serde_json::Value::Null,
+            capability: Capability::new("email", "send"),
+            risk: RiskLevel::High,
+            effect_before_taint: Effect::Ask,
+            asked_this_run: 1,
+            approval_budget: None,
+            reason: "r".to_owned(),
+            explanation: "e".to_owned(),
+            affected_resources: Vec::new(),
+            tainted: false,
+            taint_sources: Vec::new(),
+            status: ApprovalStatus::Pending,
+            requested_at: crate::now(),
+            decided_at: None,
+            decision_note: None,
+        }
+    }
+
+    #[test]
+    fn a_delegated_request_names_every_agent_above_the_one_asking() {
+        assert_eq!(request_with_chain(&[]).attribution(), None);
+        // A chain of one is a root run that recorded itself: nobody delegated.
+        assert_eq!(request_with_chain(&["solo"]).attribution(), None);
+        assert_eq!(
+            request_with_chain(&["supervisor", "worker"])
+                .attribution()
+                .as_deref(),
+            Some("worker, asked by supervisor")
+        );
+        assert_eq!(
+            request_with_chain(&["supervisor", "researcher", "reader"])
+                .attribution()
+                .as_deref(),
+            Some("reader, asked by researcher, asked by supervisor")
+        );
+    }
+
+    #[test]
+    fn a_request_stored_before_delegation_reads_as_undelegated() {
+        let mut json = serde_json::to_value(request_with_chain(&["supervisor", "worker"])).unwrap();
+        json.as_object_mut().unwrap().remove("delegation_chain");
+        let read: ApprovalRequest = serde_json::from_value(json).unwrap();
+        assert!(read.delegation_chain.is_empty());
+        assert_eq!(read.attribution(), None);
     }
 
     #[test]

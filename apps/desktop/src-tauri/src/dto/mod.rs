@@ -24,6 +24,7 @@ use agentos_core::task::{Task, TaskRun};
 mod agent;
 mod approval;
 mod audit;
+mod delegation;
 mod event;
 mod grant;
 mod graph;
@@ -38,6 +39,7 @@ mod task;
 pub use agent::*;
 pub use approval::*;
 pub use audit::*;
+pub use delegation::*;
 pub use event::*;
 pub use grant::*;
 pub use graph::*;
@@ -77,6 +79,10 @@ pub fn summarise_event(payload: &serde_json::Value) -> String {
         return line;
     }
 
+    if let Some(line) = delegation_summary(payload) {
+        return line;
+    }
+
     // A manifest drift names the tool and what it planned beyond its manifest;
     // the tool alone would read like a routine execution.
     if let Some(undeclared) = undeclared_capabilities(payload) {
@@ -106,6 +112,41 @@ pub fn summarise_event(payload: &serde_json::Value) -> String {
     }
 
     String::new()
+}
+
+/// A delegation event as a line, or `None` for any other event.
+///
+/// A start carries an objective, and read alone it would pass for the
+/// objective of the run that recorded it; it names the agent asked instead.
+/// An ending carries no text at all, and a refusal's reason reads better with
+/// the agent it refused.
+fn delegation_summary(payload: &serde_json::Value) -> Option<String> {
+    let text = |name: &str| {
+        payload
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+    };
+    match text("event") {
+        "agent.delegation.started" => Some(format!(
+            "asked {}: {}",
+            text("child_agent"),
+            text("objective")
+        )),
+        "agent.delegation.completed" => {
+            let steps = payload
+                .get("steps")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            let noun = if steps == 1 { "step" } else { "steps" };
+            Some(format!(
+                "delegated run {} after {steps} {noun}",
+                text("state")
+            ))
+        }
+        "agent.delegation.refused" => Some(format!("{}: {}", text("child_agent"), text("reason"))),
+        _ => None,
+    }
 }
 
 /// The `undeclared` list of a `tool.manifest_exceeded` payload, comma-joined.
@@ -186,6 +227,41 @@ mod tests {
         assert_eq!(summarise_event(&both), "Summarise the week.");
 
         assert_eq!(summarise_event(&serde_json::json!({})), "");
+    }
+
+    #[test]
+    fn a_delegation_event_names_the_agent_asked_and_how_its_run_ended() {
+        let started = serde_json::json!({
+            "event": "agent.delegation.started",
+            "child_agent": "researcher",
+            "objective": "Read the news.",
+        });
+        assert_eq!(
+            summarise_event(&started),
+            "asked researcher: Read the news."
+        );
+
+        // An ending has no text field, and would otherwise be a blank line.
+        let completed = serde_json::json!({
+            "event": "agent.delegation.completed",
+            "state": "failed",
+            "steps": 8,
+            "tainted": false,
+        });
+        assert_eq!(
+            summarise_event(&completed),
+            "delegated run failed after 8 steps"
+        );
+
+        let refused = serde_json::json!({
+            "event": "agent.delegation.refused",
+            "child_agent": "sales",
+            "reason": "sales -> researcher -> sales",
+        });
+        assert_eq!(
+            summarise_event(&refused),
+            "sales: sales -> researcher -> sales"
+        );
     }
 
     #[test]

@@ -19,6 +19,10 @@ use tempfile::TempDir;
 
 /// Each registered tool and its manifest as sorted `domain.action` names.
 const EXPECTED: &[(&str, &[&str])] = &[
+    // One grant per agent asked, scoped to its name. It says which agents may
+    // be asked, not what they may then do: the child answers to its own policy
+    // and every policy above it.
+    ("agent.delegate", &["runtime.delegate"]),
     ("browser.back", &["browser.navigate"]),
     ("browser.click", &["browser.interact"]),
     ("browser.extract", &["browser.read"]),

@@ -47,6 +47,13 @@
 //!
 //!   payments:
 //!     execute: deny
+//!
+//!   runtime:
+//!     # `runtime.delegate`, scoped by `ResourceRef::Named { name: <agent> }`.
+//!     # It names which agents this one may ask, not what they may then do:
+//!     # the agent asked is still held to its own policy, intersected with
+//!     # this one.
+//!     delegate: [researcher]
 //! ```
 //!
 //! Paths are expanded (`~`) and canonicalised at load time, so the engine only
@@ -1204,5 +1211,50 @@ permissions:
         let ids = |p: &Policy| p.rules.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
         assert_eq!(ids(&a), ids(&b));
         assert_eq!(ids(&a), vec!["email.draft", "email.send"]);
+    }
+
+    fn delegate_request(agent: &str) -> PermissionRequest {
+        PermissionRequest::new(
+            "agent.delegate",
+            Capability::new("runtime", "delegate").with_resource(ResourceRef::Named {
+                name: agent.to_owned(),
+            }),
+            RiskLevel::High,
+        )
+    }
+
+    /// The stanza the module documentation teaches, with no change to the
+    /// parser: `runtime` is not a domain with its own resource kind, so its
+    /// shorthand scopes by name, which is how the delegate tool asks.
+    #[test]
+    fn the_delegate_shorthand_scopes_by_agent_name_without_a_parser_change() {
+        let yaml = "permissions:\n  runtime:\n    delegate: [researcher]\n";
+        let engine = PolicyEngine::new(PolicyDocument::from_yaml(yaml).unwrap().compile().unwrap());
+
+        let named = engine.evaluate(&delegate_request("researcher"));
+        assert_eq!(named.effect, Effect::Allow);
+        assert_eq!(named.matched_rule.as_deref(), Some("runtime.delegate"));
+        // Naming one agent grants no other.
+        assert_eq!(
+            engine.evaluate(&delegate_request("summariser")).effect,
+            Effect::Deny
+        );
+    }
+
+    #[test]
+    fn the_starter_policy_lets_no_agent_delegate() {
+        // A new agent must not be able to set another to work until an
+        // operator says so. The ceiling is raised first, so that the refusal
+        // shown is the absence of a grant rather than the starter's risk cap.
+        let (_guard, root) = canonical_temp();
+        let starter = starter_policy_yaml(&root);
+        assert!(!starter.contains("delegate"), "{starter}");
+
+        let mut document = PolicyDocument::from_yaml(&starter).unwrap();
+        document.max_risk = Some(RiskLevel::Critical);
+        let engine = PolicyEngine::new(document.compile().unwrap());
+        let decision = engine.evaluate(&delegate_request("researcher"));
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.matched_rule, None, "{}", decision.reason);
     }
 }

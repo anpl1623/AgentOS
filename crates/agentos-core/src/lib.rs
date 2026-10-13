@@ -13,6 +13,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod delegation;
 pub mod error;
 pub mod event;
 pub mod ids;
@@ -26,10 +27,12 @@ pub mod trust;
 
 pub use agent::{Agent, AgentStatus, ModelConfig};
 pub use approval::{ApprovalDecision, ApprovalRequest, ApprovalStatus};
+pub use delegation::{Delegation, DelegationRefusal, DelegationState};
 pub use error::CoreError;
 pub use event::{AgentEvent, Event};
 pub use ids::{
-    AgentId, ApprovalId, EventId, MemoryId, ScheduleId, TaskId, TaskRunId, ToolExecutionId,
+    AgentId, ApprovalId, DelegationId, EventId, MemoryId, ScheduleId, TaskId, TaskRunId,
+    ToolExecutionId,
 };
 pub use memory::{Memory, MemoryKind, MemoryQuery};
 pub use permission::{

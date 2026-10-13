@@ -590,11 +590,25 @@ pub trait Tool: Send + Sync + fmt::Debug {
         context: &ToolContext,
     ) -> Result<ToolPlan, ToolError>;
 
+    /// The longest one call may run before the pipeline abandons it.
+    ///
+    /// `context.timeout` for any tool that does its own work. `None` only for
+    /// a tool whose call is a container for work that is limited on its own
+    /// terms: a delegation runs other agents, every model request and tool
+    /// call of which already carries its own limit, and which a person may
+    /// keep waiting at an approval for as long as a person likes. Cutting the
+    /// container off at a fixed length would fail exactly the delegations
+    /// that are working. Such a tool is still stopped by `cancel`.
+    fn time_limit(&self, context: &ToolContext) -> Option<Duration> {
+        Some(context.timeout)
+    }
+
     /// Execute.
     ///
-    /// Must honour `cancel` promptly and must not exceed `context.timeout`; the
-    /// pipeline enforces the timeout as a backstop, but a tool that leaves a
-    /// subprocess running after being cancelled has leaked it.
+    /// Must honour `cancel` promptly and must not exceed
+    /// [`Self::time_limit`]; the pipeline enforces the limit as a backstop,
+    /// but a tool that leaves a subprocess running after being cancelled has
+    /// leaked it.
     ///
     /// # Errors
     ///

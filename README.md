@@ -663,8 +663,8 @@ alongside the execution loop rather than after it.
 - [x] Task graphs: a DAG, checked for cycles when an edge is written
 - [x] Task dependencies: a task starts when every task it waits for has succeeded
 - [x] Scheduler: cron or interval, running unattended behind a deny-all approval gate
-- [ ] Agent orchestration
-- [ ] Multi-agent execution
+- [x] Agent orchestration
+- [x] Multi-agent execution
 
 ## Phase 6: Integrations
 
@@ -1001,6 +1001,44 @@ if the account was added with `--allow-private-network`, and loopback and link-l
 refused even then. `github.search.code` is left out on purpose: a search across an organisation
 reads outside any one repository, so no rule scoped to a repository could honestly describe what it
 read.
+
+### Runtime
+
+`agent.delegate` lets one agent give others an objective and read back what they did. A policy
+grants it under `runtime`, naming the agents that may be asked:
+
+```bash
+agentos agent create --name supervisor --tool agent.delegate
+```
+
+```yaml
+max_risk: high
+
+permissions:
+  runtime:
+    delegate:
+      effect: ask
+      names: [researcher, writer]
+```
+
+A `runtime.delegate` rule says which agents may be asked, not what they may then do. Everything a
+child does goes to its own policy and to its delegator's, and the stricter answer wins, so a worker
+can do only what both permit. It follows that a supervisor's policy has to allow whatever its
+workers will do, though it holds none of their tools: its tool list decides what it does itself, and
+its policy is the ceiling for the whole tree. Delegation is high risk, so the starter's
+`max_risk: medium` refuses it, and the starter has no `runtime` rule to begin with. The other
+`runtime` actions, changing a policy or an agent and turning off the audit log or approvals, are
+refused whatever a policy says.
+
+A tree is held together as one run would be. Every turn any agent in it takes is spent from the
+supervisor's `max_steps`. Taint travels both ways, and a child's report comes back as untrusted data,
+so a supervisor is tainted by its first delegation. A child's approvals come to you, and the card
+names the chain, `writer, asked by supervisor`; under `--unattended` or the scheduler they are
+refused like any other. Each child is a run, and the scheduler's concurrency limit counts it.
+
+A tree is two levels deep at most, with four children to a run, and an agent cannot ask itself or
+anything above it; a refusal names the path. A trace shows each child beneath the call that started
+it, and `agentos task show <task> --tree` prints the whole tree.
 
 ## Tests
 

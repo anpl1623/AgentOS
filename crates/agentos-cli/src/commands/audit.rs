@@ -130,6 +130,35 @@ fn summarise(payload: &serde_json::Value) -> String {
         }
     }
 
+    // A delegation names who was asked before what they were asked, or why
+    // they could not be: "researcher: find the orders" reads as an edge where
+    // the objective alone reads as a task.
+    if let Some(child) = payload
+        .get("child_agent")
+        .and_then(serde_json::Value::as_str)
+    {
+        let about = ["objective", "reason"]
+            .map(field)
+            .into_iter()
+            .find(|value| !value.is_empty())
+            .unwrap_or_default();
+        return truncate(&format!("{child}: {about}"), 60);
+    }
+    if payload.get("event").and_then(serde_json::Value::as_str)
+        == Some("agent.delegation.completed")
+    {
+        let steps = payload
+            .get("steps")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        let tainted = payload.get("tainted").and_then(serde_json::Value::as_bool) == Some(true);
+        return format!(
+            "{} after {steps} step(s){}",
+            field("state"),
+            if tainted { ", tainted" } else { "" }
+        );
+    }
+
     for name in ["tool", "objective", "reason", "error", "summary"] {
         let value = field(name);
         if !value.is_empty() {
@@ -155,4 +184,46 @@ fn truncate(text: &str, max: usize) -> String {
         return text.to_owned();
     }
     format!("{}…", text.chars().take(max).collect::<String>())
+}
+
+#[cfg(test)]
+mod tests {
+    use agentos_core::event::AgentEvent;
+    use agentos_core::ids::{DelegationId, TaskId, TaskRunId};
+    use agentos_core::task::TaskState;
+
+    use super::*;
+
+    fn payload(event: &AgentEvent) -> serde_json::Value {
+        serde_json::to_value(event).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_delegation_reads_as_an_edge_in_the_log() {
+        let started = payload(&AgentEvent::AgentDelegated {
+            delegation_id: DelegationId::new(),
+            parent_run_id: TaskRunId::new(),
+            child_agent: "researcher".into(),
+            child_task_id: TaskId::new(),
+            child_run_id: TaskRunId::new(),
+            objective: "Find the orders".into(),
+            depth: 1,
+        });
+        assert_eq!(summarise(&started), "researcher: Find the orders");
+
+        let refused = payload(&AgentEvent::DelegationRefused {
+            child_agent: "supervisor".into(),
+            reason: "cycle".into(),
+        });
+        assert_eq!(summarise(&refused), "supervisor: cycle");
+
+        let completed = payload(&AgentEvent::DelegationCompleted {
+            delegation_id: DelegationId::new(),
+            child_run_id: TaskRunId::new(),
+            state: TaskState::Failed,
+            steps: 3,
+            tainted: true,
+        });
+        assert_eq!(summarise(&completed), "failed after 3 step(s), tainted");
+    }
 }

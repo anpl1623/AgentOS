@@ -409,6 +409,21 @@ mod tests {
     }
 
     #[test]
+    fn delegation_is_grantable_and_policy_editing_is_not() {
+        // Both live in the `runtime` domain, which makes them easy to confuse in
+        // a later edit. Delegation must stay grantable — a child is held to the
+        // intersection of both policies, so asking it grants nothing — while
+        // editing a policy must stay out of every policy's reach.
+        assert!(!is_immutably_denied(&Capability::new(
+            "runtime", "delegate"
+        )));
+        assert!(is_immutably_denied(&Capability::new(
+            "runtime",
+            "modify_policy"
+        )));
+    }
+
+    #[test]
     fn a_run_may_ask_ten_times_unless_the_policy_says_otherwise() {
         assert_eq!(ApprovalPolicy::default().max_per_run, Some(10));
         assert_eq!(Policy::default().approvals, ApprovalPolicy::default());

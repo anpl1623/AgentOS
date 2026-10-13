@@ -22,6 +22,14 @@
 //! behind this gate, and there must not be one. A run that wants more than its
 //! budget is a policy that asks too often, and the fix is an operator editing
 //! the policy in Settings — deliberately slower than clicking a card.
+//!
+//! And it is where a request learns who asked. A run another run delegated to
+//! asks the same operator its delegator would, and a card that said only
+//! "worker wants to write a file" would hide that a supervisor set the worker
+//! going. The gate stamps the chain of agents from the root run to the one
+//! asking onto every request before it is persisted or forwarded, so the row
+//! and the card say the same thing, and no tool has to know it is running
+//! inside a delegation for the card to be honest.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -45,6 +53,7 @@ pub struct RunApprovalGate {
     machine: Arc<RunStateMachine>,
     budget: Option<u32>,
     asked: AtomicU32,
+    chain: Vec<String>,
 }
 
 impl RunApprovalGate {
@@ -65,7 +74,18 @@ impl RunApprovalGate {
             machine,
             budget: ApprovalPolicy::default().max_per_run,
             asked: AtomicU32::new(0),
+            chain: Vec::new(),
         }
+    }
+
+    /// Name the agents from the root run to this one, for a delegated run.
+    ///
+    /// Empty, the default, for a run nobody delegated to. Whatever a request
+    /// arrives carrying is replaced: who asked is the runtime's to say.
+    #[must_use]
+    pub fn with_delegation_chain(mut self, chain: Vec<String>) -> Self {
+        self.chain = chain;
+        self
     }
 
     /// Set the budget from the run's policy. `None` lifts the limit.
@@ -130,6 +150,7 @@ impl ApprovalGate for RunApprovalGate {
         let mut request = request.clone();
         request.asked_this_run = ordinal;
         request.approval_budget = self.budget;
+        request.delegation_chain.clone_from(&self.chain);
 
         if asks
             && let Some(budget) = self.budget
@@ -255,6 +276,7 @@ mod tests {
             affected_resources: vec![],
             tainted: false,
             taint_sources: vec![],
+            delegation_chain: vec![],
             status: ApprovalStatus::Pending,
             requested_at: agentos_core::now(),
             decided_at: None,
@@ -708,6 +730,56 @@ mod tests {
                 .iter()
                 .all(|r| r.approval_budget.is_none())
         );
+    }
+
+    #[tokio::test]
+    async fn a_delegated_run_names_its_chain_on_the_card_and_the_row() {
+        let inner = Arc::new(RecordingGate::approving());
+        let mut fixture = fixture(inner.clone()).await;
+        fixture.gate = RunApprovalGate::new(
+            inner.clone(),
+            fixture.database.clone(),
+            fixture.machine.clone(),
+        )
+        .with_delegation_chain(vec!["supervisor".into(), "worker".into()]);
+
+        // A request that arrives claiming some other chain is not believed.
+        let claimed = ApprovalRequest {
+            delegation_chain: vec!["operator".into()],
+            ..another(&fixture)
+        };
+        fixture
+            .gate
+            .request(&claimed, CancellationToken::new())
+            .await;
+
+        let seen = inner.requests().await;
+        assert_eq!(seen[0].delegation_chain, vec!["supervisor", "worker"]);
+        let stored = fixture.database.approvals().get(claimed.id).await.unwrap();
+        assert_eq!(stored.delegation_chain, vec!["supervisor", "worker"]);
+    }
+
+    #[tokio::test]
+    async fn an_undelegated_run_names_no_chain() {
+        let inner = Arc::new(RecordingGate::approving());
+        let mut fixture = fixture(inner.clone()).await;
+        fixture.gate = RunApprovalGate::new(
+            inner.clone(),
+            fixture.database.clone(),
+            fixture.machine.clone(),
+        );
+        let claimed = ApprovalRequest {
+            delegation_chain: vec!["supervisor".into()],
+            ..another(&fixture)
+        };
+        fixture
+            .gate
+            .request(&claimed, CancellationToken::new())
+            .await;
+
+        assert!(inner.requests().await[0].delegation_chain.is_empty());
+        let stored = fixture.database.approvals().get(claimed.id).await.unwrap();
+        assert!(stored.delegation_chain.is_empty());
     }
 
     #[tokio::test]

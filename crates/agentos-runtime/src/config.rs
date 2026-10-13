@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use agentos_core::agent::ModelConfig;
+use agentos_core::delegation::{DEFAULT_MAX_CHILDREN_PER_RUN, DEFAULT_MAX_DELEGATION_DEPTH};
 use agentos_providers::{
     AnthropicProvider, MockProvider, OpenAiCompatibleProvider, SharedProvider, provider_ids,
 };
@@ -24,6 +25,37 @@ pub struct RuntimeConfig {
     pub workspace: PathBuf,
     /// SQLite database file.
     pub database_path: PathBuf,
+    /// How far one agent may hand work to another.
+    pub delegation: DelegationLimits,
+}
+
+/// How large a delegation tree may grow.
+///
+/// Global rather than per agent. The limits exist so that an operator can still
+/// follow a tree from an approval card, and that is a property of the
+/// installation, not of whichever agent happens to be asking; per-agent limits
+/// would also let the agent nearest the root decide how deep everything below
+/// it may go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DelegationLimits {
+    /// How many levels below a root run a delegated run may sit.
+    ///
+    /// Two by default: a supervisor of supervisors is already hard to reason
+    /// about.
+    pub max_depth: u8,
+    /// How many delegated runs one run may start, over its whole life.
+    ///
+    /// Four by default: a run that wants five sub-agents wants a task graph.
+    pub max_children_per_run: u16,
+}
+
+impl Default for DelegationLimits {
+    fn default() -> Self {
+        Self {
+            max_depth: DEFAULT_MAX_DELEGATION_DEPTH,
+            max_children_per_run: DEFAULT_MAX_CHILDREN_PER_RUN,
+        }
+    }
 }
 
 impl RuntimeConfig {
@@ -51,6 +83,7 @@ impl RuntimeConfig {
             workspace: data_dir.join("workspace"),
             database_path: data_dir.join("agentos.db"),
             data_dir,
+            delegation: DelegationLimits::default(),
         }
     }
 

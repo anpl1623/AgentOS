@@ -174,6 +174,43 @@ it is technically a breaking change.
   `operator.integration.unbound` carry the integration, label, host and whether a private network is
   allowed, and never the token, beside the `operator.credential.*` record for the token itself.
   Binding over a network credential no account uses is refused rather than replacing it.
+- **A delegate can do nothing its delegator could not.** A run started by `agent.delegate` is
+  evaluated by its own policy and by every policy above it, both live, and the strictest answer
+  governs each call; the record names the rule that decided, whichever policy held it. A worker's
+  tools are not checked against its supervisor's, so a supervisor's policy is the ceiling for
+  everything its tree does. A grandchild answers to every policy up to the root.
+- **Taint is shared across a tree, both ways.** A child uses its delegator's taint tracker, so a
+  delegate of a tainted run starts tainted, and a page a child reads taints the run that asked. Each
+  run records the sources. A child's report comes back as untrusted `agent:` content, so a
+  supervisor is tainted by its first delegation.
+- **One step budget per tree.** Every turn any run in a tree takes is spent from the root run's
+  `max_steps`; a supervisor allowed twenty turns cannot buy eighty more by asking four workers. A
+  call made with no step left is refused while it is planned, before any child is recorded.
+- **A tree is bounded.** At most two levels deep and four children to a run, over the run's whole
+  life, and an agent cannot ask itself or any agent above it. The limits live in the runtime
+  configuration, not in any agent's settings. Each of these refusals is decided while the call is
+  planned, before the policy is consulted, and is recorded as `agent.delegation.refused`, which is
+  security-relevant.
+- **A delegate's approvals come to you, saying who asked.** A child asks the operator's own gate,
+  wrapped around its own run, and each request carries the chain of agents from the root run to the
+  one asking. The chain is stored with the request and shown on the card in the terminal and the
+  desktop, `writer, asked by supervisor`. A child is held to the stricter of its own and its
+  delegator's approval budgets. Under the scheduler's deny-all gate, or `--unattended`, a child's
+  requests are refused as its parent's are. The terminal shows one card at a time when several
+  children ask at once, so an answer is always to the card on the screen, and a desktop card names
+  the objective of the run that asked rather than the one the operator started.
+- **A delegation is recorded before it is performed.** The child's task and its `delegations` row
+  are written before its run is prepared, and a delegation that cannot be recorded is not performed.
+  `agent.delegation.started` names the delegation, the parent run and the child's task and run
+  inside the hashed payload, and the audit record format is unchanged. Stopping a run stops
+  everything it delegated, and closes the approvals they had waiting. At startup a delegation left
+  open by a process that died is closed with the runs it belonged to.
+- **A delegated task runs only inside its delegation.** Starting one on its own, as retrying a failed
+  child would, is refused by the runtime from every client: alone, it would run under its own policy
+  only, outside the tree's budget and limits.
+- **The scheduler's concurrency limit counts children.** `max_concurrent_runs` is compared with every
+  live run in the runtime, delegated ones included, so a scheduled run that asks three agents to
+  work occupies four slots, not one.
 
 ### Added
 
@@ -243,6 +280,23 @@ it is technically a breaking change.
 - Desktop: Settings has an Integrations section that lists what binding an account grants, binds,
   tests and removes accounts, and marks one whose token is gone. Network credentials names the
   account a credential is the token of before it is removed or replaced.
+- `agent.delegate`, for one agent to ask others to carry out objectives. One call asks up to four
+  agents, which work at the same time, and returns each one's report, or why it failed, as the
+  call's result; a child that fails is something its supervisor reads and plans around, not an error
+  that ends its run. The tool is high risk and is granted by `runtime.delegate`, scoped to the name
+  of the agent asked. The starter policy grants it to nobody, and it is not among the `runtime`
+  actions refused whatever a policy says.
+- `agentos task show <task> --tree` prints every agent a run asked and every agent they asked in
+  turn. A trace shows each delegation beneath the call that made it, and a delegated run's trace
+  names the run that asked for it. `agentos audit tail` summarises delegation records as edges.
+- Desktop: a run's screen lists the agents it asked beneath the call that asked them, with each
+  child's state, steps and taint, down the whole tree, and a delegated run links back to the run
+  that asked. An approval card names the chain of agents behind the request.
+- Audit coverage. `agentos_audit::verify_coverage` checks from the hashed payloads that the records
+  account for a run and every run it delegated to: every tool call that started has an end once its
+  run has ended, every approval granted was asked for first, and every delegated run has records of
+  its own once the run that asked has ended. The desktop's full verification in Settings reports
+  these gaps beside chain breaks.
 
 ### Changed
 
@@ -279,6 +333,17 @@ it is technically a breaking change.
 - `network.request` now leaves through the same transport as every integration, extracted into
   `agentos_tools::egress`. Nothing an operator can observe changes, except that a refusal of
   `100.100.100.200` or an address in `fd00:ec2::/32` now names it as a cloud metadata address.
+- The scheduler's `max_concurrent_runs` limits live runs rather than the tasks that scheduler
+  started. Runs other clients of the same runtime started count too, so a run a person starts in the
+  desktop takes a slot. A cancelled run counts as live until it has actually stopped.
+- The desktop's full audit check no longer reads "Intact" for a log whose records leave something
+  unaccounted for, such as a tool call left unfinished by a crash before this release. The summary
+  and the screen reader's sentence name breaks and coverage gaps separately.
+- The desktop does not offer Retry on a run another agent delegated.
+- The database migrates to `0008`: a `delegations` table, and a `delegation_chain` on each approval
+  request, empty for requests made before.
+- At startup, the reaper releases what the tools still hold for each run it fails, as the end of a
+  run would have.
 
 ## [0.2.0]
 

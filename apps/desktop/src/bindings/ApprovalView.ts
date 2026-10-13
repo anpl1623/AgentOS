@@ -13,6 +13,15 @@ id: string,
  */
 agent_name: string, 
 /**
+ * The agents from the root run down to the one asking, when the asking
+ * run was delegated; empty when a person started it.
+ *
+ * A card that named only the asking agent would hide that a supervisor
+ * chose this work, and the supervisor's policy is half of what let the
+ * request get this far.
+ */
+delegation_chain: Array<string>, 
+/**
  * The task it is working on.
  */
 task_id: string, 

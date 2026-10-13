@@ -25,6 +25,7 @@ mod agents;
 mod approvals;
 mod audit;
 mod credentials;
+mod delegation;
 mod graph;
 mod insights;
 mod integrations;
@@ -42,6 +43,7 @@ pub use agents::*;
 pub use approvals::*;
 pub use audit::*;
 pub use credentials::*;
+pub use delegation::*;
 pub use graph::*;
 pub use insights::*;
 pub use integrations::*;
@@ -172,6 +174,29 @@ pub(crate) async fn approval_views(
             ApprovalView::new(request, objective)
         })
         .collect())
+}
+
+/// One request as it is raised, under the objective of the run that raised it.
+///
+/// Every run in a delegation tree asks through the gate its root run was
+/// given, so the objective cannot be the gate's: a worker's card would show
+/// the supervisor's objective, in the operator's words, over work whose
+/// objective a model wrote. It is read from the request's own task, as
+/// [`approval_views`] reads it for the queue, so the card raised and the card
+/// reloaded say the same thing.
+pub(crate) async fn approval_view(runtime: &Runtime, request: &ApprovalRequest) -> ApprovalView {
+    match approval_views(runtime, vec![request.clone()]).await {
+        Ok(views) => views
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| ApprovalView::new(request, String::new())),
+        Err(error) => {
+            // The card still goes up: the question must reach the operator
+            // whether or not its context can be read.
+            tracing::warn!(%error, "could not read the objective of the run asking");
+            ApprovalView::new(request, String::new())
+        }
+    }
 }
 
 /// Every agent's name by identity, read in one query.
@@ -368,6 +393,7 @@ mod tests {
             id: ApprovalId::new(),
             agent_id: agent.id,
             agent_name: agent.name.clone(),
+            delegation_chain: Vec::new(),
             task_id: task.id,
             run_id: run.id,
             tool: "browser.type".to_owned(),
@@ -824,24 +850,32 @@ mod tests {
 
     #[test]
     fn only_a_failed_or_cancelled_attempt_may_be_retried() {
+        let task = Task::new(AgentId::new(), "Follow up.");
         let run = |state| {
-            let mut run = TaskRun::new(agentos_core::ids::TaskId::new(), 1);
+            let mut run = TaskRun::new(task.id, 1);
             run.state = state;
             run
         };
 
-        assert!(runs::may_retry(Some(&run(TaskState::Failed))).is_ok());
-        assert!(runs::may_retry(Some(&run(TaskState::Cancelled))).is_ok());
+        assert!(runs::may_retry(&task, Some(&run(TaskState::Failed))).is_ok());
+        assert!(runs::may_retry(&task, Some(&run(TaskState::Cancelled))).is_ok());
 
-        let running = runs::may_retry(Some(&run(TaskState::WaitingForApproval))).unwrap_err();
+        let running =
+            runs::may_retry(&task, Some(&run(TaskState::WaitingForApproval))).unwrap_err();
         assert!(running.to_string().contains("still running"), "{running}");
-        assert!(runs::may_retry(Some(&run(TaskState::Executing))).is_err());
+        assert!(runs::may_retry(&task, Some(&run(TaskState::Executing))).is_err());
 
         // A finished objective run again repeats its side effects.
-        let succeeded = runs::may_retry(Some(&run(TaskState::Completed))).unwrap_err();
+        let succeeded = runs::may_retry(&task, Some(&run(TaskState::Completed))).unwrap_err();
         assert!(succeeded.to_string().contains("succeeded"), "{succeeded}");
 
-        assert!(runs::may_retry(None).is_err());
+        assert!(runs::may_retry(&task, None).is_err());
+
+        // A delegated task, failed or not, runs only inside the run that
+        // delegated it.
+        let delegated = Task::new(AgentId::new(), "Read the news.").with_parent(task.id);
+        let refused = runs::may_retry(&delegated, Some(&run(TaskState::Failed))).unwrap_err();
+        assert_eq!(refused.to_string(), agentos_runtime::DELEGATED_TASK);
     }
 
     #[tokio::test]
@@ -872,7 +906,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let gate = |_: String| -> Arc<dyn ApprovalGate> { Arc::new(agentos_tools::DenyAllGate) };
+        let gate = || -> Arc<dyn ApprovalGate> { Arc::new(agentos_tools::DenyAllGate) };
 
         // A retry that read the task as failed, while another process claims
         // it before this one's claim lands.
@@ -880,9 +914,7 @@ mod tests {
             .create_task(agent.id, "Contended.", &[], None)
             .await
             .unwrap();
-        let started = tasks::begin(&desktop, &task, gate(String::new()))
-            .await
-            .unwrap();
+        let started = tasks::begin(&desktop, &task, gate()).await.unwrap();
         let first: agentos_core::ids::TaskRunId = started.run_id.parse().unwrap();
         while desktop.running_runs().await.contains(&first) {
             tokio::task::yield_now().await;
@@ -907,9 +939,7 @@ mod tests {
         );
 
         // The command's own path, from the read it made.
-        let lost = tasks::begin(&desktop, &stale, gate(String::new()))
-            .await
-            .unwrap_err();
+        let lost = tasks::begin(&desktop, &stale, gate()).await.unwrap_err();
         assert_eq!(lost.to_string(), runs::STARTED_ELSEWHERE);
         // And through `retry`, which reads the task itself and finds it
         // running, so it too is told the task was started elsewhere.
@@ -917,14 +947,14 @@ mod tests {
             &desktop,
             &tokio::sync::Mutex::new(()),
             &task.id.to_string(),
-            gate,
+            gate(),
         )
         .await
         .unwrap_err();
         assert_eq!(retried.to_string(), runs::STARTED_ELSEWHERE);
 
         // A new task from the start command takes the same path and runs.
-        let fresh = tasks::start_new(&desktop, &agent.id.to_string(), "Fresh.", gate)
+        let fresh = tasks::start_new(&desktop, &agent.id.to_string(), "Fresh.", gate())
             .await
             .unwrap();
         assert!(!fresh.run_id.is_empty());
@@ -1177,8 +1207,8 @@ mod tests {
         );
 
         // Only the deliberate check can see it.
-        let breaks = audit::verify_whole_chain(&runtime, &watch).await.unwrap();
-        assert!(!breaks.is_empty());
+        let found = audit::verify_whole_chain(&runtime, &watch).await.unwrap();
+        assert!(!found.breaks.is_empty());
 
         // And from then on the routine check reports what it found, though
         // nothing it reads is broken.
@@ -1215,8 +1245,8 @@ mod tests {
                 .unwrap()
                 .intact
         );
-        let breaks = audit::verify_whole_chain(&runtime, &watch).await.unwrap();
-        assert!(!breaks.is_empty());
+        let found = audit::verify_whole_chain(&runtime, &watch).await.unwrap();
+        assert!(!found.breaks.is_empty());
         assert!(
             !watch.lock().await.intact,
             "the full check cleared a real break"
@@ -2255,5 +2285,257 @@ mod tests {
         let (_guard, runtime, _agent) = runtime_with_agent().await;
         let state = AppState::new(runtime);
         assert!(crate::lifecycle::close_guard(&state).await.is_quiet());
+    }
+
+    /// A second agent, a task for it, and a run of that task delegated from
+    /// `parent`, recorded as the broker records one: the row first, then the
+    /// run attached to it.
+    async fn delegated_run(
+        runtime: &Runtime,
+        parent: (&agentos_core::agent::Agent, &TaskRun),
+        name: &str,
+        objective: &str,
+    ) -> (agentos_core::delegation::Delegation, TaskRun) {
+        let child = runtime
+            .create_agent(
+                name,
+                "Do as asked.",
+                ModelConfig::new("mock", "scripted"),
+                vec!["filesystem.read".to_owned()],
+            )
+            .await
+            .unwrap();
+        let (task, mut run) = task_with_run(runtime, &child, objective, TaskState::Executing).await;
+        let mut delegation = agentos_core::delegation::Delegation::requested(
+            parent.1.id,
+            parent.0.id,
+            child.id,
+            task.id,
+            objective,
+            1,
+        );
+        let delegations = runtime.database().delegations();
+        delegations.insert(&delegation).await.unwrap();
+        delegations.attach_run(delegation.id, run.id).await.unwrap();
+        delegation.child_run_id = Some(run.id);
+
+        run.steps_taken = 2;
+        run.tainted = true;
+        runtime.database().runs().update(&run).await.unwrap();
+        (delegation, run)
+    }
+
+    #[tokio::test]
+    async fn a_trace_names_the_work_it_handed_out_and_the_run_that_asked_for_it() {
+        let (_guard, runtime, supervisor) = runtime_with_agent().await;
+        let (_, parent) = task_with_run(
+            &runtime,
+            &supervisor,
+            "Brief me on Globex.",
+            TaskState::Executing,
+        )
+        .await;
+        let (delegation, child) = delegated_run(
+            &runtime,
+            (&supervisor, &parent),
+            "researcher",
+            "Read the news.",
+        )
+        .await;
+
+        let above = tasks::trace_view(&runtime, parent.id).await.unwrap();
+        assert!(above.delegated_by.is_none(), "a person started the parent");
+        let [handed_out] = above.delegations.as_slice() else {
+            panic!("expected one delegation, got {:?}", above.delegations);
+        };
+        assert_eq!(handed_out.id, delegation.id.to_string());
+        assert_eq!(handed_out.parent_agent, "sales");
+        assert_eq!(handed_out.child_agent, "researcher");
+        assert_eq!(handed_out.state, "running");
+        assert_eq!(handed_out.child_run_id, Some(child.id.to_string()));
+        // Read from the child run, not the row, whose count is written only
+        // when the delegation ends.
+        assert_eq!(handed_out.steps, 2);
+        assert!(handed_out.tainted, "the child's taint must show on its row");
+        assert_eq!(handed_out.duration_ms, None);
+
+        let below = tasks::trace_view(&runtime, child.id).await.unwrap();
+        assert!(below.delegations.is_empty());
+        let asked_by = below
+            .delegated_by
+            .expect("the child names the run that asked");
+        assert_eq!(asked_by.parent_run_id, parent.id.to_string());
+        assert_eq!(asked_by.parent_agent, "sales");
+    }
+
+    #[tokio::test]
+    async fn a_delegation_left_running_by_a_dead_process_shows_how_its_run_ended() {
+        let (_guard, runtime, supervisor) = runtime_with_agent().await;
+        let (_, parent) = task_with_run(
+            &runtime,
+            &supervisor,
+            "Brief me on Globex.",
+            TaskState::Executing,
+        )
+        .await;
+        let (_, mut child) = delegated_run(
+            &runtime,
+            (&supervisor, &parent),
+            "researcher",
+            "Read the news.",
+        )
+        .await;
+        // Reaped as the next launch reaps it: the run ends, the row is untouched.
+        child.state = TaskState::Failed;
+        runtime.database().runs().update(&child).await.unwrap();
+
+        let trace = tasks::trace_view(&runtime, parent.id).await.unwrap();
+        assert_eq!(trace.delegations[0].state, "failed");
+    }
+
+    #[tokio::test]
+    async fn the_tree_view_nests_a_child_under_the_run_that_asked() {
+        let (_guard, runtime, supervisor) = runtime_with_agent().await;
+        let (_, parent) = task_with_run(
+            &runtime,
+            &supervisor,
+            "Brief me on Globex.",
+            TaskState::Executing,
+        )
+        .await;
+        let (_, child) = delegated_run(
+            &runtime,
+            (&supervisor, &parent),
+            "researcher",
+            "Read the news.",
+        )
+        .await;
+
+        let tree = delegation::tree_view(&runtime.delegation_tree(parent.id).await.unwrap());
+        assert_eq!(tree.run_id, parent.id.to_string());
+        assert_eq!(tree.agent, "sales");
+        let [only] = tree.children.as_slice() else {
+            panic!("expected one child, got {:?}", tree.children);
+        };
+        assert_eq!(only.run_id, child.id.to_string());
+        assert_eq!(only.agent, "researcher");
+        assert_eq!(only.objective, "Read the news.");
+        assert!(only.tainted);
+        assert_eq!(only.steps, 2);
+        assert!(only.children.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_delegated_runs_live_card_names_the_objective_it_was_given() {
+        // The supervisor's gate is the one every run in its tree asks through,
+        // so the card a worker raises must not borrow the supervisor's words.
+        let (_guard, runtime, supervisor) = runtime_with_agent().await;
+        let (_, parent) = task_with_run(
+            &runtime,
+            &supervisor,
+            "Brief me on Globex.",
+            TaskState::Executing,
+        )
+        .await;
+        let (_, child) = delegated_run(
+            &runtime,
+            (&supervisor, &parent),
+            "researcher",
+            "Read the news.",
+        )
+        .await;
+        let researcher = runtime.agent_by_name("researcher").await.unwrap();
+        let child_task = runtime.task(child.task_id).await.unwrap();
+        let mut request = approval_request(&researcher, &child_task, &child);
+        request.delegation_chain = vec!["sales".to_owned(), "researcher".to_owned()];
+
+        let live = approval_view(&runtime, &request).await;
+        assert_eq!(live.objective, "Read the news.");
+        assert_eq!(live.delegation_chain, ["sales", "researcher"]);
+    }
+
+    #[tokio::test]
+    async fn an_approval_card_names_the_chain_that_asked() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let (task, run) = task_with_run(&runtime, &agent, "Read.", TaskState::Executing).await;
+        let mut request = approval_request(&agent, &task, &run);
+        request.delegation_chain = vec!["supervisor".to_owned(), "sales".to_owned()];
+        runtime
+            .database()
+            .approvals()
+            .insert(&request)
+            .await
+            .unwrap();
+
+        let stored = runtime
+            .database()
+            .approvals()
+            .list_for_run(run.id)
+            .await
+            .unwrap();
+        let views = approval_views(&runtime, stored).await.unwrap();
+        assert_eq!(views[0].delegation_chain, ["supervisor", "sales"]);
+    }
+
+    #[tokio::test]
+    async fn the_full_check_reports_a_delegated_run_with_no_records_as_a_gap_not_a_break() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let (task, parent) =
+            task_with_run(&runtime, &agent, "Brief me.", TaskState::Executing).await;
+        let silent = TaskRun::new(task.id, 2);
+        runtime
+            .audit()
+            .record(
+                Event::new(AgentEvent::AgentDelegated {
+                    delegation_id: agentos_core::ids::DelegationId::new(),
+                    parent_run_id: parent.id,
+                    child_agent: "researcher".to_owned(),
+                    child_task_id: task.id,
+                    child_run_id: silent.id,
+                    objective: "Read the news.".to_owned(),
+                    depth: 1,
+                })
+                .for_run(parent.id),
+            )
+            .await
+            .unwrap();
+        let watch = Mutex::new(AuditWatch::default());
+
+        // While the parent is live, a child with no records yet is one about
+        // to begin, and a check pressed then finds nothing wrong.
+        let found = audit::verify_whole_chain(&runtime, &watch).await.unwrap();
+        assert!(found.gaps.is_empty(), "{:?}", found.gaps);
+
+        // Once the parent has ended, the child never will write.
+        runtime
+            .audit()
+            .record(
+                Event::new(AgentEvent::TaskCompleted {
+                    steps: 1,
+                    duration_ms: 1,
+                })
+                .for_run(parent.id),
+            )
+            .await
+            .unwrap();
+        let found = audit::verify_whole_chain(&runtime, &watch).await.unwrap();
+        assert!(found.breaks.is_empty(), "{:?}", found.breaks);
+        let [gap] = found.gaps.as_slice() else {
+            panic!("expected one gap, got {:?}", found.gaps);
+        };
+        assert!(gap.contains(&silent.id.to_string()), "{gap}");
+        // The chain itself verifies, and the dashboard's verdict speaks for
+        // the chain alone.
+        assert!(watch.lock().await.intact);
+    }
+
+    #[tokio::test]
+    async fn a_complete_log_has_no_gaps() {
+        let (_guard, runtime, _agent) = runtime_with_agent().await;
+        record(&runtime, "one").await;
+        let watch = Mutex::new(AuditWatch::default());
+        let found = audit::verify_whole_chain(&runtime, &watch).await.unwrap();
+        assert!(found.breaks.is_empty());
+        assert!(found.gaps.is_empty(), "{:?}", found.gaps);
     }
 }
