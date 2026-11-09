@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ApprovalView } from "../../bindings/ApprovalView";
 import {
+  NOTE_LIMIT,
   type Selection,
   type SelectionAction,
   arrivals,
@@ -14,6 +15,7 @@ import {
   idleSelection,
   isDeliberate,
   nextSelection,
+  noteCount,
   offersStop,
   sortApprovals,
 } from "./approvalsModel";
@@ -163,6 +165,17 @@ describe("deliberate clicks", () => {
   });
 });
 
+describe("the note's bounds", () => {
+  it("counts what the field keeps, and says when it is nearly full", () => {
+    expect(NOTE_LIMIT).toBe(2000);
+    expect(noteCount("")).toEqual({ line: "0 / 2,000", near: false });
+    expect(noteCount("x".repeat(1799))).toEqual({ line: "1,799 / 2,000", near: false });
+    expect(noteCount("x".repeat(1800)).near).toBe(true);
+    // A pasted note past the bound is cut by the field; the count never says more than it keeps.
+    expect(noteCount("x".repeat(2500)).line).toBe("2,000 / 2,000");
+  });
+});
+
 describe("selection", () => {
   const order = ["a", "b", "c"];
 
@@ -217,6 +230,18 @@ describe("intent", () => {
       { kind: "note", id: "a", text: "it read the page" },
     ]);
     expect(state.intent).toEqual({ id: "a", kind: "stop", note: "it read the page" });
+  });
+
+  it("brings back a request whose answer failed, unless the operator has moved on", () => {
+    const answered = run([{ kind: "intend", id: "b", intent: "deny" }, { kind: "resolved" }]);
+    expect(nextSelection(answered, { kind: "returned", id: "b" })).toEqual({
+      selected: "b",
+      intent: null,
+    });
+    const chose = nextSelection(answered, { kind: "select", id: "c" });
+    expect(nextSelection(chose, { kind: "returned", id: "b" })).toBe(chose);
+    const started = nextSelection(answered, { kind: "intend", id: "a", intent: "approve" });
+    expect(nextSelection(started, { kind: "returned", id: "b" })).toBe(started);
   });
 
   it("is cleared by cancel, which leaves the selection where it was", () => {

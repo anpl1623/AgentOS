@@ -191,6 +191,23 @@ export function isDeliberate(detail: number): boolean {
   return detail <= 1;
 }
 
+/**
+ * The longest note a decision keeps, in UTF-16 code units, which is what an
+ * input's `maxLength` counts. The audit log stores the note beside the
+ * decision, and a field that accepted more than it kept would lose the end of
+ * what the operator wrote without telling them.
+ */
+export const NOTE_LIMIT = 2000;
+
+/** The note's length against {@link NOTE_LIMIT}, and whether it is close. */
+export function noteCount(text: string): { line: string; near: boolean } {
+  const used = Math.min(text.length, NOTE_LIMIT);
+  return {
+    line: `${used.toLocaleString("en")} / ${NOTE_LIMIT.toLocaleString("en")}`,
+    near: used >= NOTE_LIMIT * 0.9,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Selection and intent
 // ---------------------------------------------------------------------------
@@ -233,6 +250,8 @@ export type SelectionAction =
   | { kind: "cancel" }
   /** The operator confirmed a decision. */
   | { kind: "resolved" }
+  /** An answer did not go through, and its request is waiting again. */
+  | { kind: "returned"; id: string }
   /** The queue changed; `ids` is every card now shown. */
   | { kind: "queue"; ids: readonly string[] };
 
@@ -265,6 +284,15 @@ export function nextSelection(state: Selection, action: SelectionAction): Select
       // Everything goes back to idle, not to the neighbouring card: the card
       // that slides into the decided card's place has not been read yet.
       return idleSelection;
+    case "returned":
+      // The request comes back selected, so the side-by-side desk presents it
+      // with the reason its answer failed rather than leaving that reason on
+      // a card out of sight. Only while the operator has not moved on: a card
+      // they have chosen since, or a decision they have started, stays theirs.
+      // Selecting arms nothing; deciding it again still takes two presses.
+      return state.selected === null && state.intent === null
+        ? { selected: action.id, intent: null }
+        : state;
     case "queue": {
       const present = new Set(action.ids);
       const selected =
