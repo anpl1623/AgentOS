@@ -1,2 +1,688 @@
-/* The shared primitives in components/: page header, stat tile, empty state,
- * switch, copy button, key hint, live dot and sparkline. */
+/* The shared primitives in components/: icons and icon buttons, tooltips, the
+ * pointer spotlight and the lift a pressable card gives, the stat tile, the
+ * empty state, the switch, the copy button, key hints, the live dot and the
+ * sparkline — and the pieces the palette, alerts and dialogs draw with them.
+ *
+ * Every colour is a token. Every duration and easing is a token too, so the
+ * reduced-motion override in tokens.css reaches all of it.
+ */
+
+/* --- icons --------------------------------------------------------------- */
+
+.icon {
+  flex: none;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* A control holding only an icon. Its name is its aria-label, usually with a
+ * matching tooltip (components/Tooltip.ts). Quiet at rest, a raised fill on
+ * hover, and it sinks a little when pressed. */
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--text-dim);
+}
+.icon-button:hover:not(:disabled) {
+  background-color: var(--surface-raised);
+  border-color: var(--border-subtle);
+  color: var(--text);
+}
+.icon-button:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+/* A finger needs a larger target than a pointer. */
+@media (pointer: coarse) {
+  .icon-button {
+    width: 40px;
+    height: 40px;
+  }
+  .nav-item,
+  .palette-launcher {
+    min-height: 44px;
+  }
+  .switch {
+    min-height: 40px;
+  }
+}
+
+/* --- tooltips ------------------------------------------------------------ */
+
+/* Drawn from data-tip by ::after; see components/Tooltip.ts for the rule that
+ * the element is named some other way too. Hover waits a moment, so a pointer
+ * crossing a row of icons does not set off a flicker of labels; keyboard focus
+ * shows it at once. A tooltip is clipped by any scrolling or clipping box it
+ * sits in, so it belongs on chrome and toolbars rather than inside a panel. */
+:where([data-tip]) {
+  position: relative;
+}
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  z-index: var(--z-alerts);
+  left: 50%;
+  top: calc(100% + var(--s-3));
+  padding: var(--s-2) var(--s-4);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--elev-2);
+  color: var(--text);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: pre;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -2px) scale(0.96);
+  transition:
+    opacity var(--dur-2) var(--ease-out),
+    transform var(--dur-2) var(--ease-out);
+}
+[data-tip]:hover::after {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+  transition-delay: 380ms;
+}
+[data-tip]:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+  transition-delay: 0ms;
+}
+[data-tip][data-tip-side="top"]::after {
+  top: auto;
+  bottom: calc(100% + var(--s-3));
+  transform: translate(-50%, 2px) scale(0.96);
+}
+[data-tip][data-tip-side="top"]:hover::after,
+[data-tip][data-tip-side="top"]:focus-visible::after {
+  transform: translate(-50%, 0) scale(1);
+}
+[data-tip][data-tip-side="right"]::after {
+  left: calc(100% + var(--s-6));
+  top: 50%;
+  transform: translate(-3px, -50%) scale(0.96);
+}
+[data-tip][data-tip-side="right"]:hover::after,
+[data-tip][data-tip-side="right"]:focus-visible::after {
+  transform: translate(0, -50%) scale(1);
+}
+/* A touch screen has no hover, only a tap that leaves :hover stuck on. */
+@media (hover: none) {
+  [data-tip]:hover:not(:focus-visible)::after {
+    opacity: 0;
+  }
+}
+
+/* --- spotlight and lift -------------------------------------------------- */
+
+/* A soft light that follows the pointer across a card, drawn by ::before from
+ * --mx and --my, which the shell's one delegated listener writes on the
+ * hovered element (components/motion.ts). It sits above the card's fill and
+ * below its content: the card isolates its own stacking, and the light is at
+ * -1 inside it. */
+:where([data-spotlight]) {
+  position: relative;
+  isolation: isolate;
+}
+[data-spotlight]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(
+    280px circle at var(--mx, 50%) var(--my, 0%),
+    var(--spotlight),
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity var(--dur-3) var(--ease-out);
+}
+[data-spotlight]:hover::before {
+  opacity: 1;
+}
+@media (hover: none) {
+  [data-spotlight]::before {
+    content: none;
+  }
+}
+
+/* Something that does a thing when pressed: it rises a pixel towards the
+ * pointer, its edge firms and its shadow deepens; pressed, it sinks. */
+.lift {
+  transition:
+    transform var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out),
+    background-color var(--dur-2) var(--ease-out);
+}
+.lift:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+  box-shadow: var(--highlight-inset), var(--elev-2);
+}
+.lift:active:not(:disabled) {
+  transform: scale(0.985);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+  transition-duration: var(--dur-1);
+}
+
+/* --- key hint ------------------------------------------------------------ */
+
+/* The bare kbd element is base.css's; a Kbd beside a control's label sits on
+ * its baseline and does not wrap. */
+.kbd {
+  flex: none;
+}
+
+/* --- live dot ------------------------------------------------------------ */
+
+.live-dot {
+  position: relative;
+  flex: none;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  color: var(--ok-fg);
+}
+.live-dot.tone-accent {
+  color: var(--accent);
+}
+.live-dot.tone-warn {
+  color: var(--warn-fg);
+}
+.live-dot.tone-danger {
+  color: var(--danger-fg);
+}
+.live-dot.tone-info {
+  color: var(--info-fg);
+}
+/* The ring: the dot's own colour, spreading and fading, for as long as the
+ * thing it marks is live. */
+.live-dot.pulsing::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: currentColor;
+  animation: pulse-ring var(--dur-pulse) var(--ease-out) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-dot.pulsing::after {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+/* --- stat tile ----------------------------------------------------------- */
+
+.stat-tile {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  min-width: 0;
+  padding: var(--s-7) var(--s-8);
+  overflow: hidden;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+}
+button.stat-tile {
+  width: 100%;
+  cursor: pointer;
+}
+button.stat-tile:hover:not(:disabled) {
+  background-color: var(--surface-panel);
+}
+.stat-tile-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  min-width: 0;
+}
+.stat-tile-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  color: var(--text-accent);
+  background: var(--accent-wash);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.stat-tile-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.stat-tile-go {
+  color: var(--text-dim);
+  transition: transform var(--dur-2) var(--ease-spring);
+}
+button.stat-tile:hover:not(:disabled) .stat-tile-go {
+  transform: translateX(2px);
+  color: var(--text);
+}
+.stat-tile-value {
+  font-size: var(--fs-stat);
+  font-weight: var(--fw-heading);
+  letter-spacing: var(--tracking-tight);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.stat-tile-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-4);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.stat-delta {
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+}
+.stat-delta.good {
+  color: var(--ok-text);
+}
+.stat-delta.bad {
+  color: var(--danger-text);
+}
+/* The sparkline runs to the tile's edges along its foot, and stays at the
+ * foot when a taller neighbour in the row stretches the tile. */
+.stat-tile-spark {
+  display: block;
+  height: 34px;
+  margin: auto calc(var(--s-8) * -1) calc(var(--s-7) * -1);
+}
+
+/* Tones. The figure takes the hue; the loud tones — attention, failure,
+ * critical — also glow, since those are the figures that ask for a person. */
+.stat-tile.tone-ok .stat-tile-value {
+  color: var(--ok-fg);
+}
+.stat-tile.tone-warn .stat-tile-value {
+  color: var(--warn-fg);
+}
+.stat-tile.tone-danger .stat-tile-value {
+  color: var(--danger-text);
+}
+.stat-tile.tone-critical .stat-tile-value {
+  color: var(--critical-text);
+}
+.stat-tile.tone-info .stat-tile-value {
+  color: var(--info-text);
+}
+.stat-tile.tone-ok .stat-tile-icon {
+  color: var(--ok-fg);
+  background: var(--ok-wash);
+  box-shadow: inset 0 0 0 1px var(--ok-line);
+}
+.stat-tile.tone-warn .stat-tile-icon {
+  color: var(--warn-fg);
+  background: var(--warn-wash);
+  box-shadow: inset 0 0 0 1px var(--warn-line);
+}
+.stat-tile.tone-danger .stat-tile-icon {
+  color: var(--danger-text);
+  background: var(--danger-wash);
+  box-shadow: inset 0 0 0 1px var(--danger-line);
+}
+.stat-tile.tone-critical .stat-tile-icon {
+  color: var(--critical-fg);
+  background: var(--critical-wash);
+  box-shadow: inset 0 0 0 1px var(--critical-line);
+}
+.stat-tile.tone-info .stat-tile-icon {
+  color: var(--info-fg);
+  background: var(--info-wash);
+  box-shadow: inset 0 0 0 1px var(--info-line);
+}
+.stat-tile.tone-warn {
+  border-color: var(--warn-line);
+  box-shadow: var(--highlight-inset), var(--elev-1), var(--warn-glow);
+}
+.stat-tile.tone-danger {
+  border-color: var(--danger-line);
+  box-shadow: var(--highlight-inset), var(--elev-1), var(--danger-glow);
+}
+.stat-tile.tone-critical {
+  border-color: var(--critical-line);
+  box-shadow: var(--highlight-inset), var(--elev-1), var(--critical-glow);
+}
+
+/* --- empty state --------------------------------------------------------- */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-11) var(--s-9);
+  text-align: center;
+}
+.empty-state-mark {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: var(--s-4);
+  border-radius: var(--radius-xl);
+  color: var(--text-accent);
+  background: var(--accent-wash);
+  box-shadow:
+    inset 0 0 0 1px var(--accent-line),
+    0 0 0 6px var(--accent-wash);
+}
+.empty-state-title {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.empty-state-body {
+  max-width: 46ch;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+.empty-state-body > p {
+  margin: 0;
+}
+.empty-state-action {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--s-4);
+  margin-top: var(--s-5);
+}
+
+/* --- switch -------------------------------------------------------------- */
+
+/* The button is the hit target and carries the focus ring; the track and knob
+ * are drawn inside it from aria-checked. */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-5);
+  min-height: 32px;
+  padding: 0 var(--s-1);
+  border: none;
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+.switch:hover:not(:disabled),
+.switch:active:not(:disabled) {
+  background-color: transparent;
+  transform: none;
+}
+.switch-track {
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 20px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-control);
+  box-shadow: var(--shadow-well);
+  transition:
+    background-color var(--dur-2) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out);
+}
+.switch:hover:not(:disabled) .switch-track {
+  border-color: var(--border-control-hover);
+}
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-pill);
+  background: var(--text-dim);
+  box-shadow: var(--elev-1);
+  transition:
+    transform var(--dur-3) var(--ease-spring),
+    width var(--dur-2) var(--ease-out),
+    background-color var(--dur-2) var(--ease-out);
+}
+.switch[aria-checked="true"] .switch-track {
+  background: var(--accent-gradient);
+  border-color: transparent;
+  box-shadow: var(--highlight-inset);
+}
+.switch[aria-checked="true"] .switch-knob {
+  transform: translateX(16px);
+  background: var(--on-accent);
+}
+/* Pressed, the knob stretches towards where it is about to go. */
+.switch:active:not(:disabled) .switch-knob {
+  width: 18px;
+}
+.switch[aria-checked="true"]:active:not(:disabled) .switch-knob {
+  transform: translateX(12px);
+}
+
+/* --- copy button --------------------------------------------------------- */
+
+/* Three glyphs in one cell; the state shows one and turns the others away. */
+.copy-glyphs {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+}
+.copy-glyphs > .icon {
+  grid-area: 1 / 1;
+  transition:
+    opacity var(--dur-2) var(--ease-out),
+    transform var(--dur-3) var(--ease-spring);
+}
+.copy-glyph-done,
+.copy-glyph-failed {
+  opacity: 0;
+  transform: scale(0.4) rotate(-45deg);
+}
+.copy-button:is([data-state="copied"], [data-state="failed"]) .copy-glyph-idle {
+  opacity: 0;
+  transform: scale(0.4) rotate(45deg);
+}
+.copy-button[data-state="copied"] .copy-glyph-done {
+  opacity: 1;
+  transform: none;
+  color: var(--ok-fg);
+}
+.copy-button[data-state="failed"] .copy-glyph-failed {
+  opacity: 1;
+  transform: none;
+  color: var(--danger-fg);
+}
+.copy-button.labelled {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+/* --- sparkline ----------------------------------------------------------- */
+
+.sparkline {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  color: var(--info-fg);
+  transform-origin: left center;
+  animation: grow-x var(--dur-4) var(--ease-out) backwards;
+}
+.sparkline.tone-ok {
+  color: var(--ok-fg);
+}
+.sparkline.tone-warn {
+  color: var(--warn-fg);
+}
+.sparkline.tone-danger {
+  color: var(--danger-fg);
+}
+.sparkline-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.sparkline-stop-top {
+  stop-color: currentColor;
+  stop-opacity: 0.26;
+}
+.sparkline-stop-bottom {
+  stop-color: currentColor;
+  stop-opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sparkline {
+    animation: none;
+  }
+}
+
+/* --- palette, alerts and dialogs: the parts drawn with icons -------------- */
+
+/* Each palette entry leads with its screen's icon in a small key. */
+.palette-entry-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  color: var(--text-dim);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--highlight-inset);
+  transition:
+    color var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out);
+}
+.palette-entry.active .palette-entry-icon {
+  color: var(--on-accent);
+  background: var(--accent-gradient);
+  border-color: transparent;
+  box-shadow: var(--highlight-inset), var(--accent-glow);
+}
+.palette-entry-text {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-5);
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+.palette-entry-text > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-entry-text > .faint {
+  font-size: var(--fs-small);
+}
+/* Enter takes the active entry; the key says so beside it and nowhere else. */
+.palette-enter {
+  visibility: hidden;
+}
+.palette-entry.active .palette-enter {
+  visibility: visible;
+}
+
+/* An alert leads with its level's mark and ends with a dismiss button. */
+.alert-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-5);
+}
+.alert-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  margin-top: 1px;
+}
+.alert.info .alert-icon {
+  color: var(--info-fg);
+}
+.alert.warn .alert-icon {
+  color: var(--warn-fg);
+}
+.alert.error .alert-icon {
+  color: var(--danger-fg);
+}
+.alert-body {
+  flex: 1;
+  min-width: 0;
+}
+.alert-dismiss {
+  width: 26px;
+  height: 26px;
+  margin: -3px -4px 0 0;
+}
+
+/* A dialog's title row: a mark in its tone, then the question. */
+.dialog-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-6);
+  margin-bottom: var(--s-6);
+}
+.dialog-head .dialog-title {
+  margin: 0;
+}
+.dialog-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-lg);
+  color: var(--text-accent);
+  background: var(--accent-wash);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.dialog-mark.warn {
+  color: var(--warn-fg);
+  background: var(--warn-wash);
+  box-shadow: inset 0 0 0 1px var(--warn-line);
+}
+.alert-actions > button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}

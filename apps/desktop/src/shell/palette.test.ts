@@ -5,6 +5,7 @@ import {
   PER_GROUP,
   type PaletteEntry,
   agentEntries,
+  entryIcon,
   matchIndex,
   moveActive,
   rankEntries,
@@ -150,5 +151,14 @@ describe("moveActive", () => {
     expect(moveActive(2, 1, 3)).toBe(0);
     expect(moveActive(1, 1, 3)).toBe(2);
     expect(moveActive(0, 1, 0)).toBe(0);
+  });
+});
+
+describe("entryIcon", () => {
+  it("draws a screen with its sidebar icon and an agent with the Agents screen's", () => {
+    const [dashboard] = screenEntries() as [PaletteEntry];
+    const [helper] = agentEntries([agent("helper")]) as [PaletteEntry];
+    expect(entryIcon(dashboard)).toBe("dashboard");
+    expect(entryIcon(helper)).toBe("agents");
   });
 });

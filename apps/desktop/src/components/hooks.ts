@@ -75,8 +75,12 @@ const COPY_FEEDBACK_MS = 2_000;
  * `copy` resolves `true` on success. `state` carries the same answer for a
  * control to render, so a failure is shown rather than assumed away; a
  * clipboard the webview refused is a real outcome on some platforms.
+ * `feedbackMs` is how long that answer stands before the control resets.
  */
-export function useCopy(): { copy: (text: string) => Promise<boolean>; state: CopyState } {
+export function useCopy(feedbackMs = COPY_FEEDBACK_MS): {
+  copy: (text: string) => Promise<boolean>;
+  state: CopyState;
+} {
   const [state, setState] = useState<CopyState>("idle");
   const timer = useRef<number | undefined>(undefined);
 
@@ -86,9 +90,9 @@ export function useCopy(): { copy: (text: string) => Promise<boolean>; state: Co
     const ok = await writeClipboard(sanitiseForClipboard(text));
     setState(ok ? "copied" : "failed");
     window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => setState("idle"), COPY_FEEDBACK_MS);
+    timer.current = window.setTimeout(() => setState("idle"), feedbackMs);
     return ok;
-  }, []);
+  }, [feedbackMs]);
 
   return { copy, state };
 }

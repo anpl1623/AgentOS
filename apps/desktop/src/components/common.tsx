@@ -3,9 +3,20 @@ import type { CSSProperties, ReactNode } from "react";
 import { ago } from "../sdk/format";
 import { useNow } from "./hooks";
 
-// The status chips live in their own module; re-exported so every screen keeps
-// importing its whole vocabulary from one place.
+// The status chips and the shared primitives live in modules of their own;
+// re-exported so every screen keeps importing its whole vocabulary from one
+// place.
 export * from "./status";
+export { CopyButton } from "./CopyButton";
+export { EmptyState } from "./EmptyState";
+export { Icon, type IconName } from "./icons";
+export { Kbd } from "./Kbd";
+export { LiveDot, type LiveTone } from "./LiveDot";
+export { PageHeader } from "./PageHeader";
+export { Sparkline, type SparkTone } from "./Sparkline";
+export { type StatDelta, StatTile, type StatTone } from "./StatTile";
+export { Switch } from "./Switch";
+export { type TipSide, tip } from "./Tooltip";
 
 export function Panel({ children }: { children: ReactNode }) {
   return <div className="panel">{children}</div>;
@@ -90,49 +101,15 @@ export function Row({
 }) {
   const extra = className ? ` ${className}` : "";
   if (onActivate) {
+    // Lit under the pointer like every other thing that does something when
+    // pressed; see primitives.css.
     return (
-      <button type="button" className={`row clickable${extra}`} onClick={onActivate}>
+      <button type="button" className={`row clickable${extra}`} data-spotlight onClick={onActivate}>
         {children}
       </button>
     );
   }
   return <div className={`row${extra}`}>{children}</div>;
-}
-
-/**
- * The title block of a screen.
- *
- * `parent` draws a breadcrumb back to the list a detail screen belongs to. It
- * takes a callback rather than a route so this component does not need to know
- * how the app navigates.
- */
-export function PageHeader({
-  title,
-  subtitle,
-  parent,
-  actions,
-}: {
-  title: ReactNode;
-  subtitle?: ReactNode;
-  parent?: { label: string; onActivate: () => void } | undefined;
-  actions?: ReactNode;
-}) {
-  return (
-    <>
-      {parent ? (
-        <nav className="crumbs" aria-label="Breadcrumb">
-          <button type="button" className="crumb" onClick={parent.onActivate}>
-            {parent.label}
-          </button>
-        </nav>
-      ) : null}
-      <div className="page-head">
-        <h1>{title}</h1>
-        {actions}
-      </div>
-      {subtitle ? <p className="page-sub">{subtitle}</p> : null}
-    </>
-  );
 }
 
 // Varied so a column of placeholders reads as a list rather than a barcode.

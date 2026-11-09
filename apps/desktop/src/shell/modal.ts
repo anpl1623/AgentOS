@@ -12,10 +12,38 @@ import { type RefObject, useEffect, useRef } from "react";
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-function focusables(container: HTMLElement): HTMLElement[] {
+/** The focusable elements inside `container` that are drawn, in tab order. */
+export function focusables(container: HTMLElement): HTMLElement[] {
   return [...container.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
     (element) => element.getClientRects().length > 0,
   );
+}
+
+/**
+ * Keep a Tab press inside `container`, wrapping from the last control to the
+ * first and back. Shared by every overlay and the navigation drawer, so all of
+ * them trap focus the same way.
+ */
+export function trapTab(container: HTMLElement, event: KeyboardEvent): void {
+  if (event.key !== "Tab") return;
+  const list = focusables(container);
+  const head = list[0];
+  const tail = list[list.length - 1];
+  if (head === undefined || tail === undefined) {
+    event.preventDefault();
+    return;
+  }
+  const active = document.activeElement;
+  // Focus on the container itself, or on something no longer drawn, counts as
+  // outside the cycle: the next Tab enters it at the near end.
+  const inside = list.includes(active as HTMLElement);
+  if (event.shiftKey && (active === head || !inside)) {
+    event.preventDefault();
+    tail.focus();
+  } else if (!event.shiftKey && (active === tail || !inside)) {
+    event.preventDefault();
+    head.focus();
+  }
 }
 
 /**
@@ -48,21 +76,7 @@ export function useModal(
         closeRef.current();
         return;
       }
-      if (event.key !== "Tab") return;
-      const list = focusables(container);
-      const head = list[0];
-      const tail = list[list.length - 1];
-      if (head === undefined || tail === undefined) {
-        event.preventDefault();
-        return;
-      }
-      if (event.shiftKey && document.activeElement === head) {
-        event.preventDefault();
-        tail.focus();
-      } else if (!event.shiftKey && document.activeElement === tail) {
-        event.preventDefault();
-        head.focus();
-      }
+      trapTab(container, event);
     };
     container.addEventListener("keydown", onKeyDown);
 

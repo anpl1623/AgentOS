@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 
 import { setLeaveConfirmer } from "../sdk/drafts";
 import { useModal } from "../shell/modal";
+import { Icon } from "./icons";
 
 /**
  * A yes-or-no question asked inside the window.
@@ -46,8 +47,14 @@ export function ConfirmDialog({
         aria-describedby={bodyId}
         tabIndex={-1}
       >
-        <div className="dialog-title" id={titleId}>
-          {title}
+        <div className="dialog-head">
+          {/* Every question here asks before something is stopped or lost. */}
+          <span className="dialog-mark warn" aria-hidden="true">
+            <Icon name="alert" size={18} />
+          </span>
+          <div className="dialog-title" id={titleId}>
+            {title}
+          </div>
         </div>
         <div id={bodyId}>
           {message.split(/\n{2,}/).map((paragraph, index) => (

@@ -9,6 +9,7 @@
  */
 
 import type { AgentSummary } from "../bindings/AgentSummary";
+import type { IconName } from "../components/icons";
 import type { Route } from "../routes/route";
 import { NAV, screenRoute } from "./nav";
 
@@ -144,6 +145,15 @@ export function rankEntries(
   });
   groups.sort((a, b) => a.best - b.best || a.position - b.position);
   return groups.flatMap((group) => group.matches.map((match) => match.entry));
+}
+
+/**
+ * The icon an entry is drawn with: a screen's own, from the sidebar, so the
+ * palette and the sidebar picture each place the same way; an agent's is the
+ * Agents screen's, since that is where choosing it goes.
+ */
+export function entryIcon(entry: PaletteEntry): IconName {
+  return NAV.find((item) => item.route === entry.route.name)?.icon ?? "search";
 }
 
 /** The next active index after moving `by`, wrapping at both ends. */

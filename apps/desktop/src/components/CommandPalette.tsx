@@ -8,10 +8,13 @@ import { NAV } from "../shell/nav";
 import {
   type PaletteEntry,
   agentEntries,
+  entryIcon,
   moveActive,
   rankEntries,
   screenEntries,
 } from "../shell/palette";
+import { Icon } from "./icons";
+import { Kbd } from "./Kbd";
 
 /**
  * The command palette, opened with `Cmd/Ctrl+K`: a way to reach a screen or a
@@ -152,15 +155,20 @@ export function CommandPalette({
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => choose(entry)}
                   >
-                    <span>{entry.label}</span>
-                    <span className="faint">{entry.hint}</span>
-                    <span className="spacer" />
+                    <span className="palette-entry-icon" aria-hidden="true">
+                      <Icon name={entryIcon(entry)} size={16} />
+                    </span>
+                    <span className="palette-entry-text">
+                      <span>{entry.label}</span>
+                      <span className="faint">{entry.hint}</span>
+                    </span>
                     {entry.badge !== null ? (
                       <span className="verdict neutral">{entry.badge}</span>
                     ) : null}
-                    {shortcut(entry) !== null ? (
-                      <kbd aria-hidden="true">{shortcut(entry)}</kbd>
-                    ) : null}
+                    {shortcut(entry) !== null ? <Kbd hidden>{shortcut(entry)}</Kbd> : null}
+                    <span className="palette-enter" aria-hidden="true">
+                      <Kbd>↵</Kbd>
+                    </span>
                   </div>
                 ))}
               </div>
@@ -180,13 +188,13 @@ export function CommandPalette({
         ) : null}
         <div className="palette-hint" aria-hidden="true">
           <span>
-            <kbd>↑</kbd> <kbd>↓</kbd> move
+            <Kbd>↑</Kbd> <Kbd>↓</Kbd> move
           </span>
           <span>
-            <kbd>Enter</kbd> go
+            <Kbd>Enter</Kbd> go
           </span>
           <span>
-            <kbd>Esc</kbd> close
+            <Kbd>Esc</Kbd> close
           </span>
         </div>
       </div>
