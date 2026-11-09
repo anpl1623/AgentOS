@@ -64,8 +64,20 @@ impl Runtime {
         let count = abandoned.len();
 
         for mut run in abandoned {
+            // The transition is written to the audit chain under the agent
+            // whose run it was. The run row does not carry the agent; its
+            // task does. A task that cannot be found leaves the record with
+            // an identity that matches no agent, which is still better than
+            // leaving the run looking alive.
+            let agent_id = match self.database.tasks().find(run.task_id).await? {
+                Some(task) => task.agent_id,
+                None => {
+                    tracing::warn!(run = %run.id, "reaping a run whose task is missing");
+                    AgentId::new()
+                }
+            };
             let machine = RunStateMachine::new(
-                AgentId::new(),
+                agent_id,
                 run.task_id,
                 run.id,
                 run.state,

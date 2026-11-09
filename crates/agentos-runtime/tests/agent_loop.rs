@@ -877,6 +877,21 @@ async fn abandoned_runs_are_reaped_at_startup() {
         reaped.failure,
         Some(agentos_core::task::TaskFailure::Runtime { .. })
     ));
+
+    // The failure is on the audit chain under the agent whose run it was,
+    // not under an identity that matches no agent.
+    let records = harness
+        .runtime
+        .database()
+        .audit_sink()
+        .for_run(run.id)
+        .await
+        .unwrap();
+    let transition = records
+        .iter()
+        .find(|record| record.kind == "agent.state.transitioned")
+        .expect("the reaped run's transition is audited");
+    assert_eq!(transition.agent_id, Some(harness.agent.id));
 }
 
 #[tokio::test]
