@@ -1,3 +1,251 @@
 /* Motion: keyframes and the entrance, stagger and live-state animations every
  * screen shares. Durations and easings are tokens, so reduced motion is one
- * override in tokens.css. */
+ * override in tokens.css.
+ *
+ * Every animation here means something. A screen arriving rises into place; a
+ * list arrives in reading order; a number that changed pops once; a live thing
+ * pulses for as long as it is live; an overlay springs in from where it was
+ * summoned. Nothing loops that is not live, and nothing moves for decoration.
+ *
+ * Entrances fill backwards, never forwards. A forwards fill would leave a
+ * transform on the element after it had arrived, and a transform makes an
+ * element the containing block of every fixed descendant: a dialog rendered
+ * inside an entered screen would then be pinned to the screen instead of the
+ * window. Filling backwards holds the first frame through a stagger's delay and
+ * leaves nothing behind once the animation ends.
+ */
+
+/* --- keyframes ----------------------------------------------------------- */
+
+/* A screen, or a row of a staggered list, rising into place. */
+@keyframes screen-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A badge or a count that changed: out past its size and back, once. */
+@keyframes pop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* A live dot's ring, spreading and fading from the dot outwards. */
+@keyframes pulse-ring {
+  0% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  80%,
+  100% {
+    opacity: 0;
+    transform: scale(2.8);
+  }
+}
+
+/* A band of light crossing its element from leading edge to trailing edge.
+ * Drawn by a pseudo-element the width of its host, so the band starts wholly
+ * outside on one side and finishes wholly outside on the other. */
+@keyframes sheen {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* The sweep across a loading placeholder. The gradient is twice the width of
+ * its element, so moving it by its whole width carries the light across. */
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+/* A dialog or the palette: in from slightly smaller, so it seems to come
+ * forward to meet the person who summoned it. */
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The scrim behind an overlay. */
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* The navigation drawer, from the edge it lives behind. */
+@keyframes drawer-in {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* An alert, from the window's right edge, overshooting a little as it lands. */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(calc(100% + var(--s-8)));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A bar growing from its leading edge. The element sets its own origin. */
+@keyframes grow-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* The thin bar under an alert that will dismiss itself, emptying over the
+ * alert's lifetime. */
+@keyframes countdown {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+/* --- utilities ----------------------------------------------------------- */
+
+/* The wrapper of the screen being shown. The shell keys it on the route's
+ * name, so moving between screens replays this and changing a parameter within
+ * one does not. */
+.screen-enter {
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+
+/* Children arrive in reading order, one step apart. From the twelfth on they
+ * share the last delay, so a long list is never kept waiting for its tail. */
+.stagger > * {
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+.stagger > :nth-child(2) {
+  animation-delay: calc(var(--stagger-step) * 1);
+}
+.stagger > :nth-child(3) {
+  animation-delay: calc(var(--stagger-step) * 2);
+}
+.stagger > :nth-child(4) {
+  animation-delay: calc(var(--stagger-step) * 3);
+}
+.stagger > :nth-child(5) {
+  animation-delay: calc(var(--stagger-step) * 4);
+}
+.stagger > :nth-child(6) {
+  animation-delay: calc(var(--stagger-step) * 5);
+}
+.stagger > :nth-child(7) {
+  animation-delay: calc(var(--stagger-step) * 6);
+}
+.stagger > :nth-child(8) {
+  animation-delay: calc(var(--stagger-step) * 7);
+}
+.stagger > :nth-child(9) {
+  animation-delay: calc(var(--stagger-step) * 8);
+}
+.stagger > :nth-child(10) {
+  animation-delay: calc(var(--stagger-step) * 9);
+}
+.stagger > :nth-child(11) {
+  animation-delay: calc(var(--stagger-step) * 10);
+}
+.stagger > :nth-child(n + 12) {
+  animation-delay: calc(var(--stagger-step) * 11);
+}
+
+/* Applied by whatever shows a changed count; keying the element on its value
+ * replays it. Inline elements cannot be transformed, hence the display. */
+.pop {
+  display: inline-block;
+  animation: pop var(--dur-4) var(--ease-spring);
+}
+
+/* Something still filling, such as a progress bar's fill: a band of light
+ * crosses it every few seconds for as long as it is in progress. Drawn by the
+ * element's ::after, so an element using this gives that pseudo-element up. */
+.sheen {
+  position: relative;
+  overflow: hidden;
+}
+.sheen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 25%, var(--sheen) 50%, transparent 75%);
+  transform: translateX(-100%);
+  animation: sheen calc(var(--dur-shimmer) * 2) var(--ease-in-out) infinite;
+}
+
+/* --- reduced motion ------------------------------------------------------ */
+
+/* The duration tokens already go to near zero. The loops are taken out
+ * altogether, since a loop of near-zero length is a flicker, and the entrances
+ * are taken out so nothing is held invisible for even a frame. */
+@media (prefers-reduced-motion: reduce) {
+  .screen-enter,
+  .stagger > *,
+  .pop,
+  .sheen::after {
+    animation: none;
+  }
+}
+
+/* --- theme change -------------------------------------------------------- */
+
+/* Present while sdk/theme.ts swaps one theme for the other, and only then:
+ * colours cross-fade instead of snapping, and nothing fades on load. Only
+ * colours move; geometry never transitions here. The module does not add the
+ * class under reduced motion. */
+:root.theme-switching,
+:root.theme-switching *,
+:root.theme-switching *::before,
+:root.theme-switching *::after {
+  transition:
+    background-color var(--dur-theme) var(--ease-in-out),
+    color var(--dur-theme) var(--ease-in-out),
+    border-color var(--dur-theme) var(--ease-in-out),
+    outline-color var(--dur-theme) var(--ease-in-out),
+    fill var(--dur-theme) var(--ease-in-out),
+    stroke var(--dur-theme) var(--ease-in-out),
+    box-shadow var(--dur-theme) var(--ease-in-out) !important;
+}

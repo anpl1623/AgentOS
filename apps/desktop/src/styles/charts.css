@@ -18,10 +18,11 @@
 
 .figure {
   margin: 0;
-  padding: var(--s-7) var(--s-8);
+  padding: var(--s-8) var(--s-9);
   background: var(--surface-panel);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--highlight-inset), var(--elev-1);
 }
 .figure + .figure,
 .panel + .figure,
@@ -89,12 +90,20 @@
 }
 
 /* One span on a track. The fill is the hue's line colour and the edge its
- * foreground, which keeps a short span visible against the panel. */
+ * foreground, which keeps a short span visible against the panel. A span grows
+ * from its start when it first appears — once, on insertion, so a chart that
+ * re-renders with the same spans does not replay it. */
 .chart-span {
   fill: var(--surface-hover);
   stroke: var(--border-control);
   stroke-width: 1px;
   cursor: pointer;
+  transform-box: fill-box;
+  transform-origin: 0 50%;
+  animation: grow-x var(--dur-4) var(--ease-out) backwards;
+  transition:
+    fill var(--dur-2) var(--ease-out),
+    stroke var(--dur-2) var(--ease-out);
 }
 .chart-span.ok {
   fill: var(--ok-line);
@@ -141,7 +150,8 @@
   height: var(--chart-row);
   margin-bottom: var(--chart-gap);
   background: var(--surface-sunken);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-well);
 }
 .chart-bar {
   position: absolute;
@@ -149,9 +159,11 @@
   bottom: 0;
   left: var(--x, 0);
   width: max(var(--w, 0%), 0.4%);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: var(--surface-hover);
   border: 1px solid var(--border-control);
+  transform-origin: 0 50%;
+  animation: grow-x var(--dur-4) var(--ease-out) backwards;
 }
 .chart-bar.ok {
   background: var(--ok-line);
@@ -230,13 +242,24 @@
   z-index: var(--z-sticky);
   transform: translate(-50%, calc(-100% - var(--s-3)));
   max-width: 18rem;
-  padding: var(--s-2) var(--s-4);
+  padding: var(--s-3) var(--s-5);
   font-size: var(--fs-meta);
   color: var(--text);
-  background: var(--surface-raised);
-  border: 1px solid var(--border-emphasis);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-overlay);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--highlight-inset), var(--elev-2);
   pointer-events: none;
   white-space: nowrap;
+  animation: backdrop-in var(--dur-1) var(--ease-out) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-span,
+  .chart-bar,
+  .chart-tip {
+    animation: none;
+  }
 }

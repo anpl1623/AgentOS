@@ -1,58 +1,80 @@
 /* AgentOS desktop.
  *
- * Dense and quiet. The screens are mostly lists of facts about what an agent did
- * and what it was allowed to do, so the styling stays out of the way — with two
- * exceptions that are deliberately loud: risk levels, and anything marking a run
- * that has read untrusted data. Those are the things a person is here to notice.
+ * A calm, dark control room. The screens are mostly lists of facts about what
+ * an agent did and what it was allowed to do, so the styling stays out of the
+ * way: deep ink, raised cards, chrome drawn in glass over a faint aurora. Light
+ * and motion are spent only where they mean something — a live run pulses, a
+ * decision waiting on a person glows — with two further exceptions that are
+ * deliberately loud: risk levels, and anything marking a run that has read
+ * untrusted data. Those are the things a person is here to notice.
  *
  * This file is the only place a colour literal may appear. Every other sheet
- * reads these tokens, so a light theme is a second block that redefines them
- * and touches no component rule. The application ships dark only for now.
+ * reads these tokens, so the light theme is a second block that redefines the
+ * colours and touches no component rule. sdk/theme.ts decides which applies
+ * and writes it to <html> as data-theme before the first render.
  *
  * Contrast, computed rather than judged: WCAG 2 relative luminance, with each
- * translucent wash composited over its ground before measuring. Every text
- * token is measured on all seven grounds below; the table gives the worst of
- * the seven, which is the binding figure. Text needs 4.5:1; a control's edge
- * and the focus ring need 3:1. Rerun the measurement when any value changes —
- * a number here that no longer matches its token is worse than no number.
+ * translucent layer composited over the one beneath it before measuring. Every
+ * text token is measured on all seven grounds below and on the glass the
+ * chrome is drawn in, and the first rows give the worst of them, which is the
+ * binding figure. The glass has rows of its own as well: the sidebar's glass
+ * over the brightest point of the aurora, and an overlay's glass over a hovered
+ * row. Text needs 4.5:1; a control's edge and the focus ring need 3:1. Rerun the measurement when any
+ * value changes — a number here that no longer matches its token is worse than
+ * no number. The light theme has a table of its own, above its block.
  *
- *   token                   worst ground                         ratio  need
- *   --text                  --surface-hover                      10.29   4.5
- *   --text-dim              --surface-hover                       5.27   4.5
- *   --text-faint            --surface-raised (a hovered row)      4.74   4.5
- *   --text-accent           --accent-wash over --surface-hover    8.43   4.5
- *   --text-dim              --accent-wash over --surface-panel    5.81   4.5
- *   --on-accent             --accent                              4.79   4.5
- *   --on-accent             --accent-hover                        5.82   4.5
- *   --on-warn               --warn-fg (the nav count)             7.94   4.5
- *   --ok-fg                 --ok-wash over --surface-hover        4.58   4.5
- *   --ok-text               --ok-wash over --surface-hover        7.03   4.5
- *   --warn-fg               --warn-wash over --surface-hover      5.09   4.5
- *   --warn-text             --warn-wash over --surface-hover      7.42   4.5
- *   --danger-text           --danger-wash over --surface-hover    4.86   4.5
- *   --critical-fg           --critical-wash over --surface-hover  4.75   4.5
- *   --critical-text         --critical-wash over --surface-hover  5.88   4.5
- *   --info-fg               --info-wash over --surface-hover      5.20   4.5
- *   --info-text             --info-wash over --surface-hover      6.31   4.5
- *   --blocked-fg            --blocked-wash over --surface-hover   6.74   4.5
- *   --chart-ink             --surface-raised                      6.23   4.5
- *   --border-control        --surface-raised                      3.18   3.0
- *   --border-control        --surface-panel                       3.49   3.0
- *   --border-control        --surface-sunken                      3.84   3.0
- *   --border-control-hover  --surface-hover                       4.00   3.0
- *   --focus                 --accent (a focused primary button)   3.19   3.0
- *   --focus                 --surface-hover                       8.72   3.0
+ * Dark theme, :root.
+ *
+ *   token                   worst ground                                   ratio  need
+ *   --text                  --surface-hover                                12.64   4.5
+ *   --text-dim              --surface-hover                                 6.22   4.5
+ *   --text-faint            --surface-raised (a hovered row)                4.70   4.5
+ *   --text-dim              --glass over --aurora-1 over --surface-canvas   7.67   4.5
+ *   --text-faint            --glass over --aurora-1 over --surface-canvas   5.14   4.5
+ *   --text-faint            --glass-strong over --surface-hover             5.00   4.5
+ *   --text-accent           --accent-wash over --surface-hover              9.58   4.5
+ *   --text-dim              --accent-wash over --surface-panel              6.43   4.5
+ *   --on-accent             --accent                                        4.79   4.5
+ *   --on-accent             --accent-hover                                  5.82   4.5
+ *   --on-accent             --accent-2                                      5.39   4.5
+ *   --on-accent             --accent-2-hover                                6.64   4.5
+ *   --on-accent             --sheen over --accent-hover                     4.76   4.5
+ *   --on-accent             --sheen over --accent-2-hover                   5.37   4.5
+ *   --on-warn               --warn-fg (the nav count)                       7.94   4.5
+ *   --ok-fg                 --ok-wash over --surface-hover                  5.25   4.5
+ *   --ok-text               --ok-wash over --surface-hover                  8.06   4.5
+ *   --warn-fg               --warn-wash over --surface-hover                5.82   4.5
+ *   --warn-text             --warn-wash over --surface-hover                8.49   4.5
+ *   --danger-text           --danger-wash over --surface-hover              5.54   4.5
+ *   --critical-fg           --critical-wash over --surface-hover            5.40   4.5
+ *   --critical-text         --critical-wash over --surface-hover            6.69   4.5
+ *   --info-fg               --info-wash over --surface-hover                5.90   4.5
+ *   --info-text             --info-wash over --surface-hover                7.17   4.5
+ *   --blocked-fg            --blocked-wash over --surface-hover             7.61   4.5
+ *   --chart-ink             --surface-raised                                7.01   4.5
+ *   --border-control        --surface-raised                                3.14   3.0
+ *   --border-control        --surface-panel                                 3.36   3.0
+ *   --border-control        --surface-sunken                                3.65   3.0
+ *   --border-control-hover  --surface-hover                                 4.23   3.0
+ *   --focus                 --accent (a focused primary button)             3.19   3.0
+ *   --focus                 --accent-2                                      3.59   3.0
+ *   --focus                 --surface-hover                                10.01   3.0
+ *   --focus                 --surface-panel                                12.10   3.0
  *
  * Three pairings are deliberately left out of that promise. --text-faint on
- * --surface-hover measures 4.01, so faint text is never set on a hovered
- * control; hovered rows use --surface-raised. --text-faint on a wash is no
- * better — 4.42 on --accent-wash over --surface-panel, the ground of a chosen
- * checkbox — so quiet text inside a washed control is set in --text-dim, as
- * the table's row for that ground records. --danger-fg on --surface-raised
- * measures 4.50 with no headroom, so it is used for edges and marks only and
- * --danger-text carries every word set in the danger hue.
+ * --surface-hover measures 4.17, so faint text is never set on a hovered
+ * control; hovered rows use --surface-raised. A wash is no better: --text-faint
+ * on --accent-wash over --surface-panel measures 4.31, and that is the ground
+ * of a chosen checkbox, so quiet text inside a washed control is set in
+ * --text-dim, as the table's row for that ground records. --danger-fg on
+ * --danger-wash over --surface-hover measures 4.00, so it is used for edges
+ * and marks only and --danger-text carries every word set in the danger hue.
  *
- * stylesheets.test.ts recomputes every row of the table from the tokens.
+ * The primary button is a gradient from --accent to --accent-2, so white text
+ * is measured against both ends, resting and hovered, and against the hovered
+ * ends with the sheen that crosses them laid on top.
+ *
+ * stylesheets.test.ts recomputes every row of both tables from the tokens.
  */
 
 :root {
@@ -61,71 +83,106 @@
   /* Grounds, from the darkest to the lightest. The sidebar and the sunken
    * wells (inputs, code, tags) sit below the page; panels, raised headers and
    * hovered controls sit above it. Every text token is measured against all of
-   * them, because a row can be hovered and a chip can land on any of them. */
-  --surface-nav: #0b121b;
-  --surface-sunken: #0b131d;
-  --surface-base: #0e1620;
-  --surface-recessed: #101825;
-  --surface-panel: #141d29;
-  --surface-raised: #1a2534;
-  --surface-hover: #22314a;
+   * them, because a row can be hovered and a chip can land on any of them. The
+   * canvas is the page ground the aurora is drawn over; it is the base. */
+  --surface-nav: #080c13;
+  --surface-sunken: #070b11;
+  --surface-base: #0a0f17;
+  --surface-canvas: var(--surface-base);
+  --surface-recessed: #0d131d;
+  --surface-panel: #0f1621;
+  --surface-raised: #151d2a;
+  --surface-hover: #1c2739;
+
+  /* The aurora: two broad glows, accent and violet, fixed behind the top of
+   * the main column. Faint enough that text on the glass above them still
+   * clears the table; the table measures at their brightest point. */
+  --aurora-1: rgba(47, 109, 224, 0.16);
+  --aurora-2: rgba(110, 82, 240, 0.12);
+
+  /* Chrome is glass: the sidebar and top bar in --glass, overlays in the more
+   * opaque --glass-strong, both edged with a hairline. A webview without
+   * backdrop-filter draws the same fill unblurred, which the table already
+   * measures, since blur moves no colour towards the text. */
+  --glass: rgba(11, 16, 25, 0.74);
+  --glass-strong: rgba(15, 21, 32, 0.9);
+  --glass-border: rgba(150, 172, 210, 0.12);
+  --glass-blur: 16px;
 
   /* Subtle separates rows; strong outlines chips; emphasis frames the one card
    * that asks a person for a decision. Control is the resting edge of anything
    * interactive and is the only border held to 3:1, so a field or a button is
    * visibly a field or a button without relying on its fill. */
-  --border-hairline: rgba(34, 48, 68, 0.5);
-  --border-subtle: #223044;
-  --border-strong: #2e4159;
-  --border-emphasis: #3a4a63;
-  --border-control: #5d7390;
-  --border-control-hover: #7a90ad;
+  --border-hairline: rgba(130, 152, 186, 0.1);
+  --border-subtle: #1a2433;
+  --border-strong: #263347;
+  --border-emphasis: #34455e;
+  --border-control: #586b8b;
+  --border-control-hover: #7689a8;
 
   /* Three text tones. Faint is the quiet tone of every screen, so it is set at
    * the lowest value that still reads on a hovered row and no brighter; dim is
    * kept a clear step above it so the hierarchy survives the repair. */
-  --text: #dde5ef;
-  --text-dim: #97a6b8;
-  --text-faint: #8090a4;
+  --text: #e6ecf5;
+  --text-dim: #9ba8ba;
+  --text-faint: #7a889d;
   --text-accent: #cfe0ff;
   --on-accent: #ffffff;
   --on-warn: #1f1606;
 
   /* Hover darkens rather than lightens: a lighter blue under white text loses
-   * contrast at exactly the moment the button is being aimed at. */
+   * contrast at exactly the moment the button is being aimed at. The violet
+   * second accent exists for the gradient — the primary button, the active
+   * navigation mark, the brand, a progress bar — and is never a text colour. */
   --accent: #2f6de0;
   --accent-hover: #2a60c8;
+  --accent-2: #6a4fe8;
+  --accent-2-hover: #5c42d2;
+  --accent-gradient: linear-gradient(135deg, var(--accent), var(--accent-2));
+  --accent-gradient-hover: linear-gradient(135deg, var(--accent-hover), var(--accent-2-hover));
   --accent-wash: rgba(47, 109, 224, 0.16);
   --accent-line: rgba(47, 109, 224, 0.35);
+  --accent-glow: 0 0 0 1px rgba(91, 141, 239, 0.28), 0 8px 24px -6px rgba(63, 110, 240, 0.55);
+
+  /* The highlight that crosses a primary button or a progress bar. Measured in
+   * the table over the hovered gradient's ends, since it only moves on hover. */
+  --sheen: rgba(255, 255, 255, 0.1);
 
   /* Light enough to clear 3:1 against the accent itself, since the ring of a
-   * focused primary button sits directly beside its own fill. */
+   * focused primary button sits directly beside its own fill. The glow is a
+   * soft halo outside the ring; the ring alone carries the contrast. */
   --focus: #bcd4ff;
+  --focus-glow: rgba(120, 164, 255, 0.28);
 
   /* Status ramps. Each hue has four roles: fg for icons, outlines' text and
    * small loud marks; line for borders; wash for the one background tint the
    * hue uses everywhere; text for sentences set in that hue, desaturated so a
    * paragraph of it is readable. Danger's fg is too dark for text on its own
-   * wash, which is why --danger-text exists separately. */
+   * wash, which is why --danger-text exists separately. Each hue's glow is for
+   * its loud moments only: a pending decision's edge, a critical chip. */
   --ok-fg: #46b877;
   --ok-line: #245b3c;
   --ok-wash: rgba(70, 184, 119, 0.08);
   --ok-text: #9bd8b3;
+  --ok-glow: 0 0 0 1px rgba(70, 184, 119, 0.22), 0 0 18px -4px rgba(70, 184, 119, 0.5);
 
   --warn-fg: #d9a441;
   --warn-line: #5a4519;
   --warn-wash: rgba(217, 164, 65, 0.08);
   --warn-text: #e8cd97;
+  --warn-glow: 0 0 0 1px rgba(217, 164, 65, 0.22), 0 0 22px -6px rgba(217, 164, 65, 0.45);
 
   --danger-fg: #e0644f;
   --danger-line: #6b2f2a;
   --danger-wash: rgba(224, 100, 79, 0.08);
   --danger-text: #ef8878;
+  --danger-glow: 0 0 0 1px rgba(224, 100, 79, 0.2), 0 0 16px -4px rgba(224, 100, 79, 0.5);
 
   --critical-fg: #ff7a91;
   --critical-line: #7a2a3c;
   --critical-wash: rgba(255, 84, 112, 0.1);
   --critical-text: #ff9aab;
+  --critical-glow: 0 0 0 1px rgba(255, 92, 120, 0.3), 0 0 18px -3px rgba(255, 92, 120, 0.6);
 
   --info-fg: #7fb2ff;
   --info-line: #2b4a7c;
@@ -142,14 +199,25 @@
   --brand-outer: #2f6de0;
   --brand-inner: #e8f0ff;
 
-  --scrim: rgba(4, 8, 13, 0.62);
-  --shadow-overlay: 0 12px 32px rgba(0, 0, 0, 0.45);
+  /* Depth. A card rests at elev-1 with a hairline of light along its top edge,
+   * lifts to elev-2 under the pointer, and an overlay floats at elev-3. A sunken
+   * well is shaded from above. The spotlight is the soft light a hovered card
+   * draws under the pointer. */
+  --highlight-inset: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  --shadow-well: inset 0 1px 2px rgba(0, 0, 0, 0.4);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.35), 0 2px 10px -2px rgba(0, 0, 0, 0.3);
+  --elev-2: 0 2px 4px rgba(0, 0, 0, 0.35), 0 14px 32px -10px rgba(0, 0, 0, 0.6);
+  --elev-3: 0 28px 72px -16px rgba(0, 0, 0, 0.7), 0 10px 24px -10px rgba(0, 0, 0, 0.55);
+  --spotlight: rgba(124, 164, 255, 0.09);
+
+  --scrim: rgba(3, 6, 11, 0.62);
+  --shadow-overlay: var(--elev-3);
 
   /* Charts draw with the same ink as the text they sit beside. Row and gap are
    * geometry the chart component reads, so a density change reaches it too. */
-  --chart-grid: #223044;
+  --chart-grid: #1a2433;
   --chart-ink: var(--text-dim);
-  --chart-hatch: rgba(221, 229, 239, 0.35);
+  --chart-hatch: rgba(230, 236, 245, 0.35);
   --chart-row: 22px;
   --chart-gap: 6px;
 
@@ -158,14 +226,18 @@
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 
   /* The 12px step serves monospace text and the small uppercase labels, which
-   * were already the same size. */
+   * were already the same size. Hero is a page title; stat is a figure in a
+   * stat tile; eyebrow is the small capitals above a title or a section. */
   --fs-micro: 10.5px;
+  --fs-eyebrow: 11px;
   --fs-meta: 11.5px;
   --fs-code: 12px;
   --fs-small: 12.5px;
   --fs-body: 13.5px;
   --fs-title: 19px;
   --fs-display: 22px;
+  --fs-hero: 26px;
+  --fs-stat: 28px;
 
   --lh-tight: 1.2;
   --lh-code: 1.5;
@@ -174,7 +246,11 @@
   --fw-normal: 400;
   --fw-medium: 550;
   --fw-semibold: 600;
+  --fw-heading: 650;
   --fw-bold: 700;
+
+  --tracking-tight: -0.02em;
+  --tracking-eyebrow: 0.08em;
 
   /* One spacing scale. Every padding, margin and gap in the application reads
    * a step from it, so a density layer later remaps these and nothing else. */
@@ -195,20 +271,223 @@
    * that remaps the scale reaches the trace's indentation as well. */
   --delegation-indent: var(--s-9);
 
+  /* The frame. The sidebar is full width when the window is wide and a rail of
+   * icons when it is not; under 720px it leaves the page for a drawer and the
+   * top bar takes its place. The gutter grows with the window. */
+  --sidebar-w: 248px;
+  --rail-w: 68px;
+  --topbar-h: 56px;
+  --content-max: 1180px;
+  --gutter: clamp(16px, 3vw, 40px);
+
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
   --radius-pill: 999px;
+
+  /* Motion. Four durations — a press, a hover, an entrance, a flourish — and
+   * three curves: out for things arriving, spring for things that should feel
+   * physical (an overlay, a count, a switch's knob), in-out for things moving
+   * from one place to another. The pulse and the shimmer are the two loops.
+   * The older --motion-* pair is kept for rules not yet moved to the scale. */
+  --dur-1: 90ms;
+  --dur-2: 160ms;
+  --dur-3: 240ms;
+  --dur-4: 420ms;
+  --dur-pulse: 1600ms;
+  --dur-shimmer: 1400ms;
+  --dur-theme: 300ms;
+  --stagger-step: 35ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 
   --motion-fast: 120ms;
   --motion-base: 180ms;
   --motion-ease: ease;
 
   /* The alert stack sits one step below overlays, so an open palette or dialog
-   * covers it rather than the other way round. */
+   * covers it rather than the other way round. The top bar and the drawer sit
+   * between the page and the alerts. */
   --z-base: 0;
   --z-sticky: 10;
+  --z-chrome: 20;
+  --z-drawer: 90;
   --z-alerts: 99;
   --z-overlay: 100;
   --z-skip: 101;
+}
+
+/* A person who has asked the system for less motion gets none. Every duration
+ * goes to near zero rather than zero so transitionend and animationend still
+ * fire for any code awaiting them, and the stagger's delays go to nothing, so
+ * a list appears at once instead of in silence one row at a time. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 0.01ms;
+    --dur-2: 0.01ms;
+    --dur-3: 0.01ms;
+    --dur-4: 0.01ms;
+    --dur-pulse: 0.01ms;
+    --dur-shimmer: 0.01ms;
+    --dur-theme: 0.01ms;
+    --stagger-step: 0ms;
+    --motion-fast: 0.01ms;
+    --motion-base: 0.01ms;
+  }
+}
+
+/* The frame before sdk/theme.ts has run. The module that writes data-theme is
+ * deferred, so a window on a light desktop could otherwise paint one dark
+ * frame first. Until the attribute is written the page ground follows the
+ * system; once it is written this rule no longer matches. The values are the
+ * light theme's own, and a test holds them together. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+    --surface-base: #f4f6fa;
+  }
+}
+
+/* Light theme, :root[data-theme="light"]. Paper-white panels on a cool grey
+ * canvas; the accent hues are the dark theme's, darkened until they carry text.
+ * The ring of focus is dark, since it must clear 3:1 against a white panel and
+ * against the accent fill of a focused primary button at once.
+ *
+ *   token                   worst ground                                   ratio  need
+ *   --text                  --surface-hover                                15.59   4.5
+ *   --text-dim              --surface-hover                                 6.70   4.5
+ *   --text-faint            --surface-nav                                   5.08   4.5
+ *   --text-dim              --glass over --aurora-1 over --surface-canvas   7.22   4.5
+ *   --text-faint            --glass over --aurora-1 over --surface-canvas   5.32   4.5
+ *   --text-faint            --glass-strong over --surface-hover             5.67   4.5
+ *   --text-accent           --accent-wash over --surface-hover              5.92   4.5
+ *   --text-dim              --accent-wash over --surface-panel              6.85   4.5
+ *   --on-accent             --accent                                        4.79   4.5
+ *   --on-accent             --accent-hover                                  5.82   4.5
+ *   --on-accent             --accent-2                                      5.39   4.5
+ *   --on-accent             --accent-2-hover                                6.64   4.5
+ *   --on-accent             --sheen over --accent-hover                     4.76   4.5
+ *   --on-accent             --sheen over --accent-2-hover                   5.37   4.5
+ *   --on-warn               --warn-fg (the nav count)                       5.87   4.5
+ *   --ok-fg                 --ok-wash over --surface-hover                  5.23   4.5
+ *   --ok-text               --ok-wash over --surface-hover                  6.88   4.5
+ *   --warn-fg               --warn-wash over --surface-hover                4.62   4.5
+ *   --warn-text             --warn-wash over --surface-hover                6.43   4.5
+ *   --danger-text           --danger-wash over --surface-hover              5.43   4.5
+ *   --critical-fg           --critical-wash over --surface-hover            5.16   4.5
+ *   --critical-text         --critical-wash over --surface-hover            6.40   4.5
+ *   --info-fg               --info-wash over --surface-hover                4.94   4.5
+ *   --info-text             --info-wash over --surface-hover                6.55   4.5
+ *   --blocked-fg            --blocked-wash over --surface-hover             5.63   4.5
+ *   --chart-ink             --surface-raised                                7.40   4.5
+ *   --border-control        --surface-raised                                3.59   3.0
+ *   --border-control        --surface-panel                                 3.78   3.0
+ *   --border-control        --surface-sunken                                3.44   3.0
+ *   --border-control-hover  --surface-hover                                 4.01   3.0
+ *   --focus                 --accent (a focused primary button)             3.65   3.0
+ *   --focus                 --accent-2                                      3.25   3.0
+ *   --focus                 --surface-hover                                15.00   3.0
+ *   --focus                 --surface-panel                                17.49   3.0
+ *
+ * Faint text keeps off the same grounds it keeps off in the dark theme, so no
+ * rule needs to know which theme is showing; in this theme it would clear
+ * them, since --text-faint on --surface-hover measures 4.93 and --text-faint on
+ * --accent-wash over --surface-panel measures 5.05. --danger-fg stays on edges
+ * and marks: --danger-fg on --danger-wash over --surface-hover measures 4.09.
+ */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --surface-nav: #eef1f6;
+  --surface-sunken: #f2f4f8;
+  --surface-base: #f4f6fa;
+  --surface-recessed: #f0f3f8;
+  --surface-panel: #ffffff;
+  --surface-raised: #f7f9fc;
+  --surface-hover: #e9eef5;
+
+  --aurora-1: rgba(47, 109, 224, 0.1);
+  --aurora-2: rgba(106, 79, 232, 0.08);
+
+  --glass: rgba(250, 251, 253, 0.74);
+  --glass-strong: rgba(255, 255, 255, 0.9);
+  --glass-border: rgba(15, 23, 42, 0.09);
+
+  --border-hairline: rgba(15, 23, 42, 0.06);
+  --border-subtle: #e2e7ef;
+  --border-strong: #d2d9e4;
+  --border-emphasis: #bcc6d5;
+  --border-control: #77849a;
+  --border-control-hover: #66758c;
+
+  --text: #0e1621;
+  --text-dim: #465366;
+  --text-faint: #5a6779;
+  --text-accent: #1b4cae;
+  --on-accent: #ffffff;
+  --on-warn: #ffffff;
+
+  --accent: #2f6de0;
+  --accent-hover: #2a60c8;
+  --accent-2: #6a4fe8;
+  --accent-2-hover: #5c42d2;
+  --accent-wash: rgba(47, 109, 224, 0.1);
+  --accent-line: rgba(47, 109, 224, 0.35);
+  --accent-glow: 0 0 0 1px rgba(47, 109, 224, 0.2), 0 8px 20px -6px rgba(47, 109, 224, 0.45);
+
+  --sheen: rgba(255, 255, 255, 0.1);
+
+  --focus: #0a1838;
+  --focus-glow: rgba(47, 109, 224, 0.22);
+
+  --ok-fg: #13693a;
+  --ok-line: #a6d9bc;
+  --ok-wash: rgba(24, 122, 69, 0.08);
+  --ok-text: #0f5530;
+  --ok-glow: 0 0 0 1px rgba(24, 122, 69, 0.16), 0 0 16px -4px rgba(24, 122, 69, 0.3);
+
+  --warn-fg: #8c5a00;
+  --warn-line: #e6cd95;
+  --warn-wash: rgba(201, 138, 20, 0.1);
+  --warn-text: #6e4708;
+  --warn-glow: 0 0 0 1px rgba(201, 138, 20, 0.22), 0 0 20px -6px rgba(201, 138, 20, 0.4);
+
+  --danger-fg: #c43a2a;
+  --danger-line: #efb6ac;
+  --danger-wash: rgba(212, 72, 52, 0.08);
+  --danger-text: #a62c1e;
+  --danger-glow: 0 0 0 1px rgba(212, 72, 52, 0.18), 0 0 16px -4px rgba(212, 72, 52, 0.32);
+
+  --critical-fg: #b3173f;
+  --critical-line: #f0abbd;
+  --critical-wash: rgba(220, 40, 80, 0.08);
+  --critical-text: #991437;
+  --critical-glow: 0 0 0 1px rgba(220, 40, 80, 0.22), 0 0 18px -4px rgba(220, 40, 80, 0.38);
+
+  --info-fg: #2257c4;
+  --info-line: #b3c8ef;
+  --info-wash: rgba(47, 109, 224, 0.1);
+  --info-text: #1d479c;
+
+  --blocked-fg: #1b4cae;
+  --blocked-line: #2f6de0;
+  --blocked-wash: rgba(47, 109, 224, 0.14);
+
+  --brand-outer: #2f6de0;
+  --brand-inner: #1b4cae;
+
+  --highlight-inset: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --shadow-well: inset 0 1px 2px rgba(16, 24, 40, 0.07);
+  --elev-1: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 4px rgba(16, 24, 40, 0.04);
+  --elev-2: 0 2px 4px rgba(16, 24, 40, 0.06), 0 12px 28px -10px rgba(16, 24, 40, 0.18);
+  --elev-3: 0 28px 64px -16px rgba(16, 24, 40, 0.28), 0 10px 20px -10px rgba(16, 24, 40, 0.14);
+  --spotlight: rgba(47, 109, 224, 0.06);
+
+  --scrim: rgba(15, 23, 42, 0.32);
+
+  --chart-grid: #e2e7ef;
+  --chart-hatch: rgba(14, 22, 33, 0.3);
 }

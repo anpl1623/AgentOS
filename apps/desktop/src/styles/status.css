@@ -18,9 +18,10 @@
   display: inline-block;
   font-size: var(--fs-micro);
   font-weight: var(--fw-bold);
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
+  line-height: var(--lh-code);
   text-transform: uppercase;
-  padding: var(--s-1) var(--s-3);
+  padding: 0 var(--s-3);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
   background: transparent;
@@ -41,15 +42,19 @@
   color: var(--warn-fg);
   border-color: var(--warn-line);
 }
+/* The two dangerous steps also glow, faintly for high and plainly for
+ * critical, so a list of chips is scanned by its light before its words. */
 .risk.high {
   color: var(--danger-text);
   border-color: var(--danger-fg);
+  box-shadow: var(--danger-glow);
 }
 /* The one risk step that also fills, so it is loud even at a glance. */
 .risk.critical {
   color: var(--critical-fg);
   border-color: var(--critical-fg);
   background: var(--critical-wash);
+  box-shadow: var(--critical-glow);
 }
 
 /* --- verdict: what happened ---------------------------------------------- */
@@ -62,6 +67,7 @@
   display: inline-block;
   font-size: var(--fs-meta);
   font-weight: var(--fw-medium);
+  line-height: var(--lh-body);
   padding: 0 var(--s-4);
   border-radius: var(--radius-pill);
   border: 1px solid var(--border-strong);
@@ -101,12 +107,41 @@
   background: var(--warn-wash);
 }
 /* A run in flight. Same hue family as a refusal, told apart by its quieter
- * translucent edge and the absence of the refusal's leading bar. */
+ * translucent edge, the absence of the refusal's leading bar, and the live
+ * dot at its head: a dot with a ring that spreads from it for as long as the
+ * run is moving. Under reduced motion the dot stays and the ring does not. */
 .verdict.live,
 .verdict.running {
+  position: relative;
+  padding-left: calc(var(--s-4) + 6px + var(--s-3));
   color: var(--info-fg);
   border-color: var(--info-line);
   background: var(--info-wash);
+}
+.verdict.live::before,
+.verdict.live::after,
+.verdict.running::before,
+.verdict.running::after {
+  content: "";
+  position: absolute;
+  left: var(--s-4);
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+}
+.verdict.live::after,
+.verdict.running::after {
+  animation: pulse-ring var(--dur-pulse) var(--ease-out) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .verdict.live::after,
+  .verdict.running::after {
+    animation: none;
+    opacity: 0;
+  }
 }
 .verdict.neutral,
 .verdict.cancelled {
