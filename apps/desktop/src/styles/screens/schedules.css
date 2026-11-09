@@ -1,2 +1,761 @@
 /* The schedules screen: rules no other screen uses. Shared shapes belong in
  * layout.css, components.css or primitives.css, and colours in tokens.css. */
+
+/* Buttons here that carry an icon set it beside their words on one line. */
+.schedules-screen :is(.page-actions, .scheduler-action, .schedule-submit, .empty-state-action)
+  > button,
+.schedules-screen .schedule-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-3);
+}
+
+/* --- the scheduler and the figures --------------------------------------- */
+
+.schedules-overview {
+  display: grid;
+  gap: var(--s-6);
+}
+
+/* Whether anything fires. Calm while running, with the live dot; in the
+ * attention hue while off, with the banner's leading bar, because a list of
+ * active schedules that nothing will fire is the first thing to know. */
+.scheduler-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--s-5) var(--s-8);
+  padding: var(--s-8) var(--s-9);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+}
+.scheduler-card.is-pending {
+  min-height: 96px;
+  border-radius: var(--radius-xl);
+}
+.scheduler-card.is-running {
+  border-color: var(--ok-line);
+}
+.scheduler-card.is-off {
+  border-color: var(--warn-line);
+  box-shadow:
+    var(--highlight-inset),
+    inset 3px 0 0 var(--warn-fg),
+    var(--elev-1);
+}
+.scheduler-mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-lg);
+}
+.is-running .scheduler-mark {
+  background: var(--ok-wash);
+  box-shadow: inset 0 0 0 1px var(--ok-line);
+}
+.is-running .scheduler-mark .live-dot {
+  width: 10px;
+  height: 10px;
+}
+.is-off .scheduler-mark {
+  color: var(--warn-fg);
+  background: var(--warn-wash);
+  box-shadow: inset 0 0 0 1px var(--warn-line);
+}
+.scheduler-body {
+  min-width: 0;
+  align-self: center;
+}
+.scheduler-title {
+  margin: 0;
+  font-size: var(--fs-title);
+  font-weight: var(--fw-heading);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--lh-tight);
+  color: var(--text);
+}
+.is-off .scheduler-title {
+  color: var(--warn-text);
+}
+.scheduler-text {
+  margin: var(--s-3) 0 0;
+  max-width: 82ch;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+.scheduler-error {
+  color: var(--danger-text);
+}
+.scheduler-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  margin: var(--s-4) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.scheduler-facts > li {
+  padding: 0 var(--s-4);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-body);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+}
+.scheduler-action {
+  align-self: center;
+}
+
+/* --- sections ------------------------------------------------------------ */
+
+.schedule-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-2) var(--s-6);
+}
+
+/* --- the cards ----------------------------------------------------------- */
+
+/* Three across on a wide window, two on a compact one, one on a narrow one. */
+.schedule-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
+  gap: var(--s-6);
+}
+/* The item stretches its card to the row's height, so the countdowns line up
+ * along the foot of each row whatever the length of the objectives above. */
+.schedule-grid > [role="listitem"] {
+  display: flex;
+  min-width: 0;
+}
+
+.schedule-card {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-6);
+  padding: var(--s-8);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+  transition:
+    border-color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-4) var(--ease-out);
+}
+.schedule-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--highlight-inset), var(--elev-2);
+}
+.schedule-card.is-overdue {
+  border-color: var(--warn-line);
+}
+/* Just created: lit in the accent for a moment so the eye finds it, then it
+ * fades back to rest over the flourish duration. */
+.schedule-card.is-fresh {
+  border-color: var(--accent-line);
+  box-shadow: var(--highlight-inset), var(--elev-2), var(--accent-glow);
+}
+
+.schedule-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-6);
+}
+.schedule-kind {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-lg);
+  color: var(--text-accent);
+  background: var(--accent-wash);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.schedule-card:is(.is-paused, .is-inert) .schedule-kind {
+  color: var(--text-dim);
+  background: var(--surface-raised);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.schedule-titles {
+  flex: 1;
+  min-width: 0;
+}
+.schedule-name {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.schedule-words {
+  margin: var(--s-2) 0 0;
+  font-size: var(--fs-small);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+}
+.schedule-exact {
+  margin: var(--s-1) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+/* The pause switch sits in the card's corner with its state in words beside
+ * it; the words are what changes, the switch's name does not. */
+.schedule-switch {
+  flex: none;
+  gap: var(--s-4);
+  margin: calc(var(--s-2) * -1) calc(var(--s-2) * -1) 0 0;
+}
+.schedule-switch .switch-label {
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.schedule-switch[aria-checked="true"] .switch-label {
+  color: var(--text);
+}
+
+.schedule-objective {
+  margin: 0;
+  font-size: var(--fs-small);
+  line-height: var(--lh-body);
+  color: var(--text-dim);
+}
+.schedule-card.is-inert :is(.schedule-name, .schedule-words) {
+  color: var(--text-dim);
+}
+.schedule-card.is-inert .schedule-objective {
+  color: var(--text-faint);
+}
+
+/* When: the countdown on the left, the last firing on the right, pushed to
+ * the card's foot. */
+.schedule-when {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: var(--s-6);
+  margin-top: auto;
+  padding-top: var(--s-6);
+  border-top: 1px solid var(--border-subtle);
+}
+.schedule-next,
+.schedule-last {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-1);
+  min-width: 0;
+}
+.schedule-eyebrow {
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.schedule-figure {
+  margin-top: var(--s-1);
+  font-size: var(--fs-title);
+  font-weight: var(--fw-heading);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--lh-tight);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.schedule-next.tone-warn :is(.schedule-eyebrow, .schedule-figure) {
+  color: var(--warn-fg);
+}
+.schedule-at {
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.schedule-caption {
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+}
+.schedule-next.tone-quiet .schedule-caption {
+  margin-top: var(--s-1);
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+
+/* How far through its wait the schedule is. Drawn in the accent with a
+ * passing sheen while the scheduler ticks, and in a still, quiet fill while
+ * nothing is watching the clock. */
+.schedule-cycle {
+  display: block;
+  align-self: stretch;
+  height: 4px;
+  margin-top: var(--s-4);
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  box-shadow: var(--shadow-well);
+  overflow: hidden;
+}
+.schedule-cycle-fill {
+  display: block;
+  height: 100%;
+  width: calc(var(--p, 0) * 100%);
+  border-radius: inherit;
+  background: var(--border-control);
+  transform-origin: left center;
+  animation: grow-x var(--dur-4) var(--ease-out) backwards;
+}
+.schedule-cycle.is-live .schedule-cycle-fill {
+  background: var(--accent-gradient);
+}
+
+.schedule-last-value {
+  margin-top: var(--s-1);
+  font-size: var(--fs-body);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.schedule-link {
+  margin: var(--s-1) 0 0 calc(var(--s-4) * -1);
+  padding: var(--s-1) var(--s-4);
+  min-height: 32px;
+  font-size: var(--fs-small);
+}
+
+/* What resuming will do, said where Resume is. */
+.schedule-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  margin: 0;
+  padding: var(--s-4) var(--s-5);
+  font-size: var(--fs-meta);
+  color: var(--info-text);
+  background: var(--info-wash);
+  border: 1px solid var(--info-line);
+  border-radius: var(--radius-lg);
+}
+.schedule-note > .icon {
+  margin-top: 1px;
+  color: var(--info-fg);
+}
+
+.schedule-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  margin: calc(var(--s-2) * -1) calc(var(--s-3) * -1) calc(var(--s-3) * -1) 0;
+}
+.schedule-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+  padding: 0 var(--s-4);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-body);
+  color: var(--text-dim);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+}
+.schedule-delete:hover:not(:disabled) {
+  color: var(--danger-text);
+  background-color: var(--danger-wash);
+  border-color: var(--danger-line);
+}
+
+/* --- the create form ----------------------------------------------------- */
+
+/* A panel that does not clip, so focus rings and the lift of the kind cards
+ * are drawn whole; it is a size container, so its columns follow its own
+ * width rather than the window's. */
+.panel.schedule-form {
+  overflow: visible;
+  container: schedule-form / inline-size;
+}
+.schedule-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.schedule-form-part {
+  min-width: 0;
+  padding: var(--s-9) var(--s-9) var(--s-2);
+}
+.schedule-form-part + .schedule-form-part {
+  border-top: 1px solid var(--border-subtle);
+}
+@container schedule-form (min-width: 760px) {
+  .schedule-form-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .schedule-form-part + .schedule-form-part {
+    border-top: none;
+    border-left: 1px solid var(--border-subtle);
+  }
+  /* Side by side, the objective takes whatever height the cadence's preview
+   * gives the row, so the two halves end together rather than leaving a
+   * hole under the shorter one; an objective is the longest thing typed. */
+  .schedule-form-part {
+    display: flex;
+    flex-direction: column;
+  }
+  .schedule-objective-field {
+    flex: 1 0 auto;
+    display: flex;
+    flex-direction: column;
+  }
+  .schedule-objective-field > textarea {
+    flex: 1 0 auto;
+  }
+}
+.schedule-form-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  margin: 0 0 var(--s-8);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.schedule-form-title > .icon {
+  color: var(--text-accent);
+}
+.schedule-form .field-label {
+  display: block;
+  margin: 0 0 var(--s-2);
+  font-size: var(--fs-code);
+  color: var(--text-dim);
+}
+.schedule-form :where(input, textarea, select)[aria-invalid="true"] {
+  border-color: var(--danger-fg);
+}
+
+/* A field's own error, directly beneath it, with the alert mark so the
+ * hue is not the only signal. */
+.schedules-screen .field-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  margin: var(--s-3) 0 0;
+  font-size: var(--fs-small);
+  color: var(--danger-text);
+}
+.schedules-screen .field-error > .icon {
+  margin-top: 2px;
+}
+
+/* The kinds of cadence, as three pressable cards that say what each means. */
+.cadence-kinds {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-4);
+}
+.cadence-kind {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-2);
+  min-width: 0;
+  padding: var(--s-5) var(--s-6) var(--s-6);
+  border-radius: var(--radius-lg);
+  text-align: left;
+}
+.cadence-kind.lift:hover:not(:disabled) {
+  border-color: var(--border-control-hover);
+}
+.cadence-kind-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-bottom: var(--s-2);
+  border-radius: var(--radius-md);
+  color: var(--text-dim);
+  background: var(--surface-sunken);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  transition:
+    color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out);
+}
+.cadence-kind-name {
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.cadence-kind-note {
+  font-size: var(--fs-meta);
+  line-height: var(--lh-tight);
+  color: var(--text-dim);
+}
+.cadence-kind[aria-pressed="true"],
+.cadence-kind[aria-pressed="true"]:hover:not(:disabled) {
+  border-color: var(--accent);
+  background-color: var(--accent-wash);
+  box-shadow:
+    var(--highlight-inset),
+    inset 0 0 0 1px var(--accent-line);
+}
+.cadence-kind[aria-pressed="true"] .cadence-kind-icon {
+  color: var(--on-accent);
+  background: var(--accent-gradient);
+  box-shadow: none;
+}
+.cadence-kind[aria-pressed="true"] .cadence-kind-name {
+  color: var(--text-accent);
+}
+/* Too narrow for three across: each kind becomes a row, mark beside words. */
+@container schedule-form (max-width: 460px) {
+  .cadence-kinds {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cadence-kind {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: var(--s-5);
+    row-gap: 0;
+    align-items: center;
+    padding: var(--s-4) var(--s-5);
+  }
+  .cadence-kind-icon {
+    grid-row: span 2;
+    margin-bottom: 0;
+  }
+}
+
+.cadence-cron > input {
+  flex: 1 1 12rem;
+  width: auto;
+  min-width: 0;
+}
+/* "read in" stays with its choice when the row wraps under the expression. */
+.cadence-clock {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--s-4);
+}
+
+/* One-press choices under a field: the usual intervals, the usual patterns. */
+.cadence-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  margin-top: var(--s-4);
+}
+.cadence-preset {
+  min-height: 32px;
+  padding: var(--s-1) var(--s-5);
+  font-size: var(--fs-meta);
+  border-radius: var(--radius-pill);
+}
+
+/* The preview: the cadence in words over its next firings, as a short
+ * timeline whose first stop is lit. */
+.cadence-preview {
+  margin-bottom: var(--s-7);
+}
+.cadence-preview-card {
+  padding: var(--s-6) var(--s-7) var(--s-7);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-well);
+}
+/* The words and the exact description together keep one height whether or
+ * not there is an answer, so the timeline beneath does not move when one
+ * arrives. */
+.cadence-preview-head {
+  min-height: calc(
+    var(--fs-body) * var(--lh-body) + var(--s-1) + var(--fs-meta) * var(--lh-body)
+  );
+}
+.cadence-preview-words {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.cadence-preview-exact {
+  margin: var(--s-1) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+.cadence-preview-heading {
+  margin: var(--s-6) 0 var(--s-4);
+  padding-top: var(--s-5);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.cadence-firings {
+  position: relative;
+  display: grid;
+  gap: var(--s-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* The line the stops sit on, through the centre of each dot. */
+.cadence-firings::before {
+  content: "";
+  position: absolute;
+  top: var(--s-4);
+  bottom: var(--s-4);
+  left: 3px;
+  width: 1px;
+  background: var(--border-strong);
+}
+.cadence-firings > li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s-6);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.cadence-firings > li:first-child {
+  color: var(--text);
+}
+.cadence-firing-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border-control);
+}
+.cadence-firings > li:first-child .cadence-firing-dot {
+  background: var(--accent-gradient);
+  box-shadow: 0 0 0 3px var(--accent-wash);
+}
+
+/* No answer to show: a line saying why, over the same timeline with its
+ * stops empty, so the card keeps its shape while each keystroke is checked. */
+.cadence-preview-status {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-4);
+  margin: 0;
+  font-size: var(--fs-small);
+  line-height: var(--lh-body);
+  color: var(--text-dim);
+}
+.cadence-preview-status > :is(.icon, .live-dot) {
+  flex: none;
+  margin-top: var(--s-1);
+  color: var(--text-faint);
+}
+.cadence-preview-status > .live-dot {
+  margin: var(--s-3) var(--s-1) 0;
+}
+.is-waiting .cadence-preview-heading {
+  color: var(--text-faint);
+}
+.cadence-firings.is-ghost > li .cadence-firing-dot,
+.cadence-firings.is-ghost > li:first-child .cadence-firing-dot {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border-control);
+}
+.cadence-firings.is-ghost::before {
+  background: var(--border-subtle);
+}
+/* An empty stop, about the size of a firing's label, with margins that make
+ * up the rest of the mono line so it stands exactly as tall as one. */
+.cadence-ghost,
+.cadence-ghost.skeleton-line {
+  display: block;
+  width: 9.5em;
+  height: 0.8em;
+  margin-block: calc((var(--lh-code) - 0.8) * 0.5em);
+  font-size: var(--fs-code);
+  border-radius: var(--radius-sm);
+}
+.cadence-ghost:not(.skeleton-line) {
+  background: var(--surface-hover);
+}
+
+.schedule-form-foot {
+  padding: var(--s-7) var(--s-9) var(--s-8);
+  border-top: 1px solid var(--border-subtle);
+}
+.schedule-submit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4) var(--s-6);
+}
+/* What a firing does when it would ask for approval: said beside the
+ * objective, because it shapes what an objective can sensibly ask for. */
+.schedule-unwatched {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-5);
+  margin-bottom: var(--s-7);
+  padding: var(--s-5) var(--s-6);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+}
+.schedule-unwatched > .icon {
+  margin-top: 1px;
+  color: var(--text-accent);
+}
+.schedule-unwatched > p {
+  margin: 0;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+.schedule-unwatched strong {
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
+/* --- narrow and coarse --------------------------------------------------- */
+
+@media (max-width: 719.98px) {
+  /* Four figures as two pairs rather than three and a straggler. */
+  .grid.stats.schedule-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .scheduler-card {
+    grid-template-columns: auto minmax(0, 1fr);
+    padding: var(--s-7);
+  }
+  .scheduler-action {
+    grid-column: 1 / -1;
+  }
+  .schedule-card {
+    padding: var(--s-7);
+  }
+  .schedule-form-part {
+    padding: var(--s-8) var(--s-7) var(--s-2);
+  }
+  .schedule-form-foot {
+    padding: var(--s-6) var(--s-7) var(--s-7);
+  }
+}
+
+@media (pointer: coarse) {
+  .cadence-preset,
+  .schedule-link {
+    min-height: 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .schedule-cycle-fill {
+    animation: none;
+  }
+}
