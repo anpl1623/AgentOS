@@ -164,16 +164,23 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
             lines.push(String::new());
             continue;
         }
+        // Widths are counted in characters, not bytes: an accented word is
+        // one column per letter on a terminal, not two or three.
         let mut current = String::new();
+        let mut current_width = 0;
         for word in paragraph.split_whitespace() {
+            let word_width = visible_width(word);
             if current.is_empty() {
                 current.push_str(word);
-            } else if current.len() + 1 + word.len() <= width {
+                current_width = word_width;
+            } else if current_width + 1 + word_width <= width {
                 current.push(' ');
                 current.push_str(word);
+                current_width += 1 + word_width;
             } else {
                 lines.push(std::mem::take(&mut current));
                 current.push_str(word);
+                current_width = word_width;
             }
         }
         if !current.is_empty() {
@@ -183,20 +190,34 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// `text` cut to at most `max` characters, with an ellipsis if anything was
+/// cut. Characters, not bytes, so text outside ASCII keeps its full length.
 fn truncate(text: &str, max: usize) -> String {
-    if text.len() <= max {
-        return text.to_owned();
+    match text.char_indices().nth(max) {
+        None => text.to_owned(),
+        Some((cut, _)) => format!("{}…", &text[..cut]),
     }
-    let mut cut = max;
-    while cut > 0 && !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    format!("{}…", &text[..cut])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapping_counts_characters_not_bytes() {
+        // Each word is five characters and ten bytes. Measured in bytes, no
+        // two would fit on a line of twelve.
+        let wrapped = wrap("ééééé ééééé ééééé", 12);
+        assert_eq!(wrapped, vec!["ééééé ééééé", "ééééé"]);
+    }
+
+    #[test]
+    fn truncation_counts_characters_not_bytes() {
+        assert_eq!(truncate("ééééé", 5), "ééééé");
+        assert_eq!(truncate("éééééé", 5), "ééééé…");
+        assert_eq!(truncate("abcdef", 3), "abc…");
+        assert_eq!(truncate("", 0), "");
+    }
 
     use super::test_support::plain;
 
