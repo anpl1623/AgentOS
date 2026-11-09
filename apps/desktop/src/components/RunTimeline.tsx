@@ -1,4 +1,4 @@
-import type { SpanTarget, Timeline, TimelineSpan } from "../routes/runModel";
+import type { SpanTarget, Timeline, TimelineSpan } from "../routes/tasks/runModel";
 import { clock } from "../sdk/format";
 import {
   AXIS_HEIGHT,
