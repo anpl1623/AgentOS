@@ -1,25 +1,24 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentSummary } from "../../bindings/AgentSummary";
 import type { ApprovalView } from "../../bindings/ApprovalView";
 import type { AuditHealth } from "../../bindings/AuditHealth";
 import type { ExecutionView } from "../../bindings/ExecutionView";
 import type { RunSummary } from "../../bindings/RunSummary";
-import type { SettingsView } from "../../bindings/SettingsView";
 import type { TaskSummary } from "../../bindings/TaskSummary";
 import type { ToolUsageView } from "../../bindings/ToolUsageView";
 import {
   NEEDS_YOU_SHOWN,
   NEVER_RAN,
   NOT_YET,
+  type ToolRow,
   chainTile,
   failureRows,
   firstLine,
   needsYou,
-  readiness,
   refusalRows,
   refusedTotal,
   span,
+  toolMeter,
   toolRows,
   unrecordedNote,
 } from "./dashboardModel";
@@ -128,59 +127,20 @@ function usage(tool: string, extra: Partial<ToolUsageView> = {}): ToolUsageView 
   };
 }
 
-function agent(name: string, provider: string, extra: Partial<AgentSummary> = {}): AgentSummary {
+function row(extra: Partial<ToolRow>): ToolRow {
   return {
-    id: `agent-${name}`,
-    name,
-    provider,
-    model: "model",
-    status: "enabled",
-    tools: [],
-    max_steps: 24,
-    created_at: minutesAgo(1000),
+    tool: "t",
+    risk: "low",
+    calls: 0,
+    executed: 0,
+    failed: 0,
+    refused: 0,
+    totalMs: 0,
+    lastUsedAt: null,
+    mostlyRefused: false,
     ...extra,
   };
 }
-
-function settings(extra: Partial<SettingsView> = {}): SettingsView {
-  return {
-    data_dir: "/data",
-    workspace: "/data/workspace",
-    database: "/data/agentos.db",
-    keychain_available: true,
-    keychain_reason: null,
-    providers: [
-      { id: "anthropic", configured: true, hint: "sk-…", source: "system keychain", note: "" },
-      { id: "openai", configured: false, hint: null, source: null, note: "" },
-      { id: "ollama", configured: false, hint: null, source: null, note: "" },
-      { id: "mock", configured: false, hint: null, source: null, note: "" },
-    ],
-    browser_path: "/usr/bin/chromium",
-    browser_hint: null,
-    tools: [
-      {
-        name: "browser.navigate",
-        domain: "browser",
-        description: "",
-        risk: "medium",
-        returns_untrusted_data: true,
-        capabilities: ["browser.navigate"],
-      },
-      {
-        name: "filesystem.read",
-        domain: "filesystem",
-        description: "",
-        risk: "low",
-        returns_untrusted_data: true,
-        capabilities: ["filesystem.read"],
-      },
-    ],
-    ...extra,
-  };
-}
-
-const unkeyed = (providers: SettingsView["providers"]) =>
-  providers.map((provider) => ({ ...provider, configured: false, hint: null, source: null }));
 
 function health(extra: Partial<AuditHealth> = {}): AuditHealth {
   return { events: 412, intact: true, checked_at: minutesAgo(0), unrecorded: 0, ...extra };
@@ -358,6 +318,13 @@ describe("toolRows", () => {
     expect(rows.map((row) => row.tool)).toEqual(["refused", "busy", "quiet"]);
   });
 
+  it("carries the calls that ran and failed through for the meter", () => {
+    const [row] = toolRows([
+      usage("t", { calls: 59, executed: 58, failed: 2, approval_denied: 1 }),
+    ]);
+    expect(row).toMatchObject({ executed: 58, failed: 2, refused: 1 });
+  });
+
   it("keeps a tool the catalogue no longer offers, without a risk", () => {
     const [row] = toolRows([usage("retired", { calls: 1, executed: 1, risk: null })]);
     expect(row?.risk).toBeNull();
@@ -374,102 +341,6 @@ describe("refusedTotal", () => {
       ]),
     ).toBe(6);
     expect(refusedTotal([])).toBe(0);
-  });
-});
-
-describe("readiness", () => {
-  it("says nothing until both settings and agents have loaded", () => {
-    expect(readiness(null, [])).toEqual([]);
-    expect(readiness(settings({ providers: [] }), null)).toEqual([]);
-  });
-
-  it("is empty for an installation with a keyed agent and a browser", () => {
-    expect(readiness(settings(), [agent("sales", "anthropic")])).toEqual([]);
-  });
-
-  it("asks for an agent first thing on a fresh install, pointing at Agents", () => {
-    const items = readiness(settings(), []);
-    expect(items.map((item) => item.id)).toEqual(["agent"]);
-    expect(items[0]?.target).toEqual({ name: "agents" });
-  });
-
-  it("says when every agent is disabled", () => {
-    const items = readiness(settings(), [agent("sales", "anthropic", { status: "disabled" })]);
-    expect(items.map((item) => item.id)).toEqual(["agent"]);
-    expect(items[0]?.problem).toMatch(/disabled/);
-  });
-
-  it("asks for a key when there is none and no agent to say which, pointing at Settings", () => {
-    const items = readiness(settings({ providers: unkeyed(settings().providers) }), []);
-    expect(items.map((item) => item.id)).toEqual(["provider", "agent"]);
-    expect(items[0]?.target).toEqual({ name: "settings" });
-  });
-
-  it("names the agent whose provider has no key", () => {
-    const items = readiness(settings(), [agent("writer", "openai")]);
-    expect(items.map((item) => item.id)).toEqual(["provider"]);
-    expect(items[0]?.problem).toBe("writer uses openai, which has no key.");
-  });
-
-  it("needs no key for an agent on a local or built-in provider", () => {
-    const providers = unkeyed(settings().providers);
-    expect(readiness(settings({ providers }), [agent("ops", "ollama")])).toEqual([]);
-    expect(readiness(settings({ providers }), [agent("test", "mock")])).toEqual([]);
-  });
-
-  it("does not hold a disabled agent's missing key against the installation", () => {
-    const items = readiness(settings(), [
-      agent("sales", "anthropic"),
-      agent("old", "openai", { status: "disabled" }),
-    ]);
-    expect(items).toEqual([]);
-  });
-
-  it("does not guess about a provider this build does not list", () => {
-    expect(readiness(settings(), [agent("x", "someday")])).toEqual([]);
-  });
-
-  it("raises a missing keychain only when a key is needed and cannot be saved", () => {
-    const withoutKeychain = { keychain_available: false, keychain_reason: "no secret service" };
-    // Configured from the environment: nothing is stopped, nothing is raised.
-    expect(readiness(settings(withoutKeychain), [agent("sales", "anthropic")])).toEqual([]);
-
-    const items = readiness(
-      settings({ ...withoutKeychain, providers: unkeyed(settings().providers) }),
-      [agent("sales", "anthropic")],
-    );
-    expect(items.map((item) => item.id)).toEqual(["provider", "keychain"]);
-    expect(items[1]?.problem).toContain("no secret service");
-  });
-
-  it("raises a missing browser for an enabled agent holding a browser tool", () => {
-    const items = readiness(settings({ browser_path: null, browser_hint: "Install Chrome." }), [
-      agent("sales", "anthropic", { tools: ["browser.navigate"] }),
-    ]);
-    expect(items.map((item) => item.id)).toEqual(["browser"]);
-    expect(items[0]?.problem).toContain("sales has browser tools");
-    expect(items[0]?.remedy).toBe("Install Chrome.");
-  });
-
-  it("knows a browser tool by its catalogue domain, not by its name", () => {
-    const base = settings();
-    const renamed = settings({
-      browser_path: null,
-      tools: base.tools.map((tool) =>
-        tool.name === "browser.navigate" ? { ...tool, name: "web.open" } : tool,
-      ),
-    });
-    const items = readiness(renamed, [agent("sales", "anthropic", { tools: ["web.open"] })]);
-    expect(items.map((item) => item.id)).toEqual(["browser"]);
-  });
-
-  it("leaves a missing browser alone when no enabled agent could use one", () => {
-    expect(
-      readiness(settings({ browser_path: null }), [
-        agent("ops", "anthropic", { tools: ["filesystem.read"] }),
-        agent("old", "anthropic", { status: "disabled", tools: ["browser.navigate"] }),
-      ]),
-    ).toEqual([]);
   });
 });
 
@@ -530,5 +401,36 @@ describe("unrecordedNote", () => {
     const broken = unrecordedNote(health({ intact: false, unrecorded: 2 }));
     expect(broken).toMatch(/^2 audit records could not be written/);
     expect(broken).not.toMatch(/verifies/);
+  });
+});
+
+describe("toolMeter", () => {
+  it("sizes a bar against the busiest tool and splits it by how calls ended", () => {
+    const meter = toolMeter(row({ calls: 59, executed: 58, failed: 2, refused: 1 }), 59);
+    expect(meter.width).toBe(100);
+    expect(meter.parts).toEqual([
+      { kind: "ran", count: 56 },
+      { kind: "failed", count: 2 },
+      { kind: "refused", count: 1 },
+    ]);
+  });
+
+  it("draws calls that neither ran nor were refused as a part of their own", () => {
+    const meter = toolMeter(row({ calls: 5, executed: 1, refused: 2 }), 10);
+    expect(meter.width).toBe(50);
+    expect(meter.parts).toEqual([
+      { kind: "ran", count: 1 },
+      { kind: "refused", count: 2 },
+      { kind: "other", count: 2 },
+    ]);
+  });
+
+  it("never draws a tool with calls narrower than a sliver", () => {
+    expect(toolMeter(row({ calls: 1, executed: 1 }), 500).width).toBe(2);
+  });
+
+  it("draws nothing for an empty list or a tool nobody called", () => {
+    expect(toolMeter(row({ calls: 3, executed: 3 }), 0)).toEqual({ width: 0, parts: [] });
+    expect(toolMeter(row({ calls: 0 }), 10)).toEqual({ width: 0, parts: [] });
   });
 });

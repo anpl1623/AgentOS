@@ -1,2 +1,847 @@
 /* The dashboard screen: rules no other screen uses. Shared shapes belong in
- * layout.css, components.css or primitives.css, and colours in tokens.css. */
+ * layout.css, components.css or primitives.css, and colours in tokens.css.
+ *
+ * The screen spends its light on three things: the decisions waiting on the
+ * person (the attention hue, glowing, with an edge in the risk's own hue), the
+ * work that is live (a pulsing dot, a ticking clock, a bar with a sheen), and
+ * what was refused or failed (the blocked and danger hues, each with a mark as
+ * well as a colour). Everything else is a quiet card. */
+
+/* --- title block --------------------------------------------------------- */
+
+/* The status line is three short facts; on a wide window they sit on one line
+ * rather than wrapping at the subtitle's reading measure. */
+.page-sub:has(> .dash-status) {
+  max-width: none;
+}
+.dash-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-8);
+}
+.dash-status-part {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  color: var(--text-dim);
+}
+/* A healthy fact is calm: dim words with the mark in its hue. A fact that
+ * asks for attention says so in its words too. */
+.dash-status-part.tone-ok .icon {
+  color: var(--ok-fg);
+}
+.dash-status-part.tone-warn {
+  color: var(--warn-fg);
+}
+.dash-status-part.tone-danger {
+  color: var(--danger-text);
+  font-weight: var(--fw-semibold);
+}
+.dash-status-part.tone-neutral {
+  color: var(--text-faint);
+}
+
+.dash-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.dash-banners:empty {
+  display: none;
+}
+.dash-banners {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  margin-bottom: var(--s-8);
+}
+
+/* --- figures ------------------------------------------------------------- */
+
+/* Four across while there is room for each to be at least 200px, two by two
+ * beneath that, one above another at the very narrowest. */
+.dash-kpis {
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  margin-bottom: var(--s-10);
+}
+.dash-kpis > * {
+  min-width: 0;
+}
+/* The refused tile takes the blocked hue a refusal wears everywhere else. The
+ * tile has no blocked tone of its own, so the wrapper lends it one. */
+.dash-kpi-refused {
+  display: grid;
+}
+.dash-kpi-refused.active .stat-tile-value {
+  color: var(--blocked-fg);
+}
+.dash-kpi-refused.active .stat-tile-icon {
+  color: var(--blocked-fg);
+  background: var(--blocked-wash);
+  box-shadow: inset 0 0 0 1px var(--blocked-line);
+}
+.dash-kpi-refused.active .stat-tile {
+  border-color: var(--blocked-line);
+}
+.dash-live-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+/* --- layout -------------------------------------------------------------- */
+
+/* Two columns once the screen's own column is wide enough for both, whatever
+ * made it so: the window, or a folded sidebar. The work and what went wrong on
+ * the leading side; trust and inventory beside it. One column beneath that,
+ * in the same order. */
+.dash-body {
+  container: dashboard / inline-size;
+}
+.dash-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s-10);
+  align-items: start;
+}
+@container dashboard (min-width: 880px) {
+  .dash-layout {
+    grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr);
+    gap: var(--s-10) var(--s-9);
+  }
+}
+.dash-main,
+.dash-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-10);
+  min-width: 0;
+}
+
+/* --- sections ------------------------------------------------------------ */
+
+.dash-section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  min-height: 32px;
+  margin-bottom: var(--s-5);
+}
+.dash-section-head h2 {
+  margin: 0;
+}
+.dash-section-icon {
+  color: var(--text-faint);
+}
+.dash-section-tail {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  margin-left: auto;
+}
+.dash-section > .banner {
+  margin-bottom: var(--s-5);
+}
+
+.dash-count {
+  min-width: 20px;
+  padding: 0 var(--s-3);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold);
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+}
+/* The waiting count wears the attention hue, as the approvals count in the
+ * sidebar does, and only while there is something in it. */
+.dash-needs .dash-count:not(.zero) {
+  color: var(--on-warn);
+  background: var(--warn-fg);
+  border-color: transparent;
+  box-shadow: var(--warn-glow);
+}
+
+.dash-see-all {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-size: var(--fs-small);
+}
+.dash-see-all .icon {
+  transition: transform var(--dur-2) var(--ease-spring);
+}
+.dash-see-all:hover:not(:disabled) .icon {
+  transform: translateX(2px);
+}
+
+/* A list of cards is a grid of items; each item stretches its card. */
+.dash-decisions > [role="listitem"],
+.dash-runs > [role="listitem"] {
+  display: grid;
+}
+
+/* --- needs you ----------------------------------------------------------- */
+
+/* auto-fit rather than auto-fill: two cards in a wide column share it, rather
+ * than leaving an empty track where a third would go. */
+.dash-decisions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  gap: var(--s-6);
+}
+
+/* A request waiting on a decision. The edge and glow are the attention hue;
+ * the leading bar is the risk's own hue, so a column of cards is scanned by
+ * danger before it is read. Drawn by ::after, since the spotlight has ::before. */
+.dash-decision {
+  --edge: var(--border-control);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+  width: 100%;
+  padding: var(--s-7) var(--s-8) var(--s-7) calc(var(--s-8) + 3px);
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background-color: var(--surface-panel);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--highlight-inset), var(--elev-2), var(--warn-glow);
+  overflow: hidden;
+}
+.dash-decision::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--edge);
+}
+.dash-decision.risk-none {
+  --edge: var(--border-strong);
+}
+.dash-decision.risk-medium {
+  --edge: var(--warn-fg);
+}
+.dash-decision.risk-high {
+  --edge: var(--danger-fg);
+}
+.dash-decision.risk-critical {
+  --edge: var(--critical-fg);
+  border-color: var(--critical-line);
+  box-shadow: var(--highlight-inset), var(--elev-2), var(--critical-glow);
+}
+/* Lifted under the pointer like any card, keeping its glow and its fill: a
+ * hovered control's ground would put the faint words on the one ground they
+ * are not measured for. */
+.dash-decision:hover:not(:disabled) {
+  background-color: var(--surface-panel);
+  border-color: var(--warn-fg);
+  box-shadow: var(--highlight-inset), var(--elev-2), var(--warn-glow);
+}
+.dash-decision.risk-critical:hover:not(:disabled) {
+  border-color: var(--critical-fg);
+  box-shadow: var(--highlight-inset), var(--elev-2), var(--critical-glow);
+}
+.dash-decision-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-4);
+}
+.dash-decision-who {
+  min-width: 0;
+  font-weight: var(--fw-semibold);
+  overflow-wrap: anywhere;
+}
+.dash-decision-sep {
+  margin: 0 var(--s-3);
+  color: var(--text-faint);
+}
+.dash-decision-what {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.dash-decision-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3) var(--s-6);
+  margin-top: auto;
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.dash-decision-wait {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-variant-numeric: tabular-nums;
+}
+/* Waiting long enough that a run has visibly stalled on it. */
+.dash-decision-wait.long {
+  color: var(--warn-fg);
+  font-weight: var(--fw-semibold);
+}
+/* The card's action, drawn as a small pill that fills with the accent when
+ * the card is aimed at, so it is clear what pressing it does. */
+.dash-decision-go {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  margin-left: auto;
+  padding: var(--s-1) var(--s-3) var(--s-1) var(--s-5);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+  color: var(--text-accent);
+  background: var(--accent-wash);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-pill);
+  transition:
+    background-color var(--dur-2) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out),
+    color var(--dur-2) var(--ease-out);
+}
+.dash-decision-go .icon {
+  transition: transform var(--dur-2) var(--ease-spring);
+}
+.dash-decision:hover:not(:disabled) .dash-decision-go {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.dash-decision:hover:not(:disabled) .dash-decision-go .icon {
+  transform: translateX(2px);
+}
+
+/* The rest of the queue, folded into one card that goes to the approvals
+ * screen: dashed, because it stands for cards that are not drawn here. */
+.dash-decision-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-4);
+  width: 100%;
+  min-height: 96px;
+  font: inherit;
+  color: var(--text-dim);
+  background-color: transparent;
+  border: 1px dashed var(--border-control);
+  border-radius: var(--radius-xl);
+  box-shadow: none;
+}
+.dash-decision-more:hover:not(:disabled) {
+  color: var(--text);
+  background-color: var(--surface-panel);
+}
+.dash-decision-more-count {
+  font-size: var(--fs-title);
+  font-weight: var(--fw-heading);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- running ------------------------------------------------------------- */
+
+.dash-runs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+.dash-run {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  width: 100%;
+  padding: var(--s-7) var(--s-8);
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+}
+button.dash-run:hover:not(:disabled) {
+  background-color: var(--surface-panel);
+}
+.dash-run-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-5);
+  min-width: 0;
+}
+.dash-run-title {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+/* The meta line and the bar start under the title, not under the dot. */
+.dash-run-meta,
+.dash-run-budget {
+  padding-left: calc(8px + var(--s-5));
+}
+.dash-run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-1) var(--s-6);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.dash-run-agent {
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+.dash-run-clock {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.dash-run-budget {
+  display: flex;
+  align-items: center;
+  gap: var(--s-6);
+}
+.dash-meter {
+  position: relative;
+  flex: 1;
+  height: 6px;
+  overflow: hidden;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-well);
+}
+.dash-meter-fill {
+  display: block;
+  width: var(--w, 0%);
+  min-width: 6px;
+  height: 100%;
+  background: var(--accent-gradient);
+  border-radius: inherit;
+  transform-origin: 0 50%;
+  animation: grow-x var(--dur-4) var(--ease-out) backwards;
+}
+.dash-run-budget-label {
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* --- failed and refused -------------------------------------------------- */
+
+/* Each row leads with a mark in its hue, so failure and refusal are told
+ * apart by shape and position as well as colour. */
+.dash-outcome-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-md);
+}
+.dash-outcome.failed .dash-outcome-mark {
+  color: var(--danger-fg);
+  background: var(--danger-wash);
+  box-shadow: inset 0 0 0 1px var(--danger-line);
+}
+.dash-outcome.refused .dash-outcome-mark {
+  color: var(--blocked-fg);
+  background: var(--blocked-wash);
+  box-shadow: inset 0 0 0 1px var(--blocked-line);
+}
+.dash-outcome-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+/* --- tools --------------------------------------------------------------- */
+
+/* The title line wraps rather than clipping: the alarm chip drops beneath the
+ * tool's name in a narrow column instead of being cut off by the ellipsis. */
+.dash-tool-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-4);
+  white-space: normal;
+}
+.dash-tool-alarm {
+  margin-left: auto;
+}
+/* A tool refused more often than it ran: the row this panel exists to show,
+ * marked on its leading edge as well as by its chip. */
+.dash-tool.alarming {
+  box-shadow: inset 3px 0 0 var(--danger-fg);
+}
+
+.dash-tool-meter {
+  display: block;
+  height: 8px;
+  margin: var(--s-3) 0 var(--s-2);
+  overflow: hidden;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-well);
+}
+/* The bar grows in from its leading edge once, when the list is drawn: on
+ * arrival and on a change of window, not on a poll. */
+.dash-tool-meter-fill {
+  display: flex;
+  gap: 1px;
+  width: var(--w, 0%);
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+  transform-origin: 0 50%;
+  animation: grow-x var(--dur-4) var(--ease-out) backwards;
+}
+.dash-tool-part {
+  flex: var(--n, 1) 1 0;
+  min-width: 2px;
+}
+.dash-tool-part.ran,
+.dash-tool-swatch.ran {
+  background-color: var(--ok-line);
+}
+.dash-tool-part.failed,
+.dash-tool-swatch.failed {
+  background-color: var(--danger-fg);
+}
+/* Hatched as well as tinted: "did not execute", as the charts draw it. */
+.dash-tool-part.refused,
+.dash-tool-swatch.refused {
+  background-color: var(--blocked-line);
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--chart-hatch) 0 1.5px,
+    transparent 1.5px 4px
+  );
+}
+.dash-tool-part.other,
+.dash-tool-swatch.other {
+  background-color: var(--border-control);
+}
+.dash-tool-legend {
+  margin: 0;
+  padding: var(--s-5) var(--s-8);
+  border-top: 1px solid var(--border-subtle);
+}
+.dash-tool-swatch {
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  border-radius: var(--radius-sm);
+}
+
+/* --- setup --------------------------------------------------------------- */
+
+.dash-setup {
+  margin-bottom: var(--s-10);
+  padding: var(--s-8) var(--s-9);
+  background: var(--surface-panel);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+}
+.dash-setup-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-7);
+}
+.dash-setup-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-lg);
+  color: var(--warn-fg);
+  background: var(--warn-wash);
+  box-shadow: inset 0 0 0 1px var(--warn-line);
+}
+.dash-setup-titles {
+  flex: 1;
+  min-width: 0;
+}
+/* The card's heading reads as a title, not a section label. */
+.dash-setup-titles h2 {
+  margin: 0;
+  font-size: var(--fs-body);
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text);
+}
+.dash-setup-sub {
+  margin: var(--s-1) 0 0;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+.dash-setup-percent {
+  font-size: var(--fs-title);
+  font-weight: var(--fw-heading);
+  letter-spacing: var(--tracking-tight);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.dash-setup-bar {
+  height: 6px;
+  margin: var(--s-7) 0;
+  overflow: hidden;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-well);
+}
+.dash-setup-bar-fill {
+  display: block;
+  width: var(--w, 0%);
+  height: 100%;
+  background: var(--accent-gradient);
+  border-radius: inherit;
+  transform-origin: 0 50%;
+  animation: grow-x var(--dur-4) var(--ease-out) backwards;
+}
+.dash-setup-steps {
+  display: grid;
+  gap: var(--s-4);
+}
+.dash-setup-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4) var(--s-6);
+  width: 100%;
+  padding: var(--s-5) var(--s-7);
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background-color: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--highlight-inset);
+}
+.dash-setup-step:hover:not(:disabled) {
+  background-color: var(--surface-raised);
+}
+.dash-setup-step-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-md);
+  color: var(--warn-fg);
+  background: var(--warn-wash);
+  box-shadow: inset 0 0 0 1px var(--warn-line);
+}
+.dash-setup-step-main {
+  display: flex;
+  flex: 1 1 14rem;
+  flex-direction: column;
+  gap: var(--s-1);
+  min-width: 0;
+}
+.dash-setup-step-problem {
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+.dash-setup-step-remedy {
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+.dash-setup-step-go {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  margin-left: auto;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+.dash-setup-step:hover:not(:disabled) .dash-setup-step-go {
+  color: var(--text);
+}
+.dash-setup-done {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-1) var(--s-7);
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+.dash-setup-done .icon {
+  color: var(--ok-fg);
+}
+
+/* --- audit chain --------------------------------------------------------- */
+
+.dash-audit {
+  padding: var(--s-8);
+}
+.dash-audit.tone-danger {
+  border-color: var(--danger-line);
+  box-shadow: var(--highlight-inset), var(--elev-1), var(--danger-glow);
+}
+.dash-audit.tone-warn {
+  border-color: var(--warn-line);
+}
+.dash-audit-main {
+  display: flex;
+  align-items: center;
+  gap: var(--s-7);
+}
+.dash-audit-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-xl);
+  color: var(--text-accent);
+  background: var(--accent-wash);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.dash-audit.tone-ok .dash-audit-mark {
+  color: var(--ok-fg);
+  background: var(--ok-wash);
+  box-shadow:
+    inset 0 0 0 1px var(--ok-line),
+    0 0 0 5px var(--ok-wash);
+}
+.dash-audit.tone-warn .dash-audit-mark {
+  color: var(--warn-fg);
+  background: var(--warn-wash);
+  box-shadow: inset 0 0 0 1px var(--warn-line);
+}
+.dash-audit.tone-danger .dash-audit-mark {
+  color: var(--danger-fg);
+  background: var(--danger-wash);
+  box-shadow: inset 0 0 0 1px var(--danger-line);
+}
+.dash-audit-figures {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  min-width: 0;
+}
+.dash-audit-state {
+  font-size: var(--fs-stat);
+  font-weight: var(--fw-heading);
+  letter-spacing: var(--tracking-tight);
+  line-height: 1.1;
+}
+.dash-audit.tone-ok .dash-audit-state {
+  color: var(--ok-fg);
+}
+.dash-audit.tone-warn .dash-audit-state {
+  color: var(--warn-fg);
+}
+.dash-audit.tone-danger .dash-audit-state {
+  color: var(--danger-text);
+}
+.dash-audit-events {
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.dash-audit-warning {
+  margin: var(--s-7) 0 0;
+  padding: var(--s-4) var(--s-6);
+  font-size: var(--fs-small);
+  color: var(--danger-text);
+  background: var(--danger-wash);
+  border-left: 3px solid var(--danger-fg);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.dash-audit-note {
+  margin: var(--s-7) 0 0;
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+}
+
+/* --- agents -------------------------------------------------------------- */
+
+.dash-agent-name {
+  display: flex;
+  align-items: center;
+  gap: var(--s-5);
+}
+.dash-agent-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  font-size: var(--fs-meta);
+  color: var(--info-text);
+}
+/* Held up on a decision: the attention hue, as the running card for the same
+ * run uses. A task not yet started is quieter than either. */
+.dash-agent-busy.waiting {
+  color: var(--warn-fg);
+}
+.dash-agent-busy.queued {
+  color: var(--text-dim);
+}
+
+/* --- focus --------------------------------------------------------------- */
+
+/* focus.css gives every focused control the radius of a small control, and it
+ * loads last. A card keeps its own corners while it carries the ring, so the
+ * ring follows the card's shape and the card does not change shape as focus
+ * arrives. The ring itself is focus.css's and is left alone. */
+.dash-decision:focus-visible,
+.dash-decision-more:focus-visible,
+.dash-run:focus-visible {
+  border-radius: var(--radius-xl);
+}
+.dash-setup-step:focus-visible {
+  border-radius: var(--radius-lg);
+}
+
+/* --- narrow -------------------------------------------------------------- */
+
+@media (max-width: 719.98px) {
+  .dash-setup {
+    padding: var(--s-7);
+  }
+  .dash-decision {
+    padding: var(--s-6) var(--s-7) var(--s-6) calc(var(--s-7) + 3px);
+  }
+  .dash-run {
+    padding: var(--s-6) var(--s-7);
+  }
+  .dash-audit {
+    padding: var(--s-7);
+  }
+}
+
+/* --- reduced motion ------------------------------------------------------ */
+
+/* The bars arrive at their length rather than growing to it. */
+@media (prefers-reduced-motion: reduce) {
+  .dash-meter-fill,
+  .dash-tool-meter-fill,
+  .dash-setup-bar-fill {
+    animation: none;
+  }
+}

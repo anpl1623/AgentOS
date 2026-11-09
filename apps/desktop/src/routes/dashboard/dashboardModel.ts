@@ -3,19 +3,18 @@
  *
  * Every rule that chooses which rows appear, in what order, and what a tile
  * claims lives here as a pure function, so a test fails when one of them
- * changes. `Dashboard.tsx` only renders what these return.
+ * changes. The components in this folder only render what these return. What
+ * stands between an installation and its first run is in `readinessModel.ts`,
+ * and the overview's wording and arithmetic in `overviewModel.ts`.
  */
 
-import type { AgentSummary } from "../../bindings/AgentSummary";
 import type { ApprovalView } from "../../bindings/ApprovalView";
 import type { AuditHealth } from "../../bindings/AuditHealth";
 import type { ExecutionView } from "../../bindings/ExecutionView";
-import type { SettingsView } from "../../bindings/SettingsView";
 import type { TaskSummary } from "../../bindings/TaskSummary";
 import type { ToolUsageView } from "../../bindings/ToolUsageView";
 import { humanise } from "../../sdk/format";
 import { sortApprovals } from "../approvals/approvalsModel";
-import type { Route } from "../route";
 
 // ---------------------------------------------------------------------------
 // Time
@@ -218,6 +217,8 @@ export interface ToolRow {
   risk: string | null;
   calls: number;
   executed: number;
+  /** Calls that ran and failed: a part of `executed`, not beside it. */
+  failed: number;
   /** Refused by the policy, by a person, or by the run's approval budget. */
   refused: number;
   totalMs: number;
@@ -251,6 +252,7 @@ export function toolRows(usage: readonly ToolUsageView[]): ToolRow[] {
         risk: each.risk,
         calls: each.calls,
         executed: each.executed,
+        failed: each.failed,
         refused,
         totalMs: each.total_duration_ms,
         lastUsedAt: each.last_used_at,
@@ -277,134 +279,50 @@ export function refusedTotal(usage: readonly ToolUsageView[]): number {
 }
 
 // ---------------------------------------------------------------------------
-// Readiness
+// Tool meters
 // ---------------------------------------------------------------------------
 
-/**
- * Providers that run without a key, as `agentos-providers` defines them:
- * Ollama is local and the mock is built in. The settings view reports them as
- * unconfigured, which for these means nothing is missing.
- */
-const KEYLESS_PROVIDERS: ReadonlySet<string> = new Set(["ollama", "mock"]);
+/** One part of a tool's meter. */
+export interface MeterPart {
+  kind: "ran" | "failed" | "refused" | "other";
+  count: number;
+}
 
-/** One thing this installation still lacks, and where to fix it. */
-export interface ReadinessItem {
-  id: "provider" | "keychain" | "agent" | "browser";
-  /** What is missing, as a statement. */
-  problem: string;
-  /** What to do about it. */
-  remedy: string;
-  /** The screen where it is done. */
-  target: Route;
+/** A tool's meter: how long it is against the busiest tool, and what it is made of. */
+export interface ToolMeter {
+  /** Whole percent of the busiest tool's calls. */
+  width: number;
+  parts: MeterPart[];
 }
 
 /**
- * What stands between this installation and a first run: the desktop's
- * `agentos doctor`.
+ * A tool's bar: its length against the busiest tool in the list, split by how
+ * its calls ended.
  *
- * Empty until both settings and the agent list have loaded, so the block never
- * flashes a problem that the second answer would have withdrawn. Empty again
- * once nothing is missing, which is when the dashboard stops showing it.
- *
- * Like the doctor, a missing keychain or browser is a fact about the machine
- * rather than a fault, and is raised only where it stops something: the
- * keychain when there is a key to add and nowhere to keep it, the browser when
- * an enabled agent holds a browser tool or no agent exists yet to say
- * otherwise. Otherwise a headless machine configured from the environment, or
- * an installation with no use for a browser, would carry a warning it can
- * never clear.
+ * `failed` is a part of `executed`, so what ran cleanly is the difference.
+ * Anything left over after the calls that ran and were refused, such as a call
+ * with malformed arguments, is drawn as its own neutral part rather than
+ * folded into a hue it does not belong to. Empty parts are left out, and a
+ * tool with calls is never drawn narrower than a sliver.
  */
-export function readiness(
-  settings: SettingsView | null,
-  agents: readonly AgentSummary[] | null,
-): ReadinessItem[] {
-  if (settings === null || agents === null) return [];
-  const items: ReadinessItem[] = [];
-  const toSettings: Route = { name: "settings" };
-  const enabled = agents.filter((agent) => agent.status === "enabled");
-
-  const keyed = new Set(
-    settings.providers.filter((provider) => provider.configured).map((provider) => provider.id),
-  );
-  const known = new Set(settings.providers.map((provider) => provider.id));
-  // An agent on a provider this build does not list is left alone: the window
-  // cannot tell whether it needs a key, and saying it does would be a guess.
-  const unkeyed = enabled.filter(
-    (agent) =>
-      known.has(agent.provider) &&
-      !KEYLESS_PROVIDERS.has(agent.provider) &&
-      !keyed.has(agent.provider),
-  );
-  const needsKey = unkeyed.length > 0 || (enabled.length === 0 && keyed.size === 0);
-  if (unkeyed.length > 0) {
-    const providers = [...new Set(unkeyed.map((agent) => agent.provider))];
-    items.push({
-      id: "provider",
-      problem:
-        unkeyed.length === 1
-          ? `${unkeyed[0]!.name} uses ${unkeyed[0]!.provider}, which has no key.`
-          : `${unkeyed.length} agents use a provider with no key: ${providers.join(", ")}.`,
-      remedy: `Add ${providers.length === 1 ? `the ${providers[0]} key` : "their keys"} in Settings.`,
-      target: toSettings,
-    });
-  } else if (needsKey) {
-    items.push({
-      id: "provider",
-      problem: "No model provider has a key.",
-      remedy: "Add one in Settings, or give an agent Ollama, which runs locally without one.",
-      target: toSettings,
-    });
-  }
-
-  if (needsKey && !settings.keychain_available) {
-    items.push({
-      id: "keychain",
-      problem: settings.keychain_reason
-        ? `The system keychain is unavailable: ${firstLine(settings.keychain_reason)}`
-        : "The system keychain is unavailable.",
-      remedy:
-        "A key cannot be saved from this window. Set it in the environment before opening AgentOS; Settings names the variable.",
-      target: toSettings,
-    });
-  }
-
-  if (agents.length === 0) {
-    items.push({
-      id: "agent",
-      problem: "No agents yet.",
-      remedy: "Create one, and grant it only the tools it needs.",
-      target: { name: "agents" },
-    });
-  } else if (enabled.length === 0) {
-    items.push({
-      id: "agent",
-      problem: "Every agent is disabled.",
-      remedy: "Enable one before giving it work.",
-      target: { name: "agents" },
-    });
-  }
-
-  if (settings.browser_path === null) {
-    const browserTools = new Set(
-      settings.tools.filter((tool) => tool.domain === "browser").map((tool) => tool.name),
-    );
-    const holders = enabled.filter((agent) => agent.tools.some((tool) => browserTools.has(tool)));
-    if (holders.length > 0 || agents.length === 0) {
-      items.push({
-        id: "browser",
-        problem:
-          holders.length > 0
-            ? `No browser found, and ${holders.map((agent) => agent.name).join(", ")} ${holders.length === 1 ? "has" : "have"} browser tools.`
-            : "No browser found.",
-        remedy:
-          settings.browser_hint ??
-          "Install Chrome or Chromium; the browser tools fail until one is found.",
-        target: toSettings,
-      });
-    }
-  }
-
-  return items;
+export function toolMeter(row: ToolRow, busiest: number): ToolMeter {
+  if (!(busiest > 0) || !(row.calls > 0)) return { width: 0, parts: [] };
+  const failed = Math.min(Math.max(0, row.failed), Math.max(0, row.executed));
+  const ran = Math.max(0, row.executed - failed);
+  const refused = Math.max(0, row.refused);
+  const other = Math.max(0, row.calls - row.executed - refused);
+  const parts: MeterPart[] = (
+    [
+      { kind: "ran", count: ran },
+      { kind: "failed", count: failed },
+      { kind: "refused", count: refused },
+      { kind: "other", count: other },
+    ] as const
+  ).filter((part) => part.count > 0);
+  return {
+    width: Math.max(2, Math.min(100, Math.round((row.calls / busiest) * 100))),
+    parts,
+  };
 }
 
 // ---------------------------------------------------------------------------
