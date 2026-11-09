@@ -1,2 +1,1041 @@
 /* The settings screen: rules no other screen uses. Shared shapes belong in
- * layout.css, components.css or primitives.css, and colours in tokens.css. */
+ * layout.css, components.css or primitives.css, and colours in tokens.css.
+ *
+ * Every class here starts settings-, since every screen's sheet is loaded on
+ * every screen. */
+
+/* --- overview ------------------------------------------------------------ */
+
+/* Four tiles: one row where there is room, two by two where there is not,
+ * never three over one. */
+.grid.stats.settings-overview {
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  margin-bottom: var(--s-11);
+}
+
+/* --- page layout: the section navigation beside the sections ------------ */
+
+.settings-sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-11);
+  min-width: 0;
+}
+
+/* A jump lands a section's heading just below the top of the column; the
+ * spy in useSectionNav.ts reads this same margin to know where that is. */
+.settings-section {
+  min-width: 0;
+  scroll-margin-top: var(--s-4);
+}
+
+@media (min-width: 960px) {
+  .settings-layout {
+    display: grid;
+    grid-template-columns: 184px minmax(0, 1fr);
+    gap: var(--s-11);
+    align-items: start;
+  }
+}
+
+/* --- section navigation -------------------------------------------------- */
+
+.settings-nav {
+  position: sticky;
+  top: var(--s-8);
+  z-index: var(--z-sticky);
+}
+.settings-nav-title {
+  margin: 0 0 var(--s-4);
+  padding-left: var(--s-5);
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+/* The marker's containing block, and in the strip the element that scrolls. */
+.settings-nav-track {
+  position: relative;
+}
+.settings-nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+.settings-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s-5);
+  width: 100%;
+  min-height: 34px;
+  padding: 0 var(--s-5);
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--text-dim);
+  font-size: var(--fs-small);
+  text-align: left;
+  white-space: nowrap;
+}
+.settings-nav-item:hover:not(:disabled) {
+  background-color: var(--surface-raised);
+  border-color: transparent;
+  color: var(--text);
+}
+/* The current entry sits on the marker, not on a fill of its own, and does
+ * not sink when pressed: the marker would stay where it was. */
+.settings-nav-item[aria-current="location"],
+.settings-nav-item[aria-current="location"]:hover:not(:disabled) {
+  background-color: transparent;
+  color: var(--text-accent);
+  font-weight: var(--fw-medium);
+}
+.settings-nav-item:active:not(:disabled) {
+  transform: none;
+}
+.settings-nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* One pill behind the current entry, moved by transform to wherever it is
+ * now, with the gradient bar on its leading edge as in the sidebar. */
+.settings-nav-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--w);
+  height: var(--h);
+  transform: translate(var(--x), var(--y));
+  border-radius: var(--radius-lg);
+  background: var(--accent-wash);
+  box-shadow:
+    inset 0 0 0 1px var(--accent-line),
+    var(--highlight-inset);
+  pointer-events: none;
+}
+.settings-nav-marker::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 24%;
+  bottom: 24%;
+  width: 3px;
+  border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
+  background: var(--accent-gradient);
+  box-shadow: var(--accent-glow);
+}
+.settings-nav-marker[data-ready] {
+  transition:
+    transform var(--dur-3) var(--ease-spring),
+    width var(--dur-3) var(--ease-out),
+    height var(--dur-3) var(--ease-out);
+}
+
+/* Where there is no room for a column, the same list is a strip of chips
+ * pinned over the sections in glass, scrolling sideways, its ends fading so
+ * the cut-off chip reads as more to come. The fade is a mask, drawn in
+ * currentColor only for its opacity. */
+@media (max-width: 959.98px) {
+  .settings-nav {
+    top: var(--s-4);
+    margin-bottom: var(--s-9);
+    padding: var(--s-2);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-pill);
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+    backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+    box-shadow: var(--highlight-inset), var(--elev-2);
+  }
+  .settings-nav-title {
+    display: none;
+  }
+  .settings-nav-track {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(
+      90deg,
+      transparent,
+      currentColor var(--s-6),
+      currentColor calc(100% - var(--s-6)),
+      transparent
+    );
+    mask-image: linear-gradient(
+      90deg,
+      transparent,
+      currentColor var(--s-6),
+      currentColor calc(100% - var(--s-6)),
+      transparent
+    );
+  }
+  .settings-nav-track::-webkit-scrollbar {
+    display: none;
+  }
+  .settings-nav-list {
+    flex-direction: row;
+    width: max-content;
+    padding: 0 var(--s-6);
+  }
+  .settings-nav-item {
+    width: auto;
+    min-height: 32px;
+    padding: 0 var(--s-6);
+    border-radius: var(--radius-pill);
+  }
+  /* The strip scrolls, so a ring drawn outside a chip would be clipped. */
+  .settings-nav-item:focus-visible {
+    outline-offset: -2px;
+    box-shadow: none;
+  }
+  .settings-nav-marker {
+    border-radius: var(--radius-pill);
+  }
+  .settings-nav-marker::before {
+    content: none;
+  }
+  /* A jump lands a heading clear of the pinned strip. The main column's
+   * scroll padding stops at the top bar, so the margin is the strip's own
+   * height and a gap beneath it. */
+  .settings-section {
+    scroll-margin-top: calc(var(--s-11) + var(--s-6));
+  }
+}
+/* The same `top` serves the narrow layout. There the main column keeps the
+ * top bar's height as padding, and a sticky box sticks inside its scroller's
+ * padding, so it already stops below the top bar; adding the bar's height
+ * again would hide whatever heading a jump had just brought into view. */
+@media (min-width: 720px) and (max-width: 959.98px) {
+  /* With no top bar, the scroll padding the main column keeps for a pinned
+   * page header already clears the strip. */
+  .settings-section {
+    scroll-margin-top: var(--s-4);
+  }
+}
+
+/* --- section heads ------------------------------------------------------- */
+
+.settings-section-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-4) var(--s-5);
+  min-height: 32px;
+  margin-bottom: var(--s-3);
+}
+.settings-section-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-lg);
+  color: var(--text-accent);
+  background: var(--accent-wash);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+/* A section's title rather than the small-capitals eyebrow other screens
+ * use: on a page of nine sections and a navigation that names them, the
+ * heading is what the eye lands on after a jump. */
+.settings-section-head h2 {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: var(--fs-title);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-tight);
+  text-transform: none;
+  color: var(--text);
+}
+.settings-section-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+}
+.settings-section-intro {
+  max-width: 76ch;
+  margin: 0 0 var(--s-8);
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+
+/* --- shared pieces ------------------------------------------------------- */
+
+/* A button with an icon before its words. */
+.settings-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-3);
+  min-height: 32px;
+  white-space: nowrap;
+}
+/* Unavailable while its work runs, but still focusable, so focus stays where
+ * the person pressed it; drawn as base.css draws a disabled button, and
+ * deaf to the pointer so it neither lights nor presses. */
+.settings-button[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* A stack of panels, spaced by the stack rather than by each panel. */
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-7);
+}
+.settings-stack > .panel + .panel {
+  margin-top: 0;
+}
+
+/* Something that appears once asked for: a form, a result, an error. It
+ * rises in and leaves nothing behind (an entrance fills backwards). */
+.settings-enter {
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+
+.settings-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-3);
+}
+
+/* Inline validation, said where the field is. */
+.settings-invalid {
+  color: var(--warn-text);
+}
+
+/* The tile at the head of a row. */
+.settings-row-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-lg);
+  color: var(--text-dim);
+  background: var(--surface-raised);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+.settings-row-mark.tone-ok {
+  color: var(--ok-fg);
+  background: var(--ok-wash);
+  box-shadow: inset 0 0 0 1px var(--ok-line);
+}
+.settings-row-mark.tone-danger {
+  color: var(--danger-fg);
+  background: var(--danger-wash);
+  box-shadow: inset 0 0 0 1px var(--danger-line);
+}
+
+/* A row with its controls at the end of the first line and anything it
+ * reveals (a form, an error, a test result) beneath, lined up with the words
+ * rather than the mark. */
+.settings-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4) var(--s-6);
+}
+/* Room enough for a meta line before the controls give way: in a narrow
+ * window an account's three controls move under its words rather than
+ * squeezing its host and last use into a column a word wide. */
+.settings-item-head > .row-main {
+  flex-basis: 16rem;
+}
+.settings-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  margin-left: auto;
+}
+.settings-item-body {
+  margin-top: var(--s-6);
+  padding-left: calc(32px + var(--s-6));
+}
+/* An account whose calls all fail: the failure's bar on the leading edge, so
+ * the row is told apart without its colour. */
+.settings-item.broken {
+  box-shadow: inset 3px 0 0 var(--danger-fg);
+}
+.settings-test {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4);
+}
+
+.settings-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+}
+.settings-field-row > input {
+  flex: 1 1 16rem;
+  width: auto;
+}
+
+/* A form inside a panel sits on a raised tray under a hairline, so it reads
+ * as part of the card that opened it. */
+.settings-form {
+  padding: var(--s-8);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+.settings-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 0 var(--s-8);
+}
+.settings-form-note {
+  margin: 0 0 var(--s-7);
+}
+.settings-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4);
+}
+
+@media (max-width: 719.98px) {
+  .settings-item-body {
+    padding-left: 0;
+  }
+  .settings-item-actions {
+    margin-left: 0;
+  }
+}
+
+/* --- appearance ---------------------------------------------------------- */
+
+.settings-themes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+  gap: var(--s-6);
+}
+/* A card holding a radio button: the whole card is the target, and the
+ * chosen one takes the accent edge and glow. */
+.settings-theme {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  margin: 0;
+  padding: var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  background: var(--surface-panel);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+  color: var(--text);
+  font-size: var(--fs-body);
+  cursor: pointer;
+}
+.settings-theme.chosen,
+.settings-theme.chosen:hover {
+  border-color: var(--accent);
+  box-shadow:
+    var(--highlight-inset),
+    var(--elev-2),
+    0 0 0 1px var(--accent),
+    var(--accent-glow);
+}
+/* The radio itself is hidden, so the card draws its ring. */
+.settings-theme:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 6px var(--focus-glow);
+}
+
+.settings-theme-name {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: 0 var(--s-2);
+  font-weight: var(--fw-semibold);
+}
+.settings-theme-name > .icon {
+  color: var(--text-dim);
+}
+/* An empty ring until chosen, then the gradient with a check that pops in:
+ * the radio's state, drawn. */
+.settings-theme-check {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: auto;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-pill);
+  color: transparent;
+  transition:
+    border-color var(--dur-2) var(--ease-out),
+    color var(--dur-2) var(--ease-out);
+}
+.settings-theme.chosen .settings-theme-check {
+  border-color: transparent;
+  background: var(--accent-gradient);
+  color: var(--on-accent);
+}
+/* Only a choice made here pops; opening the screen on a choice made before
+ * is not a change. */
+.settings-themes[data-chose] .settings-theme.chosen .settings-theme-check {
+  animation: pop var(--dur-4) var(--ease-spring);
+}
+.settings-theme-note {
+  padding: 0 var(--s-2) var(--s-2);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+
+/* The window in miniature. Sized in container units so it is the same
+ * drawing at any card width. */
+.settings-preview {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  container-type: inline-size;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+.settings-mini {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  background: var(--surface-base);
+}
+/* The theme not on screen: the same drawing, turned over. */
+.settings-mini[data-inverted] {
+  filter: invert(1) hue-rotate(180deg);
+}
+/* The system's card shows both, split on the diagonal. */
+.settings-mini[data-half] {
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+.settings-mini-side {
+  display: flex;
+  flex-direction: column;
+  gap: 3cqw;
+  width: 26%;
+  padding: 5cqw 3.5cqw;
+  background: var(--surface-nav);
+  border-right: 1px solid var(--border-subtle);
+}
+.settings-mini-brand {
+  width: 6cqw;
+  height: 6cqw;
+  margin-bottom: 2cqw;
+  border-radius: var(--radius-sm);
+  background: var(--accent-gradient);
+}
+.settings-mini-nav {
+  width: 78%;
+  height: 3cqw;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+}
+.settings-mini-nav.current {
+  width: 100%;
+  height: 4cqw;
+  background: var(--accent-wash);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.settings-mini-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3.5cqw;
+  padding: 5cqw;
+  background: radial-gradient(70% 60% at 30% 0%, var(--aurora-1), transparent) var(--surface-base);
+}
+.settings-mini-title {
+  width: 42%;
+  height: 4cqw;
+  border-radius: var(--radius-sm);
+  background: var(--text-faint);
+}
+.settings-mini-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2.5cqw;
+  padding: 3.5cqw;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-panel);
+  box-shadow: var(--elev-1);
+}
+.settings-mini-card:last-child {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.settings-mini-line {
+  width: 86%;
+  height: 2.5cqw;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+}
+.settings-mini-line.short {
+  width: 48%;
+}
+.settings-mini-button {
+  width: 20%;
+  height: 5cqw;
+  border-radius: var(--radius-sm);
+  background: var(--accent-gradient);
+}
+
+/* --- integrations -------------------------------------------------------- */
+
+.settings-integration-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-5) var(--s-6);
+  padding: var(--s-7) var(--s-8) var(--s-6);
+}
+.settings-integration-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-lg);
+  color: var(--text-accent);
+  background: var(--accent-wash);
+  box-shadow:
+    inset 0 0 0 1px var(--accent-line),
+    var(--highlight-inset);
+}
+.settings-integration-title {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.settings-integration-title h3 {
+  margin: 0;
+  font-size: var(--fs-body);
+  color: var(--text);
+}
+.settings-integration-sub {
+  margin: var(--s-1) 0 0;
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.settings-integration-tools {
+  padding: 0 var(--s-8) var(--s-7);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.settings-integration-tools .field-note {
+  margin: 0 0 var(--s-4);
+}
+.settings-integration-note {
+  padding: var(--s-6) var(--s-8) 0;
+}
+
+/* --- network credentials ------------------------------------------------- */
+
+.settings-origin {
+  color: var(--text-dim);
+}
+.settings-origin-sep {
+  color: var(--text-faint);
+}
+.settings-account {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+/* --- paths: the browser and storage -------------------------------------- */
+
+/* Rows with no fill of their own, so the panel need not clip them; it must
+ * not, or the copy buttons' tooltips would be cut off at its edge. */
+.settings-paths {
+  margin: 0;
+  overflow: visible;
+}
+.settings-path {
+  display: grid;
+  grid-template-columns: minmax(10rem, 13rem) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--s-3) var(--s-8);
+  padding: var(--s-5) var(--s-6) var(--s-5) var(--s-8);
+}
+.settings-path + .settings-path {
+  border-top: 1px solid var(--border-subtle);
+}
+.settings-path dt {
+  display: flex;
+  align-items: center;
+  gap: var(--s-6);
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+.settings-path dd {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  min-width: 0;
+  margin: 0;
+}
+.settings-path-value {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+/* The copy buttons sit at the panel's trailing edge. A tooltip centred on one
+ * reaches past the main column, and even unseen it gives the column a
+ * sideways scroll. They open inwards from their own trailing edge instead, as
+ * the sidebar's buttons do. */
+.settings-path [data-tip]::after {
+  left: auto;
+  right: 0;
+  transform: translateY(-2px) scale(0.96);
+  transform-origin: top right;
+}
+.settings-path [data-tip]:is(:hover, :focus-visible)::after {
+  transform: none;
+}
+@media (max-width: 719.98px) {
+  .settings-path {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* --- scheduler ----------------------------------------------------------- */
+
+.settings-scheduler-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4) var(--s-6);
+  padding: var(--s-7) var(--s-8);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.settings-scheduler-head .switch-label {
+  font-weight: var(--fw-semibold);
+}
+.settings-scheduler-summary {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+
+/* The counts as small tiles, the ones that need a look edged in the
+ * attention hue as well as chipped in it. */
+.settings-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(128px, 100%), 1fr));
+  gap: var(--s-4);
+  margin: 0;
+  padding: var(--s-7) var(--s-8) 0;
+}
+.settings-fact {
+  min-width: 0;
+  padding: var(--s-5) var(--s-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  box-shadow: var(--highlight-inset);
+}
+.settings-fact.attention {
+  border-color: var(--warn-line);
+  background: var(--warn-wash);
+}
+/* Dim rather than faint on the wash, as the contrast tables require. */
+.settings-fact.attention dt {
+  color: var(--text-dim);
+}
+.settings-fact-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  color: var(--warn-text);
+}
+.settings-fact-flag > .icon {
+  color: var(--warn-fg);
+}
+.settings-fact dt {
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.settings-fact dd {
+  margin: var(--s-3) 0 0;
+  font-size: var(--fs-title);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--tracking-tight);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.settings-scheduler-pacing {
+  padding: var(--s-8) var(--s-8) 0;
+}
+.settings-scheduler-pacing .settings-form-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--s-10);
+}
+.settings-scheduler-pacing input {
+  width: 9rem;
+}
+.settings-scheduler-pacing .settings-form-actions {
+  margin-bottom: var(--s-7);
+}
+.settings-notes {
+  display: grid;
+  gap: var(--s-4);
+  margin: 0;
+  padding: var(--s-6) var(--s-8) var(--s-7);
+  list-style: none;
+  border-top: 1px solid var(--border-subtle);
+}
+.settings-notes li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-4);
+  font-size: var(--fs-small);
+  color: var(--text-faint);
+}
+.settings-notes .icon {
+  margin-top: var(--s-1);
+}
+
+/* --- audit log ----------------------------------------------------------- */
+
+.settings-audit-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-6) var(--s-7);
+  padding: var(--s-8);
+}
+/* The seal takes the result's hue, and pops once when a result lands. */
+.settings-audit-seal {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-xl);
+  color: var(--text-accent);
+  background: var(--accent-wash);
+  box-shadow:
+    inset 0 0 0 1px var(--accent-line),
+    var(--highlight-inset);
+  transition:
+    color var(--dur-3) var(--ease-out),
+    background-color var(--dur-3) var(--ease-out),
+    box-shadow var(--dur-3) var(--ease-out);
+}
+.settings-audit-seal[data-state="verifying"] {
+  color: var(--info-fg);
+  background: var(--info-wash);
+  box-shadow: inset 0 0 0 1px var(--info-line);
+}
+.settings-audit-seal[data-state="ok"] {
+  color: var(--ok-fg);
+  background: var(--ok-wash);
+  box-shadow:
+    inset 0 0 0 1px var(--ok-line),
+    var(--highlight-inset);
+}
+.settings-audit-seal[data-state="warn"] {
+  color: var(--warn-fg);
+  background: var(--warn-wash);
+  box-shadow:
+    inset 0 0 0 1px var(--warn-line),
+    var(--warn-glow);
+}
+.settings-audit-seal[data-state="danger"] {
+  color: var(--danger-fg);
+  background: var(--danger-wash);
+  box-shadow:
+    inset 0 0 0 1px var(--danger-line),
+    var(--danger-glow);
+}
+/* Fresh: the result landed while the screen was open. One remembered from an
+ * earlier visit is drawn without the pop and the fill growing. */
+.settings-audit-seal[data-fresh]:is([data-state="ok"], [data-state="warn"], [data-state="danger"]) {
+  animation: pop var(--dur-4) var(--ease-spring);
+}
+.settings-audit-status {
+  flex: 1 1 14rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+.settings-audit-word {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-4);
+  font-size: var(--fs-title);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-tight);
+  color: var(--text);
+}
+.settings-audit-word[data-state="verifying"] {
+  color: var(--info-text);
+}
+.settings-audit-word[data-state="ok"] {
+  color: var(--ok-text);
+}
+.settings-audit-word[data-state="warn"] {
+  color: var(--warn-text);
+}
+.settings-audit-word[data-state="danger"] {
+  color: var(--danger-text);
+}
+.settings-audit-line {
+  font-size: var(--fs-small);
+}
+
+/* A hairline track under the head. While the check runs a fill sweeps
+ * across it again and again with a band of light on it; when the answer
+ * lands, the fill grows across once in the answer's hue and stays. */
+.settings-audit-track {
+  position: relative;
+  height: 3px;
+  overflow: hidden;
+  background: var(--border-subtle);
+}
+.settings-audit-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+}
+.settings-audit-fill[data-fresh] {
+  animation: grow-x var(--dur-4) var(--ease-out) backwards;
+}
+.settings-audit-fill[data-state="verifying"] {
+  background: var(--accent-gradient);
+  animation: grow-x calc(var(--dur-4) * 3) var(--ease-in-out) infinite;
+}
+.settings-audit-fill[data-state="ok"] {
+  background: var(--ok-fg);
+}
+.settings-audit-fill[data-state="warn"] {
+  background: var(--warn-fg);
+}
+.settings-audit-fill[data-state="danger"] {
+  background: var(--danger-fg);
+}
+.settings-audit .panel-body {
+  padding-top: var(--s-7);
+}
+.settings-audit-explainer {
+  margin: 0;
+  max-width: 80ch;
+}
+.settings-findings {
+  margin-top: var(--s-8);
+}
+.settings-findings .field-note {
+  margin: 0 0 var(--s-4);
+}
+.settings-finding {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  overflow-wrap: anywhere;
+}
+
+/* --- tools --------------------------------------------------------------- */
+
+.settings-toolbar {
+  gap: var(--s-4) var(--s-6);
+}
+.settings-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 16rem;
+}
+.settings-search > .icon {
+  position: absolute;
+  left: var(--s-5);
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.settings-search > input {
+  padding-left: calc(var(--s-5) + 16px + var(--s-4));
+}
+.settings-tool-count {
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.settings-domain-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: var(--s-5) var(--s-8);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+.settings-domain-head h3 {
+  margin: 0;
+  color: var(--text);
+}
+.settings-domain-head .faint {
+  font-size: var(--fs-meta);
+}
+.settings-tool {
+  align-items: flex-start;
+}
+/* What the tool needs and who holds it, on one line beneath its description. */
+.settings-tool-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3) var(--s-6);
+  margin-top: var(--s-3);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.settings-tool-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+}
+.settings-holders {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+/* --- coarse pointers and reduced motion ---------------------------------- */
+
+@media (pointer: coarse) {
+  .settings-nav-item {
+    min-height: 40px;
+  }
+  .settings-button {
+    min-height: 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-enter,
+  .settings-themes[data-chose] .settings-theme.chosen .settings-theme-check,
+  .settings-audit-seal[data-fresh][data-state],
+  .settings-audit-fill[data-fresh][data-state],
+  .settings-audit-fill[data-state] {
+    animation: none;
+  }
+}
