@@ -36,7 +36,7 @@ to it, the type you are adding probably belongs somewhere else.
 
 ## Adding a tool
 
-Adding a capability means writing a [`Tool`](crates/agentos-tools/src/tool.rs). It should not mean
+Adding a capability means writing a [`Tool`](crates/agentos-tools/src/tool/mod.rs). It should not mean
 touching the agent loop; if it does, please say so in the pull request, because that is a design
 smell worth discussing.
 
