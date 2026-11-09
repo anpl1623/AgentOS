@@ -15,9 +15,17 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
-use super::{capability, resolve};
+use super::{capability, resolve, same_file};
 use crate::error::ToolError;
 use crate::tool::{Tool, ToolContext, ToolOutput, ToolPlan, metadata_for, parse_arguments};
+
+/// The most of one file `filesystem.read` will hold in memory.
+///
+/// Well above what a model is ever shown of a file, so a ranged read of a long
+/// log still works, and low enough that one call cannot take the process's
+/// memory with it. A larger file is refused rather than cut, because a ranged
+/// read reports the file's line count and a cut file would report a wrong one.
+pub const MAX_READ_FILE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Arguments for `filesystem.read`.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -111,9 +119,7 @@ impl Tool for ReadFile {
         let args: ReadArgs = parse_arguments(&self.0.name, &arguments)?;
         let path = resolve(context, &args.path)?;
 
-        let body = tokio::fs::read_to_string(&path)
-            .await
-            .map_err(|source| ToolError::io(format!("reading {}", path.display()), source))?;
+        let body = read_regular(&path, MAX_READ_FILE_BYTES).await?;
 
         let source = DataSource::File {
             path: path.display().to_string(),
@@ -141,6 +147,66 @@ impl Tool for ReadFile {
             })),
         )
     }
+}
+
+/// Read the regular file at `path` as UTF-8 text, refusing anything else.
+///
+/// A FIFO would hold the read until something wrote to it, and a device such
+/// as `/dev/zero` would never end it, so only a regular file is read. Its type
+/// is checked before it is opened, because opening a FIFO for reading blocks by
+/// itself; the handle is then checked to be the file that was examined, so a
+/// path swapped in between is not read. The cap is enforced on the read rather
+/// than on the size seen beforehand, so a file that grows meanwhile cannot get
+/// past it.
+async fn read_regular(path: &std::path::Path, cap: u64) -> Result<String, ToolError> {
+    use tokio::io::AsyncReadExt;
+
+    let reading = || format!("reading {}", path.display());
+    let admitted = tokio::fs::metadata(path)
+        .await
+        .map_err(|source| ToolError::io(reading(), source))?;
+    if !admitted.is_file() {
+        return Err(ToolError::Failed(format!(
+            "{} is not a regular file, so it cannot be read as text",
+            path.display()
+        )));
+    }
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|source| ToolError::io(reading(), source))?;
+    let opened = file
+        .metadata()
+        .await
+        .map_err(|source| ToolError::io(reading(), source))?;
+    if !same_file(&admitted, &opened) {
+        return Err(ToolError::Failed(format!(
+            "{} was replaced while it was being opened, so it was not read",
+            path.display()
+        )));
+    }
+
+    let mut body = Vec::new();
+    file.take(cap.saturating_add(1))
+        .read_to_end(&mut body)
+        .await
+        .map_err(|source| ToolError::io(reading(), source))?;
+    if body.len() as u64 > cap {
+        return Err(ToolError::Failed(format!(
+            "{} is larger than {} bytes, the most `filesystem.read` will load; \
+             use `filesystem.search` to find the part you need",
+            path.display(),
+            cap
+        )));
+    }
+    String::from_utf8(body).map_err(|_| {
+        ToolError::io(
+            reading(),
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            ),
+        )
+    })
 }
 
 /// Some of a file's lines, by 1-based position.
@@ -321,6 +387,72 @@ mod tests {
         let whole = read(serde_json::json!({"path": "five.txt"})).await.unwrap();
         assert_eq!(whole.content.body, "one\ntwo\nthree\nfour\nfive\n");
         assert!(whole.structured.unwrap().get("total_lines").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_file_over_the_cap_is_refused_not_cut() {
+        let tree = Tree::new();
+        let path = tree.root.join("big.txt");
+        std::fs::write(&path, "0123456789").unwrap();
+
+        assert_eq!(read_regular(&path, 10).await.unwrap(), "0123456789");
+        let error = read_regular(&path, 9).await.unwrap_err();
+        assert!(error.to_string().contains("larger than 9 bytes"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_directory_is_not_read_as_a_file() {
+        let tree = Tree::new();
+        let error = read_regular(&tree.root.join("src"), MAX_READ_FILE_BYTES)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_device_is_refused_before_it_is_opened() {
+        // `/dev/zero` never ends: reading it whole would grow until the call
+        // timed out. It must be turned away without a byte being read.
+        let error = read_regular(std::path::Path::new("/dev/zero"), MAX_READ_FILE_BYTES)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_fifo_is_refused_without_blocking() {
+        let tree = Tree::new();
+        let fifo = tree.root.join("pipe");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if !made.is_ok_and(|status| status.success()) {
+            // No `mkfifo` on this machine; the device case covers the check.
+            return;
+        }
+        // Opening a FIFO for reading blocks until a writer appears, so a
+        // regression shows up as this timeout. The blocked open would then
+        // hold the test's runtime open forever, so a writer is attached to
+        // release it and the failure is reported rather than hung on.
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_regular(&fifo, MAX_READ_FILE_BYTES),
+        )
+        .await;
+        if read.is_err() {
+            let _released = std::fs::OpenOptions::new().write(true).open(&fifo);
+        }
+        let error = read.expect("reading a FIFO must not block").unwrap_err();
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn text_that_is_not_utf8_is_still_an_io_failure() {
+        let tree = Tree::new();
+        let path = tree.root.join("binary.bin");
+        std::fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        let error = read_regular(&path, MAX_READ_FILE_BYTES).await.unwrap_err();
+        assert!(matches!(error, ToolError::Io { .. }), "{error}");
     }
 
     #[test]

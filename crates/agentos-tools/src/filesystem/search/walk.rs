@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{MAX_MATCH_LINE_CHARS, MAX_SEARCHED_FILE_BYTES};
 use crate::error::ToolError;
-use crate::filesystem::capability;
+use crate::filesystem::{capability, same_file};
 use crate::tool::PolicyProbe;
 
 /// One search, configured.
@@ -323,25 +323,6 @@ async fn read_admitted(path: &Path, admitted: &std::fs::Metadata) -> std::io::Re
     } else {
         Read::TooLarge
     })
-}
-
-/// Whether an opened handle is the file that was admitted.
-#[cfg(unix)]
-fn same_file(admitted: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    admitted.dev() == opened.dev() && admitted.ino() == opened.ino()
-}
-
-/// Whether an opened handle is the file that was admitted.
-///
-/// Without a stable file identity, the best available: a different file with
-/// the same size and the same creation and modification times is unlikely,
-/// not impossible.
-#[cfg(not(unix))]
-fn same_file(admitted: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
-    admitted.len() == opened.len()
-        && admitted.modified().ok() == opened.modified().ok()
-        && admitted.created().ok() == opened.created().ok()
 }
 
 /// `text` cut to `max` characters, marked when cut.

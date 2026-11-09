@@ -29,7 +29,7 @@ use agentos_permissions::path::{expand_home, resolve_secure};
 use crate::error::ToolError;
 use crate::tool::{Tool, ToolContext};
 
-pub use read::{ListArgs, ListDirectory, ReadArgs, ReadFile};
+pub use read::{ListArgs, ListDirectory, MAX_READ_FILE_BYTES, ReadArgs, ReadFile};
 pub use search::{
     MAX_SEARCH_DEPTH, MAX_SEARCH_RESULTS, MAX_SEARCHED_FILE_BYTES, SearchArgs, SearchFiles,
 };
@@ -75,4 +75,23 @@ pub fn all() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(CopyFile::new()),
         std::sync::Arc::new(MoveFile::new()),
     ]
+}
+
+/// Whether an opened handle is the file that was admitted.
+#[cfg(unix)]
+fn same_file(admitted: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    admitted.dev() == opened.dev() && admitted.ino() == opened.ino()
+}
+
+/// Whether an opened handle is the file that was admitted.
+///
+/// Without a stable file identity, the best available: a different file with
+/// the same size and the same creation and modification times is unlikely,
+/// not impossible.
+#[cfg(not(unix))]
+fn same_file(admitted: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
+    admitted.len() == opened.len()
+        && admitted.modified().ok() == opened.modified().ok()
+        && admitted.created().ok() == opened.created().ok()
 }
