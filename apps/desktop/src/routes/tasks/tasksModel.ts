@@ -69,6 +69,82 @@ export function distinctOptions(values: readonly string[], selected: string): st
   return [...options].sort();
 }
 
+/** One choice on the status filter: a status, and how many loaded tasks have it. */
+export interface StatusChoice {
+  status: string;
+  count: number;
+}
+
+/**
+ * The status filter's choices, with counts, in the order `distinctOptions`
+ * gives them.
+ *
+ * The counts are of the loaded page, the same page the list filters, so a
+ * choice never promises more rows than pressing it will show. A chosen status
+ * the page no longer holds stays offered with a count of zero, for the same
+ * reason `distinctOptions` keeps it.
+ */
+export function statusChoices(tasks: readonly TaskSummary[], selected: string): StatusChoice[] {
+  const counts = new Map<string, number>();
+  for (const task of tasks) counts.set(task.status, (counts.get(task.status) ?? 0) + 1);
+  return distinctOptions([...counts.keys()], selected).map((status) => ({
+    status,
+    count: counts.get(status) ?? 0,
+  }));
+}
+
+/**
+ * The filter after a status choice is pressed: that status, or no status when
+ * the pressed one was already chosen, so a second press undoes the first.
+ */
+export function toggleStatus(filter: TaskFilter, status: string): TaskFilter {
+  return { ...filter, status: filter.status === status ? "" : status };
+}
+
+/** A task status as a filter's words: `succeeded` as `Succeeded`. */
+export function statusLabel(status: string): string {
+  const words = status.replace(/_/g, " ").trim();
+  return words === "" ? "No status" : words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** How many loaded tasks are running now. */
+export function runningCount(tasks: readonly TaskSummary[]): number {
+  return tasks.filter((task) => task.status === "running").length;
+}
+
+/** The mark at the head of a row: a live dot, or an icon in a tone. */
+export interface RowMark {
+  /** `null` draws a live dot instead of an icon. */
+  icon: "check" | "x" | "stop" | "clock" | "play" | "alert" | "info" | null;
+  tone: "info" | "ok" | "danger" | "neutral" | "warn";
+}
+
+/**
+ * The mark for a task's status.
+ *
+ * A running task gets the live dot, and only a running task: it is the one
+ * thing in the list that is moving. Every other status has its own shape, so
+ * the mark never relies on its tone; the status chip beside it says the same
+ * in words.
+ */
+export function taskMark(status: string): RowMark {
+  switch (status) {
+    case "running":
+      return { icon: null, tone: "info" };
+    case "succeeded":
+      return { icon: "check", tone: "ok" };
+    case "failed":
+      return { icon: "x", tone: "danger" };
+    case "cancelled":
+      return { icon: "stop", tone: "neutral" };
+    case "pending":
+    case "blocked":
+      return { icon: "clock", tone: "neutral" };
+    default:
+      return { icon: "info", tone: "neutral" };
+  }
+}
+
 /** `{shown} of {total}` while filtering, nothing otherwise. */
 export function countNote(shown: number, total: number, filtering: boolean): string | null {
   return filtering ? `${shown} of ${total}` : null;
@@ -145,6 +221,21 @@ export interface QueueRow {
   heldUntil: string | null;
   /** For an unreachable task, the failed dependency's objective, or its id. */
   culprit: string | null;
+}
+
+/**
+ * The mark for a queued task: ready to start, waiting, or never to start. The
+ * last is the loud one — work that will not happen unless someone acts.
+ */
+export function queueMark(state: QueueState): RowMark {
+  switch (state) {
+    case "ready":
+      return { icon: "play", tone: "info" };
+    case "unreachable":
+      return { icon: "alert", tone: "danger" };
+    case "waiting":
+      return { icon: "clock", tone: "neutral" };
+  }
 }
 
 /** Whether a node is queued work: never run and not yet given up on. */

@@ -15,9 +15,15 @@ import {
   filterTasks,
   heldUntil,
   isFiltering,
+  queueMark,
   queueRows,
+  runningCount,
   schedulerNote,
   showsStatusWithoutRun,
+  statusChoices,
+  statusLabel,
+  taskMark,
+  toggleStatus,
   truncate,
 } from "./tasksModel";
 
@@ -131,6 +137,66 @@ describe("toolbar options and counts", () => {
   it("does not call a filtered-out list an empty history", () => {
     expect(emptyListMessage(true)).not.toMatch(/Nothing has been run/);
     expect(emptyListMessage(false)).toMatch(/Nothing has been run/);
+  });
+});
+
+describe("the status filter", () => {
+  const tasks = [
+    task("a", { status: "failed" }),
+    task("b", { status: "succeeded" }),
+    task("c", { status: "running" }),
+    task("d", { status: "succeeded" }),
+  ];
+
+  it("offers each loaded status with how many tasks have it", () => {
+    expect(statusChoices(tasks, "")).toEqual([
+      { status: "failed", count: 1 },
+      { status: "running", count: 1 },
+      { status: "succeeded", count: 2 },
+    ]);
+  });
+
+  it("keeps a chosen status the page no longer holds, at zero", () => {
+    expect(statusChoices(tasks, "cancelled")).toContainEqual({ status: "cancelled", count: 0 });
+  });
+
+  it("undoes a choice when it is pressed again", () => {
+    const failed = toggleStatus(NO_FILTER, "failed");
+    expect(failed.status).toBe("failed");
+    expect(toggleStatus(failed, "failed").status).toBe("");
+    expect(toggleStatus(failed, "running").status).toBe("running");
+    expect(toggleStatus({ ...failed, text: "x" }, "failed")).toEqual({ ...NO_FILTER, text: "x" });
+  });
+
+  it("names each status in sentence case", () => {
+    expect(statusLabel("succeeded")).toBe("Succeeded");
+    expect(statusLabel("waiting_for_approval")).toBe("Waiting for approval");
+    expect(statusLabel("")).toBe("No status");
+  });
+
+  it("counts what is running now", () => {
+    expect(runningCount(tasks)).toBe(1);
+    expect(runningCount([])).toBe(0);
+  });
+});
+
+describe("row marks", () => {
+  it("gives the live dot to running work only", () => {
+    expect(taskMark("running").icon).toBeNull();
+    const others = ["succeeded", "failed", "cancelled", "pending", "blocked", "unknown"];
+    expect(others.every((status) => taskMark(status).icon !== null)).toBe(true);
+  });
+
+  it("draws each ending in its own shape", () => {
+    expect(taskMark("succeeded")).toEqual({ icon: "check", tone: "ok" });
+    expect(taskMark("failed")).toEqual({ icon: "x", tone: "danger" });
+    expect(taskMark("cancelled")).toEqual({ icon: "stop", tone: "neutral" });
+  });
+
+  it("makes queued work that will never start the loud one", () => {
+    expect(queueMark("unreachable")).toEqual({ icon: "alert", tone: "danger" });
+    expect(queueMark("ready").tone).toBe("info");
+    expect(queueMark("waiting").tone).toBe("neutral");
   });
 });
 

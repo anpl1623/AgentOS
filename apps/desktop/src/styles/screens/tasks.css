@@ -1,2 +1,1230 @@
 /* The tasks screen: rules no other screen uses. Shared shapes belong in
- * layout.css, components.css or primitives.css, and colours in tokens.css. */
+ * layout.css, components.css or primitives.css, and colours in tokens.css.
+ *
+ * Two views behind one route: the list (.tasks-view), where work is given and
+ * found, and one run (.run-view), read as evidence. Light and glow are spent
+ * where the product needs a person: a run waiting on a decision, a failure,
+ * the Stop control, work that will never start. Everything else is calm. */
+
+/* --- shared -------------------------------------------------------------- */
+
+/* A button that leads with an icon, a dot or a mark lays them out in a row.
+ * Rows, which are buttons for their keyboard handling, keep their own layout. */
+:where(.tasks-view, .run-view) button:not(.row):has(> .icon, > .live-dot, > .run-stop-mark) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-3);
+}
+
+/* A section's eyebrow, with a count beside it and, at the far end, a control. */
+.tasks-section-head,
+.run-section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  min-height: 32px;
+  margin: 0 0 var(--s-5);
+}
+.tasks-section-head h2,
+.run-section-head h2 {
+  margin: 0;
+}
+.tasks-count,
+.run-count {
+  min-width: 20px;
+  padding: 0 var(--s-3);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold);
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+}
+
+/* The mark at the head of a row: a live dot for running work, otherwise an
+ * icon whose shape says the status, on a small disc in its hue. */
+.tasks-mark,
+.run-row-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+}
+:is(.tasks-mark, .run-row-mark).tone-ok {
+  color: var(--ok-fg);
+  background: var(--ok-wash);
+  border-color: var(--ok-line);
+}
+:is(.tasks-mark, .run-row-mark).tone-danger {
+  color: var(--danger-fg);
+  background: var(--danger-wash);
+  border-color: var(--danger-line);
+}
+:is(.tasks-mark, .run-row-mark):is(.tone-info, .tone-live) {
+  color: var(--info-fg);
+  background: var(--info-wash);
+  border-color: var(--info-line);
+}
+:is(.tasks-mark, .run-row-mark).tone-warn {
+  color: var(--warn-fg);
+  background: var(--warn-wash);
+  border-color: var(--warn-line);
+}
+.run-row-mark.tone-blocked {
+  color: var(--blocked-fg);
+  background: var(--blocked-wash);
+  border-color: var(--blocked-line);
+}
+
+/* A row that opens something says so at its trailing edge, and the chevron
+ * leans towards where it goes under the pointer. */
+.tasks-row-go,
+.run-row-go {
+  color: var(--text-faint);
+  transition:
+    transform var(--dur-2) var(--ease-spring),
+    color var(--dur-2) var(--ease-out);
+}
+button.row:hover .tasks-row-go,
+button.row:hover .run-row-go {
+  transform: translateX(2px);
+  color: var(--text-dim);
+}
+
+/* A section with nothing in it that is fine to be empty — an empty queue, a
+ * run that wrote no records — says so in one compact line rather than a whole
+ * panel, so it does not outweigh the sections that have something to say. */
+.tasks-empty-compact .empty-state {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--s-3) var(--s-6);
+  padding: var(--s-7) var(--s-8);
+}
+.tasks-empty-compact .empty-state-mark {
+  width: 32px;
+  height: 32px;
+  margin: 0;
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.tasks-empty-compact .empty-state-title {
+  font-weight: var(--fw-medium);
+  color: var(--text-dim);
+}
+.tasks-empty-compact .empty-state-action {
+  margin: 0;
+}
+
+/* --- the list ------------------------------------------------------------ */
+
+.tasks-section {
+  margin-top: var(--s-10);
+}
+
+/* Running work in the header: a live count that narrows the list to it. It
+ * is a toggle, so pressed it takes the chosen look every pressed button has;
+ * restated here because the ghost style, which loads after that rule, would
+ * otherwise draw a pressed toggle exactly like a resting one. */
+.tasks-running {
+  font-variant-numeric: tabular-nums;
+}
+button.ghost.tasks-running[aria-pressed="true"],
+button.ghost.tasks-running[aria-pressed="true"]:hover:not(:disabled) {
+  color: var(--text-accent);
+  background-color: var(--accent-wash);
+  border-color: var(--accent-line);
+}
+
+/* The composer is the screen's reason for being: a raised card with a faint
+ * accent light in its corner, which brightens to the accent ring and glow
+ * while the person is writing in it. */
+.composer {
+  padding: var(--s-8) var(--s-9) var(--s-9);
+  border-color: var(--border-strong);
+  background-image: radial-gradient(
+    120% 160% at 0% 0%,
+    var(--accent-wash),
+    transparent 46%
+  );
+  transition:
+    border-color var(--dur-3) var(--ease-out),
+    box-shadow var(--dur-3) var(--ease-out);
+}
+.composer:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: var(--highlight-inset), var(--elev-2), var(--accent-glow);
+}
+.composer-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-5);
+  margin-bottom: var(--s-7);
+}
+.composer-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-lg);
+  color: var(--on-accent);
+  background-image: var(--accent-gradient);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+}
+.composer .composer-title {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text);
+}
+.composer-label {
+  display: block;
+  margin-bottom: var(--s-3);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  color: var(--text-dim);
+}
+
+/* The objective: a paragraph-sized well, set larger than the page's text so
+ * the thing being asked for is the thing that reads first. It grows with what
+ * is written where the engine can size a field to its content. */
+.composer-objective {
+  display: block;
+  min-height: 6.4em;
+  max-height: 40vh;
+  padding: var(--s-6) var(--s-7);
+  font-family: var(--font-sans);
+  font-size: var(--fs-title);
+  line-height: var(--lh-code);
+  border-radius: var(--radius-lg);
+  resize: vertical;
+  field-sizing: content;
+}
+.composer-hint {
+  margin: var(--s-3) 0 0;
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+
+.composer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4) var(--s-5);
+  margin-top: var(--s-7);
+}
+.composer-agent {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.composer-agent label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.composer-agent select {
+  width: auto;
+  min-width: 12rem;
+  max-width: 100%;
+}
+.composer-waits.active {
+  color: var(--text-accent);
+  background-color: var(--accent-wash);
+}
+.composer-waits-chevron {
+  transition: transform var(--dur-2) var(--ease-out);
+}
+.composer-waits[aria-expanded="true"] .composer-waits-chevron {
+  transform: rotate(180deg);
+}
+.composer-actions {
+  display: flex;
+  gap: var(--s-4);
+}
+.composer-actions > button {
+  min-width: 6.5rem;
+}
+/* The key cap rides on the gradient: drawn as an outline in the button's own
+ * ink, so it reads as part of the control it belongs to. */
+.composer-actions button.primary .kbd {
+  margin-left: var(--s-2);
+  color: inherit;
+  background: transparent;
+  border-color: currentColor;
+  box-shadow: none;
+}
+
+/* The tasks to wait for: a set of checkable cards under the bar. */
+.wait-picker {
+  margin: var(--s-7) 0 0;
+  padding: 0;
+  border: none;
+  min-width: 0;
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+.wait-picker legend {
+  margin-bottom: var(--s-4);
+  padding: 0;
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  color: var(--text-dim);
+}
+.wait-picker .check-name {
+  font-family: inherit;
+  font-size: var(--fs-small);
+}
+
+.composer-note,
+.composer-queued {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  margin: var(--s-7) 0 0;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+.composer-note > .icon {
+  margin-top: var(--s-1);
+  color: var(--warn-fg);
+}
+.composer-queued {
+  color: var(--ok-text);
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+/* A link-like button inside a sentence keeps the sentence's line height, but
+ * not at the cost of its target: the padding that makes it 32px tall is
+ * taken back by a margin, so the line does not grow. */
+.composer-note button.ghost,
+.tasks-scheduler-note button.ghost {
+  padding: var(--s-3) var(--s-2);
+  margin-block: calc(var(--s-3) * -1);
+  color: var(--text);
+}
+
+/* The scheduler's note above the queue, with its icon on the leading edge. */
+.tasks-scheduler-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-4);
+}
+.tasks-scheduler-note > .icon {
+  margin-top: var(--s-1);
+  color: var(--warn-fg);
+}
+
+/* The toolbar: a search field with its glass, the agent, and the status as
+ * a row of pills that each say how many tasks they hold. */
+.tasks-toolbar {
+  gap: var(--s-4);
+}
+.tasks-search {
+  position: relative;
+  flex: 1 1 14rem;
+  min-width: min(14rem, 100%);
+}
+.tasks-search > .icon {
+  position: absolute;
+  left: var(--s-5);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.tasks-search > input {
+  padding-left: calc(var(--s-5) + 16px + var(--s-4));
+}
+.tasks-toolbar > select {
+  width: auto;
+}
+/* The shared segmented control, which draws the track, the keys and the
+ * chosen key; here it may wrap, since the statuses are as many as the data. */
+.tasks-status-filter {
+  flex-wrap: wrap;
+}
+.tasks-status-filter > button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+.tasks-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--text-faint);
+}
+.tasks-status-dot.tone-ok {
+  background: var(--ok-fg);
+}
+.tasks-status-dot.tone-danger {
+  background: var(--danger-fg);
+}
+.tasks-status-dot.tone-info {
+  background: var(--info-fg);
+}
+.tasks-status-dot.tone-warn {
+  background: var(--warn-fg);
+}
+.tasks-status-count {
+  font-size: var(--fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.tasks-count-note {
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A row of the list. Running work carries a bar in the in-flight hue on its
+ * leading edge beside its live dot; work that will never start carries one in
+ * the failure hue, since it waits on a person to notice. */
+.tasks-row .row-title {
+  font-weight: var(--fw-medium);
+}
+.tasks-row.status-info {
+  box-shadow: inset 2px 0 0 var(--info-fg);
+}
+.tasks-row.queue-unreachable {
+  box-shadow: inset 3px 0 0 var(--danger-fg);
+}
+.tasks-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.tasks-waits .tag {
+  font-family: var(--font-sans);
+}
+.tasks-culprit {
+  color: var(--danger-text);
+}
+.tasks-wait-editor {
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-recessed);
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+
+/* --- the run: header and figures ------------------------------------------ */
+
+/* The title is the objective, often a sentence long. It takes the room the
+ * actions leave rather than all of it, so Copy and Stop stay at the row's end
+ * beside it instead of dropping beneath a long title. */
+.run-view .page-head > .page-title {
+  flex: 1 1 26rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The eyebrow names the run and carries its live dot. The id is an id, so it
+ * keeps its case and its spacing when the eyebrow's capitals do not. */
+.run-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+}
+.run-eyebrow-id {
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text-dim);
+}
+.run-eyebrow .copy-button {
+  margin: calc(var(--s-4) * -1) 0;
+}
+
+/* Stop. A safety control, drawn to be found without searching: the danger
+ * hue at rest, not only on hover, a filled stop mark, and its glow, which
+ * only this control and a failure on this screen carry. It acts on the first
+ * press, so it is also the one control that does not hide behind a dialog. */
+button.run-stop {
+  padding: var(--s-3) var(--s-7) var(--s-3) var(--s-5);
+  font-weight: var(--fw-semibold);
+  color: var(--danger-text);
+  background-color: var(--danger-wash);
+  border-color: var(--danger-fg);
+  box-shadow: var(--highlight-inset), var(--danger-glow);
+}
+button.run-stop:hover:not(:disabled) {
+  background-color: var(--danger-wash);
+  border-color: var(--danger-text);
+  box-shadow: var(--highlight-inset), var(--elev-2), var(--danger-glow);
+}
+.run-stop-mark {
+  display: grid;
+  place-items: center;
+  color: var(--danger-fg);
+}
+.run-stop-mark .icon rect {
+  fill: currentColor;
+}
+.run-copy[data-state="copied"] > .icon {
+  color: var(--ok-fg);
+}
+.run-copy[data-state="failed"] > .icon {
+  color: var(--danger-fg);
+}
+
+.run-delegated-by {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  margin: calc(var(--s-6) * -1) 0 var(--s-7);
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+
+/* The figures. A container, so the tiles arrange by the room the column
+ * actually has rather than the window's width less a sidebar. */
+.run-stats {
+  container: run-stats / inline-size;
+  margin-bottom: var(--s-6);
+}
+.run-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-5);
+}
+.run-stats-grid > .run-state-tile {
+  grid-column: 1 / -1;
+}
+@container run-stats (min-width: 560px) {
+  .run-stats-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+@container run-stats (min-width: 900px) {
+  .run-stats-grid {
+    grid-template-columns: minmax(0, 1.7fr) repeat(4, minmax(0, 1fr));
+  }
+  .run-stats-grid > .run-state-tile {
+    grid-column: auto;
+  }
+}
+.run-stats .stat-tile {
+  gap: var(--s-3);
+  padding: var(--s-6) var(--s-7);
+}
+.run-stats .stat-tile-value {
+  font-size: var(--fs-title);
+}
+.run-stats .stat-tile-icon {
+  width: 24px;
+  height: 24px;
+}
+.run-state-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3) var(--s-5);
+  min-height: 28px;
+}
+.run-state-value .verdict {
+  font-size: var(--fs-small);
+  padding-block: var(--s-1);
+}
+.run-state-value .verdict:is(.live, .running) {
+  padding-left: calc(var(--s-4) + 6px + var(--s-3));
+}
+
+.run-attempts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  margin-bottom: var(--s-7);
+}
+.run-attempts-label {
+  margin-right: var(--s-2);
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+.run-attempts > button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-1) var(--s-3) var(--s-1) var(--s-5);
+  border-radius: var(--radius-pill);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- the run: what wants reading first ----------------------------------- */
+
+.run-cancelling,
+.run-taint,
+.run-failure {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-5);
+}
+.run-cancelling .live-dot {
+  margin-top: var(--s-3);
+}
+.run-banner-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--warn-fg);
+}
+.run-failure .run-banner-icon {
+  color: var(--danger-fg);
+}
+.run-failure-text {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+.run-failure button.ghost {
+  flex: none;
+  margin: calc(var(--s-2) * -1) 0;
+  color: var(--text);
+}
+.run-taint .mono {
+  overflow-wrap: anywhere;
+}
+
+/* The decision the run is waiting for: the one card on the screen that glows,
+ * in the same hue as the approvals count and the approval card itself. */
+.run-waiting {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-5) var(--s-7);
+  margin-bottom: var(--s-7);
+  padding: var(--s-7) var(--s-8);
+  background: var(--surface-panel);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--highlight-inset), var(--elev-2), var(--warn-glow);
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+.run-waiting-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-lg);
+  color: var(--warn-fg);
+  background: var(--warn-wash);
+  box-shadow: inset 0 0 0 1px var(--warn-line);
+}
+.run-waiting-body {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+.run-waiting-title {
+  margin: 0;
+  font-weight: var(--fw-semibold);
+}
+.run-waiting-reason {
+  margin: var(--s-1) 0 0;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.run-result h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+.run-result h2 > .icon {
+  color: var(--ok-fg);
+}
+.run-result .panel {
+  box-shadow: var(--highlight-inset), var(--elev-1), inset 3px 0 0 var(--ok-fg);
+}
+
+/* --- the run: sections ---------------------------------------------------- */
+
+.run-time,
+.run-trace,
+.run-approvals,
+.run-audit {
+  margin-top: var(--s-10);
+}
+.run-result {
+  margin-top: var(--s-9);
+}
+.run-result h2 {
+  margin-top: 0;
+}
+.run-section-note {
+  margin: calc(var(--s-3) * -1) 0 var(--s-6);
+}
+
+.run-trace-toolbar {
+  margin-bottom: var(--s-6);
+}
+.run-mode-count {
+  margin-left: var(--s-3);
+  font-size: var(--fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+/* --- the run: the trace as a rail ----------------------------------------- */
+
+/* Every step and call hangs on one vertical rail, in the order it happened.
+ * Each item draws the rail from its own node down to the next; a node is cut
+ * out of the rail by a ring in the panel's colour, so the line seems to pass
+ * behind it. */
+.run-trace-panel {
+  padding: var(--s-8) var(--s-8) var(--s-8) var(--s-7);
+}
+.trace {
+  --node: 28px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.trace-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--node) minmax(0, 1fr);
+  column-gap: var(--s-6);
+  padding-bottom: var(--s-8);
+  border-radius: var(--radius-lg);
+}
+.trace-item:last-child {
+  padding-bottom: 0;
+}
+.trace-item::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--node) / 2 - 1px);
+  top: calc(var(--node) / 2);
+  bottom: calc(var(--node) / -2);
+  width: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+}
+.trace-item:last-child::before {
+  content: none;
+}
+/* From the first call made after the run read untrusted data, the rail is
+ * dashed in the attention hue: the shape says it as well as the colour. */
+.trace-item.after-taint::before {
+  width: 0;
+  background: none;
+  border-left: 2px dashed var(--warn-fg);
+  border-radius: 0;
+}
+/* Anything focused or brought into view on the run stops clear of the title
+ * row pinned at the top of the column, rather than sliding beneath it. */
+.run-view :is(.trace-item, .trace-call-head, .run-audit-row, [role="listitem"]) {
+  scroll-margin-block: 8rem var(--s-8);
+}
+/* A row brought into view from the timeline or the failure banner takes the
+ * focus; its ring sits inside the panel. */
+.trace-item:focus-visible {
+  outline-offset: var(--s-2);
+  box-shadow: none;
+}
+
+.trace-node {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: var(--node);
+  height: var(--node);
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 0 0 4px var(--surface-panel);
+}
+/* A step is narration and hangs on a smaller node than a call, which is an
+ * act; both stay centred on the rail. */
+.is-step > .trace-node {
+  width: 22px;
+  height: 22px;
+  margin: 3px;
+}
+.trace-node.tone-info {
+  color: var(--info-fg);
+  background: linear-gradient(var(--info-wash), var(--info-wash)), var(--surface-panel);
+  border-color: var(--info-line);
+}
+.trace-node.tone-ok {
+  color: var(--ok-fg);
+  background: linear-gradient(var(--ok-wash), var(--ok-wash)), var(--surface-panel);
+  border-color: var(--ok-line);
+}
+.trace-node.tone-danger {
+  color: var(--danger-fg);
+  background: linear-gradient(var(--danger-wash), var(--danger-wash)), var(--surface-panel);
+  border-color: var(--danger-line);
+}
+.trace-node.tone-blocked {
+  color: var(--blocked-fg);
+  background: linear-gradient(var(--blocked-wash), var(--blocked-wash)), var(--surface-panel);
+  border-color: var(--blocked-line);
+}
+.trace-node.tone-warn {
+  color: var(--warn-fg);
+  background: linear-gradient(var(--warn-wash), var(--warn-wash)), var(--surface-panel);
+  border-color: var(--warn-line);
+}
+.failed-here > .trace-node {
+  box-shadow:
+    0 0 0 4px var(--surface-panel),
+    var(--danger-glow);
+}
+
+.trace-body {
+  min-width: 0;
+}
+.trace-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-1) var(--s-4);
+  min-height: var(--node);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.trace-ordinal {
+  min-width: 1.6em;
+  padding: 0 var(--s-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+.trace-kind {
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.trace-time {
+  font-family: var(--font-mono);
+  color: var(--text-faint);
+}
+/* Quiet controls on a line of meta. Their padding makes the 32px target and
+ * a negative margin gives the height back, so the line keeps its rhythm.
+ * Qualified as ghost buttons, whose own padding would otherwise win. */
+button.ghost.trace-show-call {
+  margin: calc(var(--s-3) * -1) 0 calc(var(--s-3) * -1) auto;
+  padding: var(--s-3);
+  font-size: var(--fs-meta);
+}
+.trace-summary {
+  margin-top: var(--s-1);
+  color: var(--text);
+  line-height: var(--lh-body);
+}
+.trace-failed {
+  margin: var(--s-4) 0 0;
+}
+.trace-call > .trace-failed {
+  margin: 0 var(--s-6) var(--s-5);
+}
+
+/* A call is a card on the rail with its outcome's hue along its leading
+ * edge. Its head opens its details; the head lights under the pointer and
+ * keeps its focus ring inside the card. */
+.trace-call {
+  overflow: hidden;
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--highlight-inset), inset 3px 0 0 var(--border-strong);
+  transition:
+    border-color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out);
+}
+.trace-call:hover,
+.trace-call.open {
+  border-color: var(--border-strong);
+}
+.trace-call.open {
+  box-shadow: var(--highlight-inset), var(--elev-1), inset 3px 0 0 var(--border-strong);
+}
+.trace-call.tone-ok {
+  box-shadow: var(--highlight-inset), inset 3px 0 0 var(--ok-fg);
+}
+.trace-call.tone-danger {
+  box-shadow: var(--highlight-inset), inset 3px 0 0 var(--danger-fg);
+}
+.trace-call.tone-blocked {
+  box-shadow: var(--highlight-inset), inset 3px 0 0 var(--blocked-fg);
+}
+.trace-call.tone-info {
+  box-shadow: var(--highlight-inset), inset 3px 0 0 var(--info-fg);
+}
+.trace-call-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3) var(--s-6);
+  width: 100%;
+  padding: var(--s-5) var(--s-6) var(--s-5) var(--s-7);
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+.trace-call-head:hover:not(:disabled) {
+  background: var(--surface-raised);
+  border-color: transparent;
+}
+.trace-call-head:active:not(:disabled) {
+  transform: none;
+}
+.trace-call-head:focus-visible {
+  outline-offset: -2px;
+  border-radius: var(--radius-lg);
+  box-shadow: inset 0 0 0 6px var(--focus-glow);
+}
+.trace-call-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+.trace-call-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-4);
+}
+.trace-tool {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.trace-family {
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.trace-call-head .row-meta time {
+  font-family: var(--font-mono);
+}
+.trace-call-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+}
+.trace-chevron {
+  color: var(--text-dim);
+  transition: transform var(--dur-3) var(--ease-spring);
+}
+.trace-call-head[aria-expanded="true"] .trace-chevron {
+  transform: rotate(180deg);
+}
+.trace-call-details {
+  padding: var(--s-6) var(--s-7);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-recessed);
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+.trace-call-details dl.facts {
+  margin-top: var(--s-6);
+}
+/* An id beside the button that copies it; the id breaks anywhere rather than
+ * pushing the button off the card. */
+.trace-copyable {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-1) var(--s-3);
+  min-width: 0;
+}
+.trace-copyable > .mono {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.trace-copyable .copy-button {
+  margin: calc(var(--s-3) * -1) 0;
+}
+
+/* Delegations beneath the call that asked: cards stepping in by depth, each
+ * joined to the rail's card by a short branch. Restated here over the shared
+ * trace shape, which was drawn for a list without a rail. */
+.trace .trace-delegations {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin-top: var(--s-4);
+}
+.trace .trace-delegation {
+  position: relative;
+  margin: 0 0 0
+    calc(var(--s-7) + var(--delegation-indent) * (var(--delegation-depth, 1) - 1));
+  padding: var(--s-3) var(--s-6);
+  font-size: var(--fs-small);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--border-strong);
+  border-radius: var(--radius-md);
+}
+.trace .trace-delegation::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--s-7) * -1 - 2px);
+  top: calc(var(--s-3) * -1 - 1px);
+  width: var(--s-7);
+  height: calc(50% + var(--s-3));
+  border-left: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+  border-bottom-left-radius: var(--radius-md);
+}
+.trace-delegation-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.trace-delegation-agent > .icon {
+  color: var(--text-dim);
+}
+.trace-delegation-objective {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+button.ghost.trace-delegation-open {
+  margin: calc(var(--s-3) * -1) 0 calc(var(--s-3) * -1) auto;
+  padding: var(--s-3);
+}
+
+/* The rail's live end: where the run is now. */
+.trace-live-end > .trace-node {
+  background: var(--surface-panel);
+}
+.trace-now {
+  font-size: var(--fs-small);
+  font-weight: var(--fw-medium);
+  color: var(--text-dim);
+}
+
+/* --- the run: approvals and the audit chain ------------------------------- */
+
+.run-approval.pending {
+  box-shadow: inset 3px 0 0 var(--warn-fg);
+}
+
+/* One record of the chain: its place, its time, its kind, and the link it
+ * makes — the hash of the record before it, then its own. A grid, so the
+ * columns line up down the chain however long a kind is; under a narrow
+ * column the hashes take a line of their own beneath the kind rather than
+ * being cut off, since this record's own hash is the one a reader came for. */
+.run-audit-list {
+  container: run-audit / inline-size;
+}
+button.row.run-audit-row {
+  display: grid;
+  grid-template-columns: 3.6em 6.8em minmax(0, 1fr) auto auto;
+  grid-template-areas: "seq time kind hashes go";
+  align-items: center;
+  gap: var(--s-2) var(--s-6);
+  padding-block: var(--s-4);
+  font-size: var(--fs-small);
+}
+.run-audit-seq,
+.run-audit-time {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.run-audit-seq {
+  grid-area: seq;
+}
+.run-audit-time {
+  grid-area: time;
+}
+.run-audit-kind {
+  grid-area: kind;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+}
+.run-audit-kind > .icon {
+  flex: none;
+  color: var(--warn-fg);
+}
+.run-audit-kind-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  color: var(--text);
+}
+/* A security-relevant record is named in the attention hue, beside its
+ * shield: the hue is never the only mark. */
+.run-audit-row.security .run-audit-kind-name {
+  color: var(--warn-text);
+}
+.run-audit-hashes {
+  grid-area: hashes;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+.run-audit-hashes > .icon {
+  flex: none;
+  color: var(--text-faint);
+}
+.run-audit-hash {
+  color: var(--text);
+}
+.run-audit-chevron {
+  grid-area: go;
+  flex: none;
+  color: var(--text-faint);
+  transition: transform var(--dur-3) var(--ease-spring);
+}
+@container run-audit (max-width: 640px) {
+  button.row.run-audit-row {
+    grid-template-columns: 3.6em minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "seq kind time go"
+      ". hashes hashes go";
+    padding-inline: var(--s-7);
+  }
+  .run-audit-hashes {
+    justify-self: start;
+    min-width: 0;
+  }
+}
+.run-audit-row[aria-expanded="true"] .run-audit-chevron {
+  transform: rotate(180deg);
+}
+.run-audit-details {
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-recessed);
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+
+/* --- narrow --------------------------------------------------------------- */
+
+@media (max-width: 719.98px) {
+  .composer {
+    padding: var(--s-7) var(--s-7) var(--s-8);
+  }
+  .composer-objective {
+    font-size: var(--fs-body);
+  }
+  .composer-agent {
+    flex: 1 1 100%;
+  }
+  .composer-agent select {
+    flex: 1;
+    min-width: 0;
+  }
+  .composer-actions {
+    flex: 1 1 100%;
+  }
+  .composer-actions > button {
+    flex: 1;
+  }
+  .composer-bar > .spacer {
+    display: none;
+  }
+  /* The status pills take what is left of their line, and Clear sits beside
+   * them while there is room for it. */
+  .tasks-status-filter {
+    flex: 1 1 auto;
+  }
+  /* A task's objective is what the row is; on a narrow column it takes a
+   * second line rather than ending in an ellipsis half way through. */
+  .tasks-row .row-title {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+  }
+  /* A queued row ends in more than a chip. Its text takes the whole width,
+   * and its status and Wait for… wrap beneath, in line with the title. */
+  .tasks-queued > .row-main {
+    flex-basis: calc(100% - 28px - var(--s-6));
+  }
+  .tasks-queued > .row-main + * {
+    margin-left: calc(28px + var(--s-6));
+  }
+  .run-trace-panel {
+    padding: var(--s-7) var(--s-6);
+  }
+  .trace {
+    --node: 24px;
+  }
+  .trace-item {
+    column-gap: var(--s-5);
+  }
+  .is-step > .trace-node {
+    width: 20px;
+    height: 20px;
+    margin: 2px;
+  }
+  .trace-call-head {
+    padding: var(--s-5) var(--s-5) var(--s-5) var(--s-6);
+  }
+  .trace-call-details {
+    padding: var(--s-5);
+  }
+  .trace .trace-delegation {
+    margin-left: calc(var(--s-4) + var(--s-6) * (var(--delegation-depth, 1) - 1));
+  }
+  .trace .trace-delegation::before {
+    left: calc(var(--s-4) * -1 - 2px);
+    width: var(--s-4);
+  }
+  .run-waiting > button {
+    flex: 1 1 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wait-picker,
+  .composer-queued,
+  .tasks-wait-editor,
+  .run-waiting,
+  .trace-call-details,
+  .run-audit-details {
+    animation: none;
+  }
+}

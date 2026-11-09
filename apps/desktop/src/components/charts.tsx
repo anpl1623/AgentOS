@@ -304,13 +304,9 @@ export function Track({
       <text className="chart-label" x="0" y={y + LABEL_HEIGHT - 4}>
         {label}
       </text>
-      <line
-        className="chart-grid"
-        x1="0"
-        x2="100%"
-        y1={laneY + LANE_HEIGHT}
-        y2={laneY + LANE_HEIGHT}
-      />
+      {/* The lane is a shallow well the spans sit in; translucent, so the
+          axis's grid lines still show through it. */}
+      <rect className="chart-well" x="0" y={laneY} width="100%" height={LANE_HEIGHT} rx="4" />
       {spans.map((span) => {
         const { x, width } = spanGeometry(span.from, span.to, domain);
         return (
@@ -324,14 +320,14 @@ export function Track({
             onKeyDown={(event) => keyDown(event, span.id)}
           >
             <title>{span.label}</title>
-            <rect x={percent(x)} y={laneY} width={percent(width)} height={LANE_HEIGHT} rx="2" />
+            <rect x={percent(x)} y={laneY} width={percent(width)} height={LANE_HEIGHT} rx="3" />
             {span.hatch !== null ? (
               <rect
                 x={percent(x)}
                 y={laneY}
                 width={percent(width)}
                 height={LANE_HEIGHT}
-                rx="2"
+                rx="3"
                 fill={`url(#${hatches[span.hatch]})`}
                 stroke="none"
                 pointerEvents="none"

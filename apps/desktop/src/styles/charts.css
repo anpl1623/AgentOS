@@ -127,6 +127,70 @@
 }
 .chart-span:hover {
   stroke: var(--text);
+  filter: brightness(1.15);
+}
+
+/* Spans arrive in the order they happened along a track: each starts its
+ * growth a stagger step after the one before it, capped at the twelfth so a
+ * long run's last calls are not kept waiting. Spans are the only groups in a
+ * track before its markers, so their place among the groups is their order. */
+.chart-span:nth-of-type(2) {
+  animation-delay: calc(var(--stagger-step) * 1);
+}
+.chart-span:nth-of-type(3) {
+  animation-delay: calc(var(--stagger-step) * 2);
+}
+.chart-span:nth-of-type(4) {
+  animation-delay: calc(var(--stagger-step) * 3);
+}
+.chart-span:nth-of-type(5) {
+  animation-delay: calc(var(--stagger-step) * 4);
+}
+.chart-span:nth-of-type(6) {
+  animation-delay: calc(var(--stagger-step) * 5);
+}
+.chart-span:nth-of-type(7) {
+  animation-delay: calc(var(--stagger-step) * 6);
+}
+.chart-span:nth-of-type(8) {
+  animation-delay: calc(var(--stagger-step) * 7);
+}
+.chart-span:nth-of-type(9) {
+  animation-delay: calc(var(--stagger-step) * 8);
+}
+.chart-span:nth-of-type(10) {
+  animation-delay: calc(var(--stagger-step) * 9);
+}
+.chart-span:nth-of-type(11) {
+  animation-delay: calc(var(--stagger-step) * 10);
+}
+.chart-span:nth-of-type(n + 12) {
+  animation-delay: calc(var(--stagger-step) * 11);
+}
+
+/* A track's lane: a shallow well the spans sit in. Translucent, so the axis's
+ * grid lines, drawn beneath it, still read through. */
+.chart-well {
+  fill: var(--surface-sunken);
+  fill-opacity: 0.6;
+  stroke: var(--border-subtle);
+  stroke-width: 1px;
+}
+
+/* A live run's present moment at the chart's right edge: a dashed hairline
+ * and a dot on the axis whose ring pulses for as long as the run is live. */
+.chart-now line {
+  stroke: var(--info-fg);
+  stroke-width: 1px;
+  stroke-dasharray: 3 3;
+}
+.chart-now circle {
+  fill: var(--info-fg);
+}
+.chart-now .chart-now-ring {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: pulse-ring var(--dur-pulse) var(--ease-out) infinite;
 }
 
 /* Hatch lines inside the shared <pattern> definitions. One ink for every
@@ -233,6 +297,12 @@
   margin-top: var(--s-4);
   font-size: var(--fs-small);
 }
+/* Time spent waiting on a person is the one delay the reader caused; the
+ * sentence that counts it carries the attention hue's bar. */
+.chart-summary.waited {
+  padding-left: var(--s-5);
+  border-left: 2px solid var(--warn-fg);
+}
 
 /* Positioned by --x and --y relative to .chart, above the point it describes. */
 .chart-tip {
@@ -261,5 +331,9 @@
   .chart-bar,
   .chart-tip {
     animation: none;
+  }
+  .chart-now .chart-now-ring {
+    animation: none;
+    opacity: 0;
   }
 }

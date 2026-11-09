@@ -1,40 +1,45 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ApprovalView } from "../../bindings/ApprovalView";
-import type { DelegationTreeView } from "../../bindings/DelegationTreeView";
-import type { DelegationView } from "../../bindings/DelegationView";
-import type { ExecutionView } from "../../bindings/ExecutionView";
-import type { RunSummary } from "../../bindings/RunSummary";
-import type { StepView } from "../../bindings/StepView";
-import type { TraceView } from "../../bindings/TraceView";
+import type { ApprovalView } from "../../../bindings/ApprovalView";
+import type { DelegationTreeView } from "../../../bindings/DelegationTreeView";
+import type { DelegationView } from "../../../bindings/DelegationView";
+import type { ExecutionView } from "../../../bindings/ExecutionView";
+import type { RunSummary } from "../../../bindings/RunSummary";
+import type { StepView } from "../../../bindings/StepView";
+import type { TraceView } from "../../../bindings/TraceView";
 import {
-  REFRESH_DEBOUNCE_MS,
-  REFRESH_MAX_WAIT_MS,
-  TAINT_LABEL,
-  approvalTone,
-  attemptsLabel,
-  buildTimeline,
-  canRetry,
-  coalesce,
-  concernsAnyRun,
-  concernsRun,
   delegateRequests,
   delegationRows,
   delegationTone,
+  placeDelegations,
+  treeRunIds,
+} from "./delegationModel";
+import {
+  REFRESH_DEBOUNCE_MS,
+  REFRESH_MAX_WAIT_MS,
+  coalesce,
+  concernsAnyRun,
+  concernsRun,
+} from "./refreshModel";
+import {
+  approvalTone,
+  attemptsLabel,
+  canRetry,
   entriesFor,
   failureAnchor,
-  hhmmss,
   marker,
   mergeEntries,
-  placeDelegations,
-  runWindow,
   shownState,
+} from "./runModel";
+import {
+  TAINT_LABEL,
+  buildTimeline,
+  runWindow,
   toolLook,
-  transcript,
-  treeRunIds,
   unionLength,
   waitingSummary,
-} from "./runModel";
+} from "./timelineModel";
+import { hhmmss, transcript } from "./transcriptModel";
 
 /** A local wall-clock time on the fixture day, as the runtime would write it. */
 function at(minute: number, second = 0): string {
@@ -608,6 +613,16 @@ describe("buildTimeline", () => {
     expect(timeline?.waiting[0]?.from).toBe(ms(at(0)));
     expect(timeline?.tools[0]?.to).toBe(ms(at(10)));
     expect(timeline?.waitingMs).toBe(2 * 60_000);
+  });
+
+  it("marks its right edge as the present only while the run is live", () => {
+    const steps = [step(1, "planning", 1)];
+    expect(buildTimeline(trace({ steps }), 0)?.live).toBe(false);
+    const live = trace({ run: run({ state: "executing", completed_at: null }), steps });
+    expect(buildTimeline(live, ms(at(4)))?.live).toBe(true);
+    // A run that has recorded its end ends there, whatever its state says.
+    const ended = trace({ run: run({ state: "executing" }), steps });
+    expect(buildTimeline(ended, ms(at(12)))?.live).toBe(false);
   });
 });
 
