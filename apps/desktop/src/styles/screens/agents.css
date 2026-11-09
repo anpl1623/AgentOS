@@ -1,2 +1,1030 @@
 /* The agents screen: rules no other screen uses. Shared shapes belong in
- * layout.css, components.css or primitives.css, and colours in tokens.css. */
+ * layout.css, components.css or primitives.css, and colours in tokens.css.
+ *
+ * Every rule is scoped under .agents-screen, the root both the list and the
+ * detail page draw, so a class name here can never reach another screen. */
+
+/* --- shared -------------------------------------------------------------- */
+
+/* A button that leads with an icon sets the icon beside its words, not on the
+ * text's baseline. Held at the scope's specificity so a button's own class
+ * still decides its look. The crumb and icon buttons lay themselves out. */
+.agents-screen :where(button:not(.crumb, .icon-button):has(> .icon)) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-3);
+}
+
+/* A search field with its magnifier inside, at the start. */
+.agents-screen .agents-search {
+  position: relative;
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+.agents-screen .agents-search > .icon {
+  position: absolute;
+  left: var(--s-5);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.agents-screen .agents-search > input {
+  padding-left: calc(var(--s-5) + var(--s-8) + var(--s-4));
+}
+
+/* A field the form says is wrong: its edge in the danger hue, and the note
+ * beneath it in words. */
+.agents-screen input[aria-invalid="true"] {
+  border-color: var(--danger-fg);
+}
+.agents-screen .field-problem {
+  color: var(--danger-text);
+}
+.agents-screen .field.flush {
+  margin-bottom: 0;
+}
+
+/* --- avatar -------------------------------------------------------------- */
+
+/* Initials on a tile in the accent gradient. Every variant runs between the
+ * two accent ends (resting or hovered), which are the grounds white text is
+ * measured on in tokens.css, so the variants differ in angle and order only
+ * and none reads worse than another. */
+.agents-screen .agent-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-xl);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-bold);
+  line-height: 1;
+  letter-spacing: var(--tracking-tight);
+  color: var(--on-accent);
+  background-color: var(--accent);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+  user-select: none;
+}
+/* Beside a page title: a step smaller than a card's, so the pinned title bar
+ * stays slim. */
+.agents-screen .agent-avatar.sm {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-lg);
+}
+.agents-screen .agent-avatar.v0 {
+  background-image: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+.agents-screen .agent-avatar.v1 {
+  background-image: linear-gradient(135deg, var(--accent-2), var(--accent));
+}
+.agents-screen .agent-avatar.v2 {
+  background-image: linear-gradient(200deg, var(--accent-hover), var(--accent-2));
+}
+.agents-screen .agent-avatar.v3 {
+  background-image: linear-gradient(45deg, var(--accent-2-hover), var(--accent));
+}
+/* A disabled agent drops the gradient: the face goes quiet with the agent. */
+.agents-screen .agent-avatar.off {
+  background-image: none;
+  background-color: var(--surface-raised);
+  color: var(--text-dim);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+/* --- list ---------------------------------------------------------------- */
+
+.agents-screen .agents-stats {
+  margin-bottom: var(--s-10);
+}
+
+.agents-screen .agents-toolbar .segmented,
+.agents-screen .memory-kinds {
+  flex-wrap: wrap;
+}
+.agents-screen .agents-count {
+  font-size: var(--fs-small);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* As many columns as fit at 300px or more, one under 720px. */
+.agents-screen .agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  gap: var(--s-6);
+}
+.agents-screen .agent-grid > [role="listitem"] {
+  display: flex;
+  min-width: 0;
+}
+
+/* A card is a button; this strips the button's chrome back to the card's. */
+.agents-screen .agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-6);
+  width: 100%;
+  min-width: 0;
+  padding: var(--s-7) var(--s-8);
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+}
+.agents-screen button.agent-card:hover:not(:disabled) {
+  background-color: var(--surface-panel);
+}
+.agents-screen .agent-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-6);
+  min-width: 0;
+}
+.agents-screen .agent-card-id {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  flex: 1;
+  min-width: 0;
+}
+.agents-screen .agent-card-name,
+.agents-screen .agent-card-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agents-screen .agent-card-name {
+  font-weight: var(--fw-semibold);
+}
+.agents-screen .agent-card-model {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.agents-screen .agent-card.off .agent-card-name {
+  color: var(--text-dim);
+}
+
+.agents-screen .agent-card-domains {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+.agents-screen .agent-domain {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-1) var(--s-4);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+}
+
+.agents-screen .agent-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3) var(--s-6);
+  margin-top: auto;
+  padding-top: var(--s-5);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.agents-screen .agent-card-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.agents-screen .agent-card-go {
+  margin-left: auto;
+  color: var(--text-faint);
+  transition:
+    transform var(--dur-2) var(--ease-spring),
+    color var(--dur-2) var(--ease-out);
+}
+.agents-screen .agent-card:hover .agent-card-go {
+  transform: translateX(2px);
+  color: var(--text);
+}
+
+/* Placeholder cards while the list loads. */
+.agents-screen .skeleton-card {
+  gap: var(--s-4);
+}
+.agents-screen .skeleton-card .agent-avatar {
+  background-color: var(--surface-raised);
+  box-shadow: none;
+  margin-bottom: var(--s-2);
+}
+
+/* --- create form --------------------------------------------------------- */
+
+.agents-screen .create-agent {
+  margin-bottom: var(--s-10);
+}
+.agents-screen .create-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-6);
+  padding: var(--s-8) var(--s-8) var(--s-7);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.agents-screen .create-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-lg);
+  color: var(--on-accent);
+  background: var(--accent-gradient);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+}
+.agents-screen .create-title {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text);
+}
+.agents-screen .create-lede {
+  margin: var(--s-1) 0 0;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+
+/* The steps: a numbered marker on a rail, the rail running down to the next
+ * marker, and the step's fields beside it. */
+.agents-screen .create-steps {
+  list-style: none;
+  margin: 0;
+  padding: var(--s-9) var(--s-8) var(--s-8);
+}
+.agents-screen .create-step {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: var(--s-7);
+}
+.agents-screen .step-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.agents-screen .step-rail::after {
+  content: "";
+  flex: 1;
+  width: 1px;
+  margin: var(--s-3) 0;
+  background: var(--border-strong);
+}
+.agents-screen .create-step:last-child .step-rail::after {
+  content: none;
+}
+.agents-screen .step-marker {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-control);
+  transition:
+    color var(--dur-3) var(--ease-out),
+    background-color var(--dur-3) var(--ease-out),
+    border-color var(--dur-3) var(--ease-out);
+}
+/* A step with what it needs: the marker fills, and pops (the shared .pop,
+ * added by the component) only at the moment the step is completed. */
+.agents-screen .create-step.done .step-marker {
+  color: var(--on-accent);
+  background: var(--accent-gradient);
+  border-color: transparent;
+}
+.agents-screen .step-body {
+  min-width: 0;
+  padding-bottom: var(--s-10);
+}
+.agents-screen .create-step:last-child .step-body {
+  padding-bottom: 0;
+}
+.agents-screen .step-title {
+  margin: var(--s-2) 0 var(--s-6);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.agents-screen .step-note {
+  margin: 0;
+}
+/* Fields carry their own space beneath them; when the pair stacks on a
+ * narrow step, a row gap on top of it would part Model from Vision by more
+ * than any other two fields. */
+.agents-screen .create-step .grid.two {
+  row-gap: 0;
+}
+.agents-screen .provider-choice > button {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+
+/* The tool picker: one group per domain, each tool a card with its risk. */
+.agents-screen .tool-picker-note {
+  margin: 0 0 var(--s-7);
+}
+.agents-screen .tool-group + .tool-group {
+  margin-top: var(--s-8);
+}
+.agents-screen .tool-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin-bottom: var(--s-4);
+  color: var(--text-dim);
+}
+.agents-screen .tool-group-name {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.agents-screen .tool-group-count {
+  margin-left: auto;
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+/* Wider columns than the shared checks: each card also holds a risk chip, and
+ * a dotted tool name should fit on one line beside it rather than break. */
+.agents-screen .tool-picker .checks {
+  grid-template-columns: repeat(auto-fill, minmax(min(270px, 100%), 1fr));
+}
+.agents-screen .tool-picker .check {
+  align-items: center;
+}
+.agents-screen .tool-picker .check-text {
+  flex: 1;
+  min-width: 0;
+}
+.agents-screen .tool-picker .check-name {
+  overflow-wrap: anywhere;
+}
+
+.agents-screen .create-error {
+  padding: 0 var(--s-8);
+}
+/* The foot: what the form will create, and the two answers to it. */
+.agents-screen .create-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-6) var(--s-8);
+  padding: var(--s-7) var(--s-8);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-recessed);
+}
+.agents-screen .create-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  min-width: 0;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+.agents-screen .create-summary-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}
+.agents-screen .create-summary-line strong {
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+}
+.agents-screen .create-summary-note {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+}
+.agents-screen .create-actions {
+  display: flex;
+  gap: var(--s-4);
+  margin-left: auto;
+}
+
+/* --- detail: frame ------------------------------------------------------- */
+
+.agents-screen .agent-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-6);
+  min-width: 0;
+}
+
+/* The sections, with their navigation beside them only where there is room
+ * for both: the wide layout. Below it the navigation is not drawn at all, so
+ * it takes no Tab stops either. */
+.agents-screen .section-nav {
+  display: none;
+}
+@media (min-width: 1200px) {
+  .agents-screen .agent-detail {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 184px;
+    column-gap: var(--s-10);
+    align-items: start;
+  }
+  .agents-screen .agent-sections {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+  }
+  .agents-screen .section-nav {
+    display: block;
+    grid-column: 2;
+    grid-row: 1;
+    position: sticky;
+    top: calc(var(--topbar-h) + var(--s-9));
+  }
+}
+
+.agents-screen .section-nav-title {
+  margin: 0 0 var(--s-4);
+  padding-left: var(--s-6);
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.agents-screen .section-nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+.agents-screen .section-link {
+  position: relative;
+  display: flex;
+  justify-content: flex-start;
+  width: 100%;
+  padding: var(--s-3) var(--s-6);
+  border: 1px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--fs-small);
+  text-align: left;
+  color: var(--text-dim);
+}
+.agents-screen .section-link:hover:not(:disabled) {
+  background: var(--surface-raised);
+  border-color: transparent;
+  color: var(--text);
+}
+/* Where the reader is: brighter words and a bar in the accent gradient. */
+.agents-screen .section-link[aria-current="location"] {
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+.agents-screen .section-link::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: var(--s-3);
+  bottom: var(--s-3);
+  width: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-gradient);
+  opacity: 0;
+  transform: scaleY(0.4);
+  transition:
+    opacity var(--dur-2) var(--ease-out),
+    transform var(--dur-3) var(--ease-spring);
+}
+.agents-screen .section-link[aria-current="location"]::before {
+  opacity: 1;
+  transform: none;
+}
+
+/* A section: an icon tile, the heading, and a count or action beside it. */
+.agents-screen .agent-section + .agent-section {
+  margin-top: var(--s-11);
+}
+.agents-screen .section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  margin-bottom: var(--s-6);
+}
+.agents-screen .section-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-md);
+  color: var(--text-accent);
+  background: var(--accent-wash);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+/* Clear of the pinned page header when the navigation scrolls to it. */
+.agents-screen .section-title {
+  margin: 0;
+  scroll-margin-top: var(--s-9);
+}
+.agents-screen .section-count {
+  display: inline-block;
+  min-width: 1.8em;
+  padding: 0 var(--s-3);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-body);
+  text-align: center;
+  color: var(--text-dim);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+}
+.agents-screen .section-lede {
+  margin: 0 0 var(--s-6);
+  max-width: 80ch;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+
+/* --- detail: overview ---------------------------------------------------- */
+
+.agents-screen .overview-stats {
+  margin-bottom: var(--s-6);
+}
+.agents-screen .hint-live {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+/* Instructions beside the facts, the facts given the larger share because a
+ * workspace path or an id should fit on one line; they stack when the two
+ * would no longer fit side by side. */
+.agents-screen .overview-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-6);
+}
+.agents-screen .overview-grid > .panel {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+.agents-screen .overview-grid > .overview-facts {
+  flex: 1.4 1 360px;
+}
+.agents-screen .overview-grid > .panel + .panel {
+  margin-top: 0;
+}
+.agents-screen .overview-card {
+  padding: var(--s-7) var(--s-8);
+}
+/* The facts card holds copy buttons, whose tooltips open below them; a panel
+ * clips what overflows it, so this one does not. */
+.agents-screen .overview-facts {
+  overflow: visible;
+}
+.agents-screen .card-label {
+  margin: 0 0 var(--s-5);
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.agents-screen .overview-instructions {
+  line-height: var(--lh-body);
+}
+.agents-screen .fact-copy {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.agents-screen .fact-copy > .mono {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* The copy button keeps its full target but gives back the height it would
+ * add to its row, so a row with one is spaced like the rows without; it
+ * reaches into the row gap instead, which the rule below keeps wide enough. */
+.agents-screen .fact-copy > .copy-button {
+  flex: none;
+  margin-block: calc(var(--s-3) * -1);
+}
+/* Labels as wide as the longest, so the values get the rest; under 720px the
+ * shared rule stacks each label over its value instead. The rows are a copy
+ * button's height apart, so two copy buttons in neighbouring rows never
+ * overlap where they reach into the gap between them. */
+@media (min-width: 720px) {
+  .agents-screen .overview-facts dl.facts {
+    grid-template-columns: max-content minmax(0, 1fr);
+    row-gap: var(--s-6);
+  }
+}
+/* A value with a copy button beside it is taller than its label; both sit on
+ * the row's centre so the label stays level with the value. */
+.agents-screen .overview-facts dt,
+.agents-screen .overview-facts dd {
+  align-self: center;
+}
+
+/* --- detail: tools and grants -------------------------------------------- */
+
+/* The key to the reach chips, quieter than the rows it explains. */
+/* Two by two where there is room, one column on a narrow window. */
+.agents-screen .reach-legend {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-4) var(--s-8);
+  margin: 0 0 var(--s-7);
+  padding: var(--s-6) var(--s-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  background: var(--surface-recessed);
+}
+.agents-screen .reach-key {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-4);
+  min-width: 0;
+}
+.agents-screen .reach-key dt {
+  flex: none;
+}
+.agents-screen .reach-key dd {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+
+.agents-screen .row.grant {
+  align-items: flex-start;
+}
+.agents-screen .grant-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-lg);
+  color: var(--text-dim);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+}
+.agents-screen .grant-caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3) var(--s-7);
+  margin-top: var(--s-4);
+}
+.agents-screen .grant-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.agents-screen .grant-cap > .mono {
+  overflow-wrap: anywhere;
+}
+.agents-screen .grant-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-3);
+}
+/* A grant every call of which will be refused: the danger edge and a wash
+ * that fades across the row, the icon in the hue, and the reason in words. */
+.agents-screen .row.grant.dead {
+  background: linear-gradient(90deg, var(--danger-wash), transparent 60%);
+  box-shadow: inset 3px 0 0 var(--danger-fg);
+}
+.agents-screen .row.grant.dead .grant-icon {
+  color: var(--danger-fg);
+  border-color: var(--danger-line);
+}
+.agents-screen .grant-refusal {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  margin-top: var(--s-4);
+  font-size: var(--fs-small);
+  color: var(--danger-text);
+}
+.agents-screen .grant-refusal > .icon {
+  margin-top: var(--s-1);
+}
+
+/* --- detail: policy ------------------------------------------------------ */
+
+.agents-screen .policy-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-6);
+  padding: var(--s-7) var(--s-8);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.agents-screen .policy-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-6) var(--s-10);
+  margin: 0;
+  min-width: 0;
+}
+.agents-screen .policy-facts > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  min-width: 0;
+}
+.agents-screen .policy-facts dt {
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.agents-screen .policy-facts dd {
+  margin: 0;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+.agents-screen .policy-facts dd b {
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+}
+
+/* Rules read like code: what each names, then its verb and resources. */
+.agents-screen .rule-list {
+  background: var(--surface-recessed);
+}
+.agents-screen .rule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3) var(--s-7);
+  padding: var(--s-5) var(--s-8);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.agents-screen .rule-list > [role="listitem"]:last-child > .rule {
+  border-bottom: none;
+}
+.agents-screen .rule-capability {
+  flex: 1 1 12rem;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.agents-screen .rule-effect {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+  font-size: var(--fs-code);
+  color: var(--text-dim);
+}
+.agents-screen .rule-effect > .mono {
+  overflow-wrap: anywhere;
+}
+
+/* The editor: a bar naming the file, a gutter of line numbers, and the text.
+ * One well, edged like a field; its edge takes the accent while the text has
+ * focus, as a field's does. */
+.agents-screen .code-editor {
+  margin-bottom: var(--s-7);
+  overflow: hidden;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-lg);
+  background: var(--surface-sunken);
+  box-shadow: var(--shadow-well);
+  transition: border-color var(--dur-2) var(--ease-out);
+}
+.agents-screen .code-editor:focus-within {
+  border-color: var(--accent);
+}
+.agents-screen .code-editor-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-5);
+  padding: var(--s-3) var(--s-6);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.agents-screen .code-editor-label {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  color: var(--text);
+}
+.agents-screen .code-editor-meta {
+  color: var(--text-faint);
+}
+.agents-screen .code-editor-dirty {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--warn-text);
+}
+.agents-screen .code-editor-dirty::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--warn-fg);
+}
+.agents-screen .code-editor-lines {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.agents-screen .code-editor-body {
+  display: flex;
+  align-items: stretch;
+}
+/* The gutter matches the text's font, size, line height and top padding, so
+ * each number sits beside its line; its extra padding at the foot lets it
+ * scroll as far as the text does when a sideways scrollbar takes room. */
+.agents-screen .code-gutter {
+  flex: none;
+  min-width: 4ch;
+  padding: var(--s-3) var(--s-4) var(--s-10);
+  overflow: hidden;
+  white-space: pre;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  line-height: var(--lh-code);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  background: var(--surface-recessed);
+  border-right: 1px solid var(--border-subtle);
+  user-select: none;
+}
+.agents-screen .code-editor-body > textarea {
+  flex: 1;
+  min-width: 0;
+  padding: var(--s-3) var(--s-5);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+/* The editor clips what overflows it, so the ring is drawn inside the text
+ * area rather than around it, as a row's is. */
+.agents-screen .code-editor-body > textarea:focus-visible {
+  outline-offset: -2px;
+  border-radius: 0;
+  box-shadow: inset 0 0 0 6px var(--focus-glow);
+}
+
+/* --- detail: memory ------------------------------------------------------ */
+
+.agents-screen .remember-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 0 var(--s-8);
+}
+.agents-screen .row.memory {
+  align-items: flex-start;
+}
+.agents-screen .memory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}
+.agents-screen .memory-actions > .verdict {
+  margin-right: var(--s-3);
+}
+
+/* A confidence as a short bar beside its number. The fill's width is the
+ * confidence, set by the component as --w on the track. */
+.agents-screen .confidence {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+.agents-screen .confidence-track {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.agents-screen .confidence-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--w, 0%);
+  border-radius: inherit;
+  background: var(--info-fg);
+  transform-origin: left center;
+  animation: grow-x var(--dur-4) var(--ease-out) backwards;
+}
+.agents-screen .band-high .confidence-fill {
+  background: var(--ok-fg);
+}
+.agents-screen .band-low .confidence-fill {
+  background: var(--warn-fg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .agents-screen .confidence-fill {
+    animation: none;
+  }
+}
+
+/* --- detail: recent tasks ------------------------------------------------ */
+
+.agents-screen .row-go {
+  color: var(--text-faint);
+  transition:
+    transform var(--dur-2) var(--ease-spring),
+    color var(--dur-2) var(--ease-out);
+}
+.agents-screen .row.clickable:hover .row-go {
+  transform: translateX(2px);
+  color: var(--text-dim);
+}
+
+/* --- narrow -------------------------------------------------------------- */
+
+@media (max-width: 719.98px) {
+  /* Four figures in two rows of two, rather than three and an orphan whose
+   * labels are cut short. */
+  .agents-screen .grid.stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .agents-screen .create-head,
+  .agents-screen .create-foot {
+    padding-left: var(--s-7);
+    padding-right: var(--s-7);
+  }
+  .agents-screen .create-steps {
+    padding: var(--s-8) var(--s-7) var(--s-7);
+  }
+  .agents-screen .create-step {
+    gap: var(--s-5);
+  }
+  .agents-screen .create-actions {
+    width: 100%;
+  }
+  .agents-screen .create-actions > button.primary {
+    flex: 1;
+  }
+  .agents-screen .policy-head,
+  .agents-screen .rule {
+    padding-left: var(--s-7);
+    padding-right: var(--s-7);
+  }
+  .agents-screen .grant-icon {
+    display: none;
+  }
+  .agents-screen .reach-legend {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* A memory's words take the row's whole width, and its kind and actions
+   * drop beneath them, rather than squeezing a paragraph into what is left
+   * beside three controls. */
+  .agents-screen .row.memory > .row-main {
+    flex-basis: 100%;
+  }
+}
