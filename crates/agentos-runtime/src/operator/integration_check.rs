@@ -98,8 +98,13 @@ impl Runtime {
         )
         .with_credentials(release.clone());
         let request = EgressRequest::new(Method::GET, url)
-            .with_header("Accept", "application/vnd.github+json")
-            .with_header("X-GitHub-Api-Version", "2022-11-28")
+            // The tools' own constants, so the check cannot drift from the
+            // requests it vouches for.
+            .with_header("Accept", agentos_integrations::github::JSON_MEDIA_TYPE)
+            .with_header(
+                "X-GitHub-Api-Version",
+                agentos_integrations::github::API_VERSION,
+            )
             .with_credential(credential)
             .with_timeout(CHECK_TIMEOUT)
             .with_max_bytes(CHECK_MAX_BYTES);
