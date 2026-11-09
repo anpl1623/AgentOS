@@ -11,6 +11,7 @@
 
 import type { EventView } from "../../bindings/EventView";
 import { EVENT_WINDOW, HISTORY_LOAD, instant, orderEvents } from "../../sdk/eventStream";
+import { type EventFamily, familyOf } from "./eventFamilies";
 
 /**
  * How far from the end of the feed, in pixels, still counts as at the end.
@@ -69,23 +70,30 @@ export interface FeedQuery {
   kind: string;
   /** One run, from the address, or `null` for every run. */
   runId: string | null;
+  /** One family of kinds, from the chips; absent or `""` for every family. */
+  family?: EventFamily | "" | undefined;
 }
 
 /** An unnarrowed query. */
 export const NO_QUERY: FeedQuery = { text: "", kind: "", runId: null };
 
-/** Whether the text or kind filter is narrowing the feed. The run is reported apart. */
+/**
+ * Whether the text, kind or family filter is narrowing the feed. The run is
+ * reported apart, by its own header.
+ */
 export function isFiltering(query: FeedQuery): boolean {
-  return query.text.trim() !== "" || query.kind !== "";
+  return query.text.trim() !== "" || query.kind !== "" || (query.family ?? "") !== "";
 }
 
 /** The events a query keeps, in the order given. */
 export function filterFeed(events: readonly EventView[], query: FeedQuery): EventView[] {
   const needle = query.text.trim().toLowerCase();
+  const family = query.family ?? "";
   return events.filter(
     (event) =>
       (query.runId === null || event.run_id === query.runId) &&
       (query.kind === "" || event.kind === query.kind) &&
+      (family === "" || familyOf(event.kind) === family) &&
       (needle === "" ||
         event.kind.toLowerCase().includes(needle) ||
         event.summary.toLowerCase().includes(needle)),

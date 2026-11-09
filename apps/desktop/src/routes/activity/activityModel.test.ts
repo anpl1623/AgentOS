@@ -108,11 +108,33 @@ describe("filterFeed", () => {
     expect(filterFeed(feed, query)).toEqual([]);
   });
 
-  it("counts only text and kind as filtering, since the run has its own chip", () => {
+  // The family chips joined text and kind as filters; the run still has a
+  // header of its own and is not counted.
+  it("counts text, kind and family as filtering, but not the run, which has its own header", () => {
     expect(isFiltering(NO_QUERY)).toBe(false);
     expect(isFiltering({ ...NO_QUERY, runId: "run-1" })).toBe(false);
     expect(isFiltering({ ...NO_QUERY, text: " x " })).toBe(true);
     expect(isFiltering({ ...NO_QUERY, kind: "a.b" })).toBe(true);
+    expect(isFiltering({ ...NO_QUERY, family: "tool" })).toBe(true);
+    expect(isFiltering({ ...NO_QUERY, family: "" })).toBe(false);
+  });
+
+  it("narrows to one family of kinds", () => {
+    expect(filterFeed(feed, { ...NO_QUERY, family: "permission" }).map((e) => e.id)).toEqual([
+      "1",
+      "3",
+    ]);
+    expect(filterFeed(feed, { ...NO_QUERY, family: "tool" }).map((e) => e.id)).toEqual(["2"]);
+    expect(filterFeed(feed, { ...NO_QUERY, family: "approval" })).toEqual([]);
+  });
+
+  it("treats an empty family as every family", () => {
+    expect(filterFeed(feed, { ...NO_QUERY, family: "" })).toHaveLength(3);
+  });
+
+  it("combines the family with the rest of the query", () => {
+    const query = { ...NO_QUERY, text: "browser", family: "permission" as const };
+    expect(filterFeed(feed, query).map((e) => e.id)).toEqual(["3"]);
   });
 });
 

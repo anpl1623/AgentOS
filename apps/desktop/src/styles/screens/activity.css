@@ -1,2 +1,767 @@
 /* The activity screen: rules no other screen uses. Shared shapes belong in
  * layout.css, components.css or primitives.css, and colours in tokens.css. */
+
+/* --activity-pin is how far down the pinned page header reaches; the screen
+ * measures it (usePinOffset) so what pins in the feed pins beneath it. */
+.activity {
+  --activity-pin: 0px;
+  --activity-stick: var(--activity-pin);
+}
+
+/* Icon-and-word buttons, here and in the header. */
+.activity :is(.page-actions, .run-scope-actions, .record-actions) > button,
+.activity .feed-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  white-space: nowrap;
+}
+
+/* --- the Live pill and Follow -------------------------------------------- */
+
+/* One capsule: the stream's state, then the switch that keeps the newest
+ * event in view. They sit together because Follow only means something while
+ * the stream is live. */
+.live-control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-5);
+  padding: 0 var(--s-3) 0 var(--s-6);
+  min-height: 34px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--surface-panel);
+  box-shadow: var(--highlight-inset);
+}
+.live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding-right: var(--s-5);
+  border-right: 1px solid var(--border-subtle);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+  white-space: nowrap;
+}
+/* Not flowing: connecting is said quietly, a stream that stopped answering
+ * in the attention hue. */
+.live-pill.idle .live-pill-label {
+  color: var(--text-dim);
+}
+.live-pill.idle.tone-warn .live-pill-label {
+  color: var(--warn-text);
+}
+/* "fixtures": said in small capitals and the attention hue, so a feed of
+ * invented events is never read as a real one. */
+.live-pill-note {
+  padding: 0 var(--s-2);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--warn-text);
+}
+.live-control .switch-label {
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+.live-control .switch[aria-checked="true"] .switch-label {
+  color: var(--text);
+}
+
+/* --- figures ------------------------------------------------------------- */
+
+/* Three across wherever the sidebar leaves room; below that two, with the
+ * last tile taking the whole row rather than standing alone, and one once two
+ * would cut "Security-relevant" short (the minimum window at 200% zoom). */
+.activity-stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: var(--s-9);
+}
+@media (max-width: 719.98px) {
+  .activity-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .activity-stats > :last-child {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-width: 539.98px) {
+  .activity-stats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* --- one run ------------------------------------------------------------- */
+
+.run-scope {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-5) var(--s-7);
+  margin-bottom: var(--s-8);
+  padding: var(--s-6) var(--s-8);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-xl);
+  background-color: var(--surface-panel);
+  background-image: linear-gradient(var(--accent-wash), var(--accent-wash));
+  box-shadow: var(--highlight-inset), var(--elev-1);
+}
+.run-scope-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-lg);
+  color: var(--on-accent);
+  background: var(--accent-gradient);
+  box-shadow: var(--accent-glow);
+}
+.run-scope-text {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+.run-scope-title {
+  margin: 0;
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.run-scope-id {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-4);
+  margin: var(--s-1) 0 0;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.run-scope-id > .mono {
+  overflow-wrap: anywhere;
+}
+/* On the wash: dim, not faint. */
+.run-scope-count {
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-normal);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.run-scope-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+}
+
+/* --- filters ------------------------------------------------------------- */
+
+.activity-filters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-6);
+  margin-bottom: var(--s-8);
+}
+.activity-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4);
+}
+.activity-search {
+  position: relative;
+  display: flex;
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+.activity-search > .icon {
+  position: absolute;
+  top: 50%;
+  left: var(--s-5);
+  transform: translateY(-50%);
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.activity-search > input {
+  width: 100%;
+  padding-left: calc(var(--s-5) + 16px + var(--s-4));
+}
+.activity-toolbar > select {
+  flex: 0 1 15rem;
+  width: auto;
+  min-width: 0;
+}
+.activity-tally {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  margin-left: auto;
+}
+.activity-count {
+  font-size: var(--fs-small);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.activity .chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+/* A family: a pill-shaped toggle. Its words are dim until it is hovered or
+ * chosen; a chosen chip takes the accent wash from base.css. Never shorter
+ * than the 32px every target keeps. */
+.activity button.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: 32px;
+  padding: var(--s-1) var(--s-3) var(--s-1) var(--s-5);
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.activity button.chip:hover:not(:disabled) {
+  color: var(--text);
+}
+.activity button.chip[aria-pressed="true"] {
+  color: var(--text-accent);
+  font-weight: var(--fw-medium);
+}
+.activity button.chip > .icon {
+  opacity: 0.85;
+}
+/* The count rides in a small well, so it reads as a figure rather than part
+ * of the word. Dim rather than faint: a chip can be hovered or washed. */
+.activity .chip-count {
+  min-width: 2.2em;
+  padding: 0 var(--s-3);
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+  color: var(--text-dim);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+/* The security view is a full-height control on the filter line, not a
+ * pill among the families. */
+.activity button.chip.chip-security {
+  min-height: 34px;
+  padding-right: var(--s-6);
+  border-radius: var(--radius-md);
+}
+
+/* Named twice so the security toggle's own height above does not outrank the
+ * coarse pointer's. */
+@media (pointer: coarse) {
+  .activity button.chip,
+  .activity button.chip.chip-security {
+    min-height: 40px;
+  }
+}
+
+/* --- the feed and the record beside it ----------------------------------- */
+
+/* The record opens beside the feed when there is room for both, as an
+ * inspector that stays pinned while the feed scrolls; beneath it otherwise.
+ * The body's own width decides, so a sidebar or a narrowed window does the
+ * same as a smaller screen. */
+.activity-body {
+  container: activity-body / inline-size;
+}
+.activity-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s-8);
+}
+.activity-main {
+  min-width: 0;
+}
+@container activity-body (min-width: 940px) {
+  .activity-split.with-record {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
+    align-items: start;
+  }
+  .activity-split.with-record > .activity-record {
+    position: sticky;
+    top: calc(var(--activity-stick) + var(--s-4));
+    max-height: calc(100vh - var(--activity-stick) - var(--s-4) - var(--s-8));
+    overflow-y: auto;
+  }
+}
+
+/* The feed's panel clips its corners without becoming a scroll container, so
+ * a day's separator pins to the main column while its events scroll past.
+ * hidden stays as the fallback for a webview without clip. The panel is also
+ * the container its rows lay themselves out against. */
+.panel.activity-feed {
+  container: feed / inline-size;
+  display: flow-root;
+  overflow: hidden;
+  overflow: clip;
+}
+.activity-loading {
+  padding-bottom: var(--s-4);
+}
+
+/* A day: a strip that pins flush beneath the page header, the date on the
+ * leading side and how many events the day holds on the other. Opaque, as a
+ * list's own heading is: rows passing under it are not something to read. */
+.feed-day {
+  position: sticky;
+  top: var(--activity-stick);
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-6);
+  padding: var(--s-4) var(--s-8);
+  background: var(--surface-panel);
+  border-bottom: 1px solid var(--border-subtle);
+  box-shadow: var(--highlight-inset);
+}
+.feed-group + .feed-group .feed-day {
+  border-top: 1px solid var(--border-subtle);
+}
+.feed-day-label {
+  margin: 0;
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.feed-day-count {
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* One event. A grid, so the columns line up down a day however long each
+ * kind is: time, the node on the rail, kind, summary, and a chevron for a row
+ * that opens. Rows off screen skip layout and paint; the intrinsic size keeps
+ * the scrollbar honest about a long feed. */
+.activity-feed .feed-row {
+  --feed-time-w: 6.6em;
+  --feed-node: 26px;
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns:
+    var(--feed-time-w) var(--feed-node) minmax(9rem, 15rem) minmax(0, 1fr)
+    14px;
+  grid-template-areas: "time node kind summary trail";
+  align-items: center;
+  gap: 0 var(--s-6);
+  width: 100%;
+  min-height: 40px;
+  padding: var(--s-3) var(--s-8);
+  font-size: var(--fs-small);
+  text-align: left;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 40px;
+}
+/* Separators start where the words do, so the rail runs unbroken down the
+ * day; a hovered or open row takes a fill instead and drops its line. */
+.activity-feed [role="listitem"] > .row.feed-row {
+  --feed-inset: calc(var(--s-8) + var(--feed-time-w) + var(--s-6) * 2 + var(--feed-node));
+  border-bottom: none;
+  background-image: linear-gradient(var(--border-hairline), var(--border-hairline));
+  background-repeat: no-repeat;
+  background-position: right bottom;
+  background-size: calc(100% - var(--feed-inset)) 1px;
+}
+.activity-feed [role="listitem"]:last-child > .row.feed-row {
+  background-image: none;
+}
+
+/* The rail: a line through every node of a day, drawn by the row so it runs
+ * from the first node to the last and no further. */
+.activity-feed .feed-row::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--s-8) + var(--feed-time-w) + var(--s-6) + var(--feed-node) / 2);
+  width: 1px;
+  background: var(--border-strong);
+  pointer-events: none;
+}
+.activity-feed [role="listitem"]:first-child > .feed-row::after {
+  top: 50%;
+}
+.activity-feed [role="listitem"]:last-child > .feed-row::after {
+  bottom: 50%;
+}
+
+.feed-time {
+  grid-area: time;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.feed-kind {
+  grid-area: kind;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.feed-summary {
+  grid-area: summary;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.feed-trail {
+  grid-area: trail;
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+  transition:
+    transform var(--dur-2) var(--ease-spring),
+    color var(--dur-2) var(--ease-out);
+}
+.feed-row.clickable:hover .feed-trail {
+  color: var(--text-dim);
+  transform: translateX(2px);
+}
+.feed-row[aria-expanded="true"] .feed-trail {
+  color: var(--text-accent);
+  transform: rotate(90deg);
+}
+.feed-row[aria-expanded="true"] {
+  background: var(--surface-raised);
+}
+.feed-row[aria-expanded="true"] .feed-summary {
+  font-weight: var(--fw-medium);
+}
+
+/* The node: the event's family as an icon, its tone as a hue. The fill is
+ * opaque — a wash laid on the panel — so the rail stops at its edge. */
+.feed-node {
+  grid-area: node;
+  display: grid;
+  place-items: center;
+  width: var(--feed-node);
+  height: var(--feed-node);
+  border-radius: 50%;
+  color: var(--text-dim);
+  background: var(--surface-raised);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.feed-row.tone-ok .feed-node {
+  color: var(--ok-fg);
+  background: linear-gradient(var(--ok-wash), var(--ok-wash)), var(--surface-panel);
+  box-shadow: inset 0 0 0 1px var(--ok-line);
+}
+.feed-row.tone-info .feed-node {
+  color: var(--info-fg);
+  background: linear-gradient(var(--info-wash), var(--info-wash)), var(--surface-panel);
+  box-shadow: inset 0 0 0 1px var(--info-line);
+}
+.feed-row.tone-warn .feed-node {
+  color: var(--warn-fg);
+  background: linear-gradient(var(--warn-wash), var(--warn-wash)), var(--surface-panel);
+  box-shadow: inset 0 0 0 1px var(--warn-line);
+}
+.feed-row.tone-danger .feed-node {
+  color: var(--danger-fg);
+  background: linear-gradient(var(--danger-wash), var(--danger-wash)), var(--surface-panel);
+  box-shadow: inset 0 0 0 1px var(--danger-line);
+}
+.feed-row.tone-blocked .feed-node {
+  color: var(--blocked-fg);
+  background: linear-gradient(var(--blocked-wash), var(--blocked-wash)), var(--surface-panel);
+  box-shadow: inset 0 0 0 1px var(--blocked-line);
+}
+
+/* Security-relevant: a bar on the leading edge, a wash that fades out from it
+ * across the time and the kind, and the kind in the hue of the event's tone,
+ * so a refusal reads as a refusal and taint as attention, and a long feed can
+ * be scanned for them. The bar is a shape, so the fact survives without
+ * colour.
+ *
+ * The mark spans the row beneath its content (the row isolates its stacking),
+ * so the wash stays when a hovered or open row takes its fill. It is drawn
+ * over the pointer light and under the rail, which crosses it as it crosses
+ * every row. */
+.feed-row {
+  --feed-hue: var(--warn-fg);
+  --feed-wash: var(--warn-wash);
+}
+.feed-row.tone-blocked {
+  --feed-hue: var(--blocked-fg);
+  --feed-wash: var(--blocked-wash);
+}
+.feed-row.tone-danger {
+  --feed-hue: var(--danger-fg);
+  --feed-wash: var(--danger-wash);
+}
+.feed-mark {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(90deg, var(--feed-wash), transparent 45%);
+  pointer-events: none;
+}
+.feed-mark::before {
+  content: "";
+  position: absolute;
+  top: var(--s-2);
+  bottom: var(--s-2);
+  left: 0;
+  width: 3px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--feed-hue);
+}
+/* Faint text is never set on a wash. */
+.feed-row.security .feed-time {
+  color: var(--text-dim);
+}
+.feed-row.security .feed-kind {
+  color: var(--warn-text);
+}
+.feed-row.security.tone-blocked .feed-kind {
+  color: var(--blocked-fg);
+}
+.feed-row.security.tone-danger .feed-kind {
+  color: var(--danger-text);
+}
+
+/* Still being written to the chain: it cannot open yet, and says so with a
+ * clock where the chevron would be. */
+.feed-row.pending .feed-trail {
+  color: var(--text-faint);
+}
+
+/* A row that has just arrived rises into place and its node pops once. */
+.feed-row.arrived {
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+.feed-row.arrived .feed-node {
+  animation: pop var(--dur-4) var(--ease-spring) backwards;
+}
+
+/* Narrow: two lines. The node and the summary lead, the time sits at the end
+ * of the first line and the kind goes beneath the summary. */
+@container feed (max-width: 600px) {
+  .activity-feed .feed-row {
+    grid-template-columns: var(--feed-node) minmax(0, 1fr) auto;
+    grid-template-areas:
+      "node summary time"
+      "node kind kind";
+    gap: var(--s-1) var(--s-5);
+    padding: var(--s-4) var(--s-7);
+    contain-intrinsic-size: auto 52px;
+  }
+  .activity-feed .feed-row::after {
+    left: calc(var(--s-7) + var(--feed-node) / 2);
+  }
+  .activity-feed [role="listitem"] > .row.feed-row {
+    --feed-inset: calc(var(--s-7) + var(--feed-node) + var(--s-5));
+  }
+  .feed-trail {
+    display: none;
+  }
+  .feed-day {
+    padding: var(--s-4) var(--s-7);
+  }
+}
+
+/* --- the way back to the newest ------------------------------------------ */
+
+/* A dock after the feed that pins to the bottom of the view while the feed
+ * runs on below it. At rest it sits between the feed and the notes, so the
+ * button never covers the last row; pinned, it floats over the rows, and only
+ * the button itself takes the pointer. Shown only when Follow is off and
+ * something has come in since. */
+.feed-jump-dock {
+  position: sticky;
+  bottom: var(--s-6);
+  z-index: var(--z-sticky);
+  display: flex;
+  justify-content: center;
+  margin-top: var(--s-5);
+  pointer-events: none;
+}
+.activity .feed-jump {
+  pointer-events: auto;
+  padding: var(--s-3) var(--s-7);
+  border-radius: var(--radius-pill);
+  border-color: var(--accent-line);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  color: var(--text);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-medium);
+  box-shadow: var(--highlight-inset), var(--elev-2), var(--accent-glow);
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+.activity .feed-jump:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.activity-note {
+  margin-top: var(--s-5);
+}
+
+/* --- the record ---------------------------------------------------------- */
+
+.activity-record {
+  min-width: 0;
+  border: 1px solid var(--border-emphasis);
+  border-radius: var(--radius-xl);
+  background: var(--surface-panel);
+  box-shadow: var(--highlight-inset), var(--elev-2);
+  animation: overlay-in var(--dur-3) var(--ease-out) backwards;
+}
+.record-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3) var(--s-6);
+  padding: var(--s-7) var(--s-8) var(--s-6);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.record-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.record-title {
+  flex: 1 1 14rem;
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0;
+  text-transform: none;
+  line-height: var(--lh-code);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.record-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+.record-body {
+  padding: var(--s-7) var(--s-8);
+}
+.record-body > pre.code {
+  margin: var(--s-7) 0 var(--s-5);
+  max-height: 22rem;
+  overflow: auto;
+}
+
+/* The chain: two links, the one before above this one, joined by a line on
+ * the leading side; the current record's dot is filled. */
+.record-chain {
+  display: grid;
+  gap: var(--s-5);
+  margin: 0;
+}
+.record-link {
+  position: relative;
+  display: grid;
+  gap: var(--s-1);
+  padding-left: var(--s-9);
+}
+.record-link::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  left: var(--s-2);
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px var(--border-control);
+}
+.record-link.current::before {
+  background: var(--accent-gradient);
+  box-shadow: var(--accent-glow);
+}
+/* The joint hangs from the earlier link's dot to the later one's, across the
+ * gap between them, so it holds whatever height a link wraps to. */
+.record-link:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 14px;
+  bottom: calc(var(--s-5) * -1 - 5px);
+  left: calc(var(--s-2) + 4px);
+  width: 1px;
+  background: var(--border-control);
+}
+.record-link > dt {
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.record-link > dd {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin: 0;
+  min-width: 0;
+  font-size: var(--fs-code);
+  color: var(--text);
+}
+.record-link > dd > .mono {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* --- layouts and motion -------------------------------------------------- */
+
+/* The narrow layout does not pin the page header, so nothing is measured: what
+ * pins in the feed pins at the top of the column. The top bar covers that top,
+ * but the column already keeps the bar's height as padding, and a sticky
+ * offset counts from inside its scroller's padding, so zero lands flush
+ * beneath the bar. Adding the bar's height here would count it twice and leave
+ * a strip of rows showing between the bar and the separator. */
+@media (max-width: 719.98px) {
+  .activity {
+    --activity-stick: 0px;
+  }
+  .activity-tally {
+    margin-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feed-row.arrived,
+  .feed-row.arrived .feed-node,
+  .activity .feed-jump,
+  .activity-record {
+    animation: none;
+  }
+  .feed-trail {
+    transition: none;
+  }
+}
