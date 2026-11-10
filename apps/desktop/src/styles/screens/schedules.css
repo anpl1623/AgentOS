@@ -214,13 +214,15 @@
 }
 
 /* The pause switch sits in the card's corner with its state in words beside
- * it; the words are what changes, the switch's name does not. */
+ * it; the words are what changes, the switch's name does not. They lead, so
+ * the track sits flush with the card's edge. */
 .schedule-switch {
   flex: none;
   gap: var(--s-4);
   margin: calc(var(--s-2) * -1) calc(var(--s-2) * -1) 0 0;
 }
 .schedule-switch .switch-label {
+  order: -1;
   font-size: var(--fs-meta);
   color: var(--text-dim);
 }

@@ -92,15 +92,14 @@ export function Scheduler({ scheduler }: { scheduler: SchedulerState }) {
         ) : (
           <>
             <div className="settings-scheduler-head">
-              {/* Not disabled while a change is in flight: a focused control
-                  that becomes disabled drops focus to the top of the window.
-                  A press then is ignored instead, and "Working…" says why. */}
+              {/* Busy while either change is in flight, its own or the
+                  pacing's: it keeps focus and ignores presses until the
+                  runtime answers, and "Working…" says why. */}
               <Switch
                 checked={view.running}
+                busy={busy}
                 disabled={!view.running && !pacing.valid}
-                onChange={(running) => {
-                  if (!busy) void apply(running);
-                }}
+                onChange={(running) => void apply(running)}
                 label="Scheduler"
               />
               {view.running ? (

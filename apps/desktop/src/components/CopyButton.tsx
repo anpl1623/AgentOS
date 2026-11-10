@@ -1,5 +1,6 @@
 import { useCopy } from "./hooks";
 import { Icon } from "./icons";
+import type { TipAlign } from "./Tooltip";
 
 /** How long the check stays after a copy, before the button is ready again. */
 const CONFIRM_MS = 1_500;
@@ -16,16 +17,20 @@ const CONFIRM_MS = 1_500;
  *
  * `label` names what is copied — "Copy the run id" — and is the button's name
  * and tooltip. With `showLabel` the words are drawn too; otherwise it is an
- * icon button.
+ * icon button. A button at the trailing edge of a row takes `tipAlign="end"`,
+ * so its tooltip opens inwards rather than past the edge of the column.
  */
 export function CopyButton({
   text,
   label = "Copy",
   showLabel = false,
+  tipAlign = "center",
 }: {
   text: string;
   label?: string | undefined;
   showLabel?: boolean | undefined;
+  /** Where the icon button's tooltip lines up with it; see components/Tooltip.ts. */
+  tipAlign?: TipAlign | undefined;
 }) {
   const { copy, state } = useCopy(CONFIRM_MS);
   return (
@@ -36,6 +41,7 @@ export function CopyButton({
         data-state={state}
         aria-label={showLabel ? undefined : label}
         data-tip={showLabel ? undefined : label}
+        data-tip-align={showLabel || tipAlign === "center" ? undefined : tipAlign}
         onClick={() => void copy(text)}
       >
         <span className="copy-glyphs" aria-hidden="true">

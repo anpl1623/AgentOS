@@ -47,7 +47,7 @@ export function Storage({ settings }: { settings: SettingsView }) {
           path={settings.data_dir}
         />
         <PathRow icon="agents" label="Workspaces" what="workspaces" path={settings.workspace} />
-        <PathRow icon="activity" label="Database" what="database" path={settings.database} />
+        <PathRow icon="database" label="Database" what="database" path={settings.database} />
       </dl>
     </Section>
   );
@@ -78,7 +78,8 @@ function PathRow({
       </dt>
       <dd>
         <span className="mono settings-path-value">{path}</span>
-        <CopyButton text={path} label={`Copy the ${what} path`} />
+        {/* At the row's trailing edge, so its tooltip opens inwards. */}
+        <CopyButton text={path} label={`Copy the ${what} path`} tipAlign="end" />
       </dd>
     </div>
   );

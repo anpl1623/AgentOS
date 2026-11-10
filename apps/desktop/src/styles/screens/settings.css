@@ -692,19 +692,6 @@
   overflow-wrap: anywhere;
   color: var(--text);
 }
-/* The copy buttons sit at the panel's trailing edge. A tooltip centred on one
- * reaches past the main column, and even unseen it gives the column a
- * sideways scroll. They open inwards from their own trailing edge instead, as
- * the sidebar's buttons do. */
-.settings-path [data-tip]::after {
-  left: auto;
-  right: 0;
-  transform: translateY(-2px) scale(0.96);
-  transform-origin: top right;
-}
-.settings-path [data-tip]:is(:hover, :focus-visible)::after {
-  transform: none;
-}
 @media (max-width: 719.98px) {
   .settings-path {
     grid-template-columns: minmax(0, 1fr);

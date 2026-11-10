@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 
 import type { ScheduleView } from "../../bindings/ScheduleView";
-import { Icon, tip } from "../../components/common";
+import { Icon, Switch, tip } from "../../components/common";
 import { cadenceIcon } from "./cadenceModel";
 import { type WhenView, scheduleCard, scheduleCardId } from "./schedulesModel";
 import type { ScheduleChange } from "./useScheduleActions";
@@ -47,6 +47,8 @@ export function ScheduleCard({
   const { row, when } = card;
   const titleId = `schedule-${schedule.id}`;
   const deleting = change === "delete";
+  const switching = change === "pause" || change === "resume";
+  const active = row.action === "pause";
   const noteId = `resume-note-${schedule.id}`;
   const state =
     row.action === "pause" ? "is-active" : row.action === "resume" ? "is-paused" : "is-inert";
@@ -73,13 +75,21 @@ export function ScheduleCard({
           {card.exact ? <p className="schedule-exact">{card.exact}</p> : null}
         </div>
         {row.action ? (
-          <ScheduleSwitch
-            name={schedule.name}
-            active={row.action === "pause"}
-            busy={change === "pause" || change === "resume"}
-            locked={locked}
+          // On while the schedule would fire. Its name stays the same
+          // whichever way it is set, and the state is announced from
+          // aria-checked; the words beside it are for the eye. Resume is
+          // described by what resuming will do, since it never replays what
+          // was missed.
+          <Switch
+            className="schedule-switch"
+            checked={active}
+            busy={switching}
+            disabled={locked}
+            ariaLabel={`${schedule.name} active`}
             describedBy={row.resumeNote ? noteId : undefined}
-            onToggle={() => onPause(row.action === "pause")}
+            tip={active ? "Pause" : "Resume"}
+            label={switchWord(active, switching)}
+            onChange={(on) => onPause(!on)}
           />
         ) : (
           <span className={`verdict ${row.tone}`}>
@@ -165,55 +175,8 @@ function NextFiring({ when, running }: { when: WhenView; running: boolean | null
   );
 }
 
-/**
- * Pause and resume, as a switch that is on while the schedule would fire.
- *
- * Drawn with the shared switch's classes, but written here because the shared
- * component cannot yet point at a description or say it is busy: Resume must
- * be described by what resuming will do, since resuming never replays what was
- * missed. The name stays the same whichever way it is set; the state is
- * announced from `aria-checked`. While the change is in flight the knob is
- * already where it is going, and returns if the runtime refuses.
- */
-function ScheduleSwitch({
-  name,
-  active,
-  busy,
-  locked,
-  describedBy,
-  onToggle,
-}: {
-  name: string;
-  active: boolean;
-  /** Its own change is in flight: it stays focusable, and ignores presses. */
-  busy: boolean;
-  /** Some change is in flight. */
-  locked: boolean;
-  describedBy: string | undefined;
-  onToggle: () => void;
-}) {
-  const checked = busy ? !active : active;
-  const word = busy ? (active ? "Pausing…" : "Resuming…") : active ? "Active" : "Paused";
-  return (
-    <button
-      type="button"
-      role="switch"
-      className="switch schedule-switch"
-      aria-checked={checked}
-      aria-label={`${name} active`}
-      aria-describedby={describedBy}
-      aria-busy={busy || undefined}
-      aria-disabled={busy || undefined}
-      data-tip={active ? "Pause" : "Resume"}
-      disabled={locked && !busy}
-      onClick={busy ? undefined : onToggle}
-    >
-      <span className="switch-label" aria-hidden="true">
-        {word}
-      </span>
-      <span className="switch-track" aria-hidden="true">
-        <span className="switch-knob" />
-      </span>
-    </button>
-  );
+/** The words beside the pause switch: its state, or the change it is making. */
+function switchWord(active: boolean, switching: boolean): string {
+  if (switching) return active ? "Pausing…" : "Resuming…";
+  return active ? "Active" : "Paused";
 }

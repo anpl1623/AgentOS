@@ -143,6 +143,27 @@
     opacity: 0;
   }
 }
+/* A run held on a person's decision: in flight, so it keeps the live chip's
+ * dot, but in the attention hue a pending approval wears everywhere else, and
+ * the dot holds still, because nothing moves until someone decides. */
+.verdict.waiting {
+  position: relative;
+  padding-left: calc(var(--s-4) + 6px + var(--s-3));
+  color: var(--warn-fg);
+  border-color: var(--warn-line);
+  background: var(--warn-wash);
+}
+.verdict.waiting::before {
+  content: "";
+  position: absolute;
+  left: var(--s-4);
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+}
 .verdict.neutral,
 .verdict.cancelled {
   color: var(--text-dim);

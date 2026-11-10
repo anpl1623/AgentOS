@@ -16,7 +16,7 @@ export { PageHeader } from "./PageHeader";
 export { Sparkline, type SparkTone } from "./Sparkline";
 export { type StatDelta, StatTile, type StatTone } from "./StatTile";
 export { Switch } from "./Switch";
-export { type TipSide, tip } from "./Tooltip";
+export { type TipAlign, type TipSide, tip } from "./Tooltip";
 
 export function Panel({ children }: { children: ReactNode }) {
   return <div className="panel">{children}</div>;

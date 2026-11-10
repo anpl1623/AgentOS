@@ -118,6 +118,23 @@
 [data-tip][data-tip-side="right"]:focus-visible::after {
   transform: translate(0, -50%) scale(1);
 }
+/* Lined up with the element's trailing edge, for a control at the end of a
+ * row: centred, its tooltip would reach past the column, and even unseen give
+ * it a sideways scroll. It grows from that corner, as the sidebar's do. */
+[data-tip][data-tip-align="end"]::after {
+  left: auto;
+  right: 0;
+  transform: translateY(-2px) scale(0.96);
+  transform-origin: top right;
+}
+[data-tip][data-tip-side="top"][data-tip-align="end"]::after {
+  transform: translateY(2px) scale(0.96);
+  transform-origin: bottom right;
+}
+[data-tip][data-tip-align="end"]:hover::after,
+[data-tip][data-tip-align="end"]:focus-visible::after {
+  transform: none;
+}
 /* A touch screen has no hover, only a tap that leaves :hover stuck on. */
 @media (hover: none) {
   [data-tip]:hover:not(:focus-visible)::after {
@@ -248,12 +265,8 @@
   border-radius: var(--radius-xl);
   box-shadow: var(--highlight-inset), var(--elev-1);
 }
-button.stat-tile {
-  width: 100%;
+.stat-tile.is-action {
   cursor: pointer;
-}
-button.stat-tile:hover:not(:disabled) {
-  background-color: var(--surface-panel);
 }
 .stat-tile-head {
   display: flex;
@@ -284,11 +297,56 @@ button.stat-tile:hover:not(:disabled) {
   text-transform: uppercase;
   color: var(--text-dim);
 }
+/* A tile that does something is a button in its label, drawn as the label it
+ * holds, and its hit area is stretched over the whole card by ::after, whose
+ * containing block is the card rather than the clipped label. The card is
+ * what lifts and lights, so the button itself takes none of a button's looks:
+ * no fill, no edge, no press. */
+.stat-tile-hit {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  text-align: left;
+}
+.stat-tile-hit:is(:hover, :active):not(:disabled) {
+  background: none;
+  transform: none;
+}
+.stat-tile-hit::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+/* With nothing to do it is still a figure, not a greyed-out control: the
+ * chevron is gone and the card no longer lifts, and the label keeps its ink. */
+.stat-tile-hit[aria-disabled="true"] {
+  opacity: 1;
+  cursor: auto;
+}
+/* The card carries the focus ring, in its own shape: the label is only where
+ * the button happens to sit, and a ring around the word would not say that
+ * the whole card is the control. The card clips its sparkline, so the ring
+ * cannot be drawn by the stretched ::after, which the card would clip too.
+ * Without :has() the label keeps focus.css's own ring. */
+@supports selector(:has(*)) {
+  .stat-tile-hit:focus-visible {
+    outline: none;
+    box-shadow: none;
+  }
+  .stat-tile:has(.stat-tile-hit:focus-visible) {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 6px var(--focus-glow);
+  }
+}
 .stat-tile-go {
   color: var(--text-dim);
   transition: transform var(--dur-2) var(--ease-spring);
 }
-button.stat-tile:hover:not(:disabled) .stat-tile-go {
+.stat-tile.is-action:hover .stat-tile-go {
   transform: translateX(2px);
   color: var(--text);
 }
@@ -324,9 +382,23 @@ button.stat-tile:hover:not(:disabled) .stat-tile-go {
   height: 34px;
   margin: auto calc(var(--s-8) * -1) calc(var(--s-7) * -1);
 }
+/* What the line counts and how far back, set just above it and quieter than
+ * the hint, so it reads as the line's label rather than another figure. It
+ * takes the line's place at the foot, and the line follows it. */
+.stat-tile-trend-caption {
+  margin-top: auto;
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-medium);
+  color: var(--text-faint);
+}
+.stat-tile-trend-caption + .stat-tile-spark {
+  margin-top: calc(var(--s-2) * -1);
+}
 
 /* Tones. The figure takes the hue; the loud tones — attention, failure,
- * critical — also glow, since those are the figures that ask for a person. */
+ * critical — also glow, since those are the figures that ask for a person.
+ * Blocked takes the edge but not the glow: a refusal is the policy working,
+ * to be seen rather than to be alarmed by. */
 .stat-tile.tone-ok .stat-tile-value {
   color: var(--ok-fg);
 }
@@ -341,6 +413,9 @@ button.stat-tile:hover:not(:disabled) .stat-tile-go {
 }
 .stat-tile.tone-info .stat-tile-value {
   color: var(--info-text);
+}
+.stat-tile.tone-blocked .stat-tile-value {
+  color: var(--blocked-fg);
 }
 .stat-tile.tone-ok .stat-tile-icon {
   color: var(--ok-fg);
@@ -366,6 +441,14 @@ button.stat-tile:hover:not(:disabled) .stat-tile-go {
   color: var(--info-fg);
   background: var(--info-wash);
   box-shadow: inset 0 0 0 1px var(--info-line);
+}
+.stat-tile.tone-blocked .stat-tile-icon {
+  color: var(--blocked-fg);
+  background: var(--blocked-wash);
+  box-shadow: inset 0 0 0 1px var(--blocked-line);
+}
+.stat-tile.tone-blocked {
+  border-color: var(--blocked-line);
 }
 .stat-tile.tone-warn {
   border-color: var(--warn-line);
@@ -493,6 +576,27 @@ button.stat-tile:hover:not(:disabled) .stat-tile-go {
 }
 .switch[aria-checked="true"]:active:not(:disabled) .switch-knob {
   transform: translateX(12px);
+}
+/* Busy: the knob is already where it was pressed towards, and a ring spreads
+ * from it until the runtime answers, as a live dot's does. It keeps its ink
+ * rather than greying out like an unavailable button, because it is working,
+ * not refused. */
+.switch[aria-busy="true"] {
+  opacity: 1;
+}
+.switch[aria-busy="true"] .switch-knob::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: inherit;
+  animation: pulse-ring var(--dur-pulse) var(--ease-out) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .switch[aria-busy="true"] .switch-knob::after {
+    animation: none;
+    opacity: 0;
+  }
 }
 
 /* --- copy button --------------------------------------------------------- */

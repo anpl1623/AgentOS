@@ -1,5 +1,3 @@
-import type { RefObject } from "react";
-
 import { Icon } from "../../components/common";
 import type { EventFamily, FamilyCount } from "./eventFamilies";
 
@@ -24,7 +22,6 @@ export function FeedToolbar({
   onFamily,
   securityOnly,
   onSecurity,
-  securityRef,
   filtering,
   onClear,
   shown,
@@ -40,8 +37,6 @@ export function FeedToolbar({
   onFamily: (next: EventFamily | "") => void;
   securityOnly: boolean;
   onSecurity: (next: boolean) => void;
-  /** The security view's toggle, where focus goes when the view is switched on from elsewhere. */
-  securityRef: RefObject<HTMLButtonElement | null>;
   filtering: boolean;
   onClear: () => void;
   /** Rows the filters keep, and rows held before them. */
@@ -71,7 +66,6 @@ export function FeedToolbar({
           ))}
         </select>
         <button
-          ref={securityRef}
           type="button"
           className="chip chip-security"
           aria-pressed={securityOnly}

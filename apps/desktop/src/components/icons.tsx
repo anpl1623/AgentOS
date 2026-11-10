@@ -53,6 +53,7 @@ export const ICON_NAMES = [
   "globe",
   "terminal",
   "folder",
+  "database",
   "window",
   "cpu",
   "zap",
@@ -266,6 +267,15 @@ const DRAWINGS: Record<IconName, ReactNode> = {
   ),
   folder: (
     <path d="M3.5 7.25c0-1.1.9-2 2-2h3.9l2.1 2.5h7c1.1 0 2 .9 2 2v7.5c0 1.1-.9 2-2 2h-13c-1.1 0-2-.9-2-2z" />
+  ),
+  // A stack of three discs seen from the side: the top as an ellipse, the
+  // seams beneath it as the same curve's front half.
+  database: (
+    <>
+      <ellipse cx="12" cy="6" rx="7.25" ry="2.75" />
+      <path d="M4.75 6v12c0 1.52 3.25 2.75 7.25 2.75s7.25-1.23 7.25-2.75V6" />
+      <path d="M4.75 12c0 1.52 3.25 2.75 7.25 2.75s7.25-1.23 7.25-2.75" />
+    </>
   ),
   window: (
     <>

@@ -191,19 +191,15 @@ export function Activity({
   // Focus goes back to the row that opened the record, so a keyboard user
   // closing it is where they were in the feed, not at the top of the page.
   const feed = useRef<HTMLDivElement>(null);
-  const securityButton = useRef<HTMLButtonElement>(null);
 
-  // Each control below leaves the page as it acts — the tile stops being a
-  // button once the security view is on, the jump pill once Follow is, an
-  // empty state's button once rows arrive — and focus that is not moved
-  // falls to the top of the document. It goes where the result is instead.
-  // Without scrolling: each place is already in view, and a scroll here
-  // would read to useFollow as the operator's own.
+  // Each control below leaves the page as it acts — the jump pill once Follow
+  // is on, an empty state's button once rows arrive — and focus that is not
+  // moved falls to the top of the document. It goes where the result is
+  // instead. Without scrolling: each place is already in view, and a scroll
+  // here would read to useFollow as the operator's own. The security tile
+  // needs none of this: it stays where it is, unavailable while its view is
+  // on, so focus stays on it.
   const focusFeed = () => feed.current?.focus({ preventScroll: true });
-  const showSecurity = () => {
-    setSecurity(true);
-    securityButton.current?.focus({ preventScroll: true });
-  };
   const jumpToNewest = () => {
     setFollow(true);
     const rows = feed.current?.querySelectorAll<HTMLElement>("[data-event-id]");
@@ -275,7 +271,7 @@ export function Activity({
         loaded={stream.loaded}
         now={now}
         securityOnly={securityOnly}
-        onSecurity={showSecurity}
+        onSecurity={() => setSecurity(true)}
       />
 
       <FeedToolbar
@@ -289,7 +285,6 @@ export function Activity({
         onFamily={(next) => filterBy(() => setFamily(next))}
         securityOnly={securityOnly}
         onSecurity={setSecurity}
-        securityRef={securityButton}
         filtering={filtering}
         onClear={clearFilters}
         shown={shown.length}
