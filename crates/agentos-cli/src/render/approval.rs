@@ -192,6 +192,32 @@ mod tests {
     }
 
     #[test]
+    fn the_box_stays_square_around_wide_text() {
+        // The explanation can carry a model-supplied title in Korean,
+        // Japanese or with emoji, two columns a character. Wrapped and padded
+        // by characters, those lines ran far past the right-hand border of
+        // the card the operator reads before approving. Measured here with
+        // `unicode_width` itself, not the function under test.
+        use unicode_width::UnicodeWidthStr;
+
+        let mut wide = request(true);
+        wide.explanation =
+            "이슈 제목: 승인 카드의 테두리가 깨지지 않아야 합니다 🙂 日本語のタイトル ".repeat(6);
+        wide.delegation_chain = vec!["감독자".into(), "연구원".into()];
+        let card = approval_card(&wide, &plain());
+        let widths: Vec<usize> = card
+            .lines()
+            .filter(|line| line.starts_with('│'))
+            .map(UnicodeWidthStr::width)
+            .collect();
+        assert!(widths.len() > 10, "{card}");
+        assert!(
+            widths.iter().all(|width| *width == WIDTH),
+            "ragged box: {widths:?}\n{card}"
+        );
+    }
+
+    #[test]
     fn the_card_names_the_chain_that_asked() {
         let mut delegated = request(false);
         delegated.agent_name = "worker".into();

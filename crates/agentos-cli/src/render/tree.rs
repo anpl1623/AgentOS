@@ -2,7 +2,7 @@
 
 use agentos_runtime::DelegationNode;
 
-use super::{Style, WIDTH, summary_line, truncate};
+use super::{Style, WIDTH, summary_line, truncate, visible_width};
 
 /// Render a delegation tree, depth first, one node per run.
 ///
@@ -40,7 +40,10 @@ fn tree_node(node: &DelegationNode, lead: &str, rest: &str, style: &Style, out: 
     } else {
         format!("{rest}│  ")
     };
-    let room = WIDTH.saturating_sub(body.chars().count());
+    // Measured in columns like the objective it makes room for, and one short
+    // of the edge, because a cut objective ends in an ellipsis that takes a
+    // column of its own.
+    let room = WIDTH.saturating_sub(visible_width(&body) + 1);
     out.push_str(&format!(
         "{}{}\n",
         style.dim(&body),
@@ -151,6 +154,38 @@ mod tests {
             ],
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_long_objective_is_cut_inside_the_width() {
+        // A Hangul syllable takes two columns, so an objective cut by
+        // characters ran to nearly twice the width. The ellipsis takes a
+        // column too, which a long English objective used to spend past the
+        // edge.
+        use unicode_width::UnicodeWidthStr;
+
+        for objective in [
+            "이슈 제목을 읽고 요약한 다음 담당자에게 알려 주세요 ".repeat(6),
+            "日本語のタイトルを読んで要約してください🙂".repeat(6),
+            "read the issue and summarise it for the owner ".repeat(6),
+        ] {
+            let root = node(
+                "supervisor",
+                &objective,
+                child_run(TaskState::Completed, 2, false),
+                vec![node(
+                    "researcher",
+                    &objective,
+                    child_run(TaskState::Completed, 1, false),
+                    vec![],
+                )],
+            );
+            let text = delegation_tree(&root, &plain());
+            assert!(text.contains('…'), "{text}");
+            for line in text.lines() {
+                assert!(line.width() <= WIDTH, "{} columns: {line}", line.width());
+            }
+        }
     }
 
     #[test]

@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::gate::InteractiveGate;
 use crate::render::{
-    DelegationEdge, Lineage, Style, delegation_tree, pad, rule, trace as render_trace,
+    DelegationEdge, Lineage, Style, delegation_tree, pad, rule, trace as render_trace, truncate,
 };
 
 /// Task subcommands.
@@ -359,11 +359,4 @@ async fn root_task(
     };
     let root = runtime.database().runs().get(top.parent_run_id).await?;
     Ok(Some(root.task_id))
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_owned();
-    }
-    format!("{}…", text.chars().take(max).collect::<String>())
 }

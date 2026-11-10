@@ -16,6 +16,7 @@ mod tree;
 use agentos_core::delegation::DelegationState;
 use agentos_core::risk::RiskLevel;
 use agentos_core::task::TaskState;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub use approval::approval_card;
 pub use trace::{DelegationEdge, Lineage, trace};
@@ -114,8 +115,9 @@ impl Style {
 
 /// Left-pad a possibly-coloured string to a column width.
 ///
-/// `{:<width}` counts ANSI escape bytes, so a coloured cell silently shifts
-/// every column after it. This measures visible characters instead.
+/// `{:<width}` counts ANSI escape bytes, and characters rather than columns,
+/// so a coloured or wide cell silently shifts every column after it. This
+/// measures the columns the text takes on screen instead.
 #[must_use]
 pub fn pad(text: &str, width: usize) -> String {
     let visible = visible_width(text);
@@ -137,11 +139,14 @@ fn summary_line(agent: &str, state: &str, steps: u32, tainted: bool, style: &Sty
     line
 }
 
-/// Width of a string ignoring ANSI escape sequences.
+/// The terminal columns a string takes, ignoring ANSI escape sequences.
 ///
-/// Without this, colouring text inside a box breaks the box.
+/// Without this, colouring text inside a box breaks the box. Columns are not
+/// characters: a CJK ideograph, a Hangul syllable or an emoji takes two, and
+/// a combining accent none, so text measured by its characters can run to
+/// twice the width it was given.
 fn visible_width(text: &str) -> usize {
-    let mut width = 0;
+    let mut visible = String::with_capacity(text.len());
     let mut in_escape = false;
     for character in text.chars() {
         if in_escape {
@@ -151,10 +156,12 @@ fn visible_width(text: &str) -> usize {
         } else if character == '\u{1b}' {
             in_escape = true;
         } else {
-            width += 1;
+            visible.push(character);
         }
     }
-    width
+    // Measured as a whole rather than character by character, so a sequence
+    // drawn as one glyph, such as a family emoji, counts as that glyph.
+    visible.width()
 }
 
 fn wrap(text: &str, width: usize) -> Vec<String> {
@@ -164,8 +171,8 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
             lines.push(String::new());
             continue;
         }
-        // Widths are counted in characters, not bytes: an accented word is
-        // one column per letter on a terminal, not two or three.
+        // Widths are terminal columns, not bytes or characters: an accented
+        // letter takes one column and a Hangul syllable two.
         let mut current = String::new();
         let mut current_width = 0;
         for word in paragraph.split_whitespace() {
@@ -190,13 +197,25 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// `text` cut to at most `max` characters, with an ellipsis if anything was
-/// cut. Characters, not bytes, so text outside ASCII keeps its full length.
-fn truncate(text: &str, max: usize) -> String {
-    match text.char_indices().nth(max) {
-        None => text.to_owned(),
-        Some((cut, _)) => format!("{}…", &text[..cut]),
+/// `text` cut to at most `max` terminal columns, with an ellipsis if anything
+/// was cut. Columns, not bytes or characters, so an accented word keeps its
+/// full length and a line of CJK is cut where it reaches `max` on screen.
+///
+/// Measured a character at a time, so an emoji sequence drawn as one glyph
+/// can come out a column off what [`visible_width`] makes of it. Every caller
+/// ends its line with the cut text, so there is no border after it to skew.
+#[must_use]
+pub fn truncate(text: &str, max: usize) -> String {
+    let mut used = 0;
+    for (index, character) in text.char_indices() {
+        // A control character has no width of its own; counting it as one
+        // matches how `visible_width` measures a whole string.
+        used += character.width().unwrap_or(1);
+        if used > max {
+            return format!("{}…", &text[..index]);
+        }
     }
+    text.to_owned()
 }
 
 #[cfg(test)]
@@ -217,6 +236,57 @@ mod tests {
         assert_eq!(truncate("éééééé", 5), "ééééé…");
         assert_eq!(truncate("abcdef", 3), "abc…");
         assert_eq!(truncate("", 0), "");
+    }
+
+    #[test]
+    fn wrapping_counts_columns_for_wide_characters() {
+        // A Hangul syllable, a CJK ideograph and an emoji take two columns
+        // each, so these words are six columns and two of them with a space
+        // are thirteen. Counted as characters, all three would fit on one
+        // line of twelve and fill twenty columns of it.
+        assert_eq!(
+            wrap("한국어 한국어 한국어", 12),
+            vec!["한국어", "한국어", "한국어"]
+        );
+        assert_eq!(
+            wrap("한국어 한국어 한국어", 13),
+            vec!["한국어 한국어", "한국어"]
+        );
+        assert_eq!(wrap("日本語 日本語", 12), vec!["日本語", "日本語"]);
+        assert_eq!(wrap("🙂🙂 🙂🙂 🙂🙂", 9), vec!["🙂🙂 🙂🙂", "🙂🙂"]);
+
+        let title = "승인 카드의 테두리가 깨지지 않아야 합니다 🙂 日本語のタイトル ".repeat(8);
+        let wrapped = wrap(&title, 30);
+        assert!(
+            wrapped.iter().all(|line| line.as_str().width() <= 30),
+            "{wrapped:?}"
+        );
+    }
+
+    #[test]
+    fn truncation_counts_columns_for_wide_characters() {
+        assert_eq!(truncate("日本語テキスト", 6), "日本語…");
+        // A wide character that would straddle the limit is left out whole.
+        assert_eq!(truncate("日本語テキスト", 5), "日本…");
+        assert_eq!(truncate("한국어", 6), "한국어");
+        assert_eq!(truncate("한국어", 5), "한국…");
+        assert_eq!(truncate("🙂🙂🙂", 4), "🙂🙂…");
+        // A combining accent takes no column, so it stays with its letter.
+        assert_eq!(truncate("cafe\u{301}s", 4), "cafe\u{301}…");
+    }
+
+    #[test]
+    fn widths_are_columns_and_escapes_take_none() {
+        assert_eq!(visible_width("한국어"), 6);
+        assert_eq!(visible_width("日本語"), 6);
+        assert_eq!(visible_width("🙂"), 2);
+        assert_eq!(visible_width("e\u{301}"), 1);
+        let styled = Style { enabled: true };
+        assert_eq!(visible_width(&styled.green("한국어")), 6);
+        // Padding fills to the column, measured independently of the
+        // function under test.
+        assert_eq!(pad("日本", 10).as_str().width(), 10);
+        assert_eq!(pad("🙂", 10).as_str().width(), 10);
     }
 
     use super::test_support::plain;
