@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ApprovalView } from "../../bindings/ApprovalView";
-import { idleSelection } from "./approvalsModel";
+import { idleSelection, shownId } from "./approvalsModel";
 import {
   budgetMeter,
   matchedRule,
@@ -11,7 +11,6 @@ import {
   riskStatTone,
   riskWord,
   ruleEffect,
-  shownId,
   tallyLine,
   taintOrigin,
   toolIcon,
@@ -53,14 +52,24 @@ describe("the request the desk shows", () => {
   });
 
   it("is the selected request", () => {
-    expect(shownId({ selected: "c", intent: null }, order)).toBe("c");
+    expect(shownId({ selected: "c", intent: null, presented: "c" }, order)).toBe("c");
   });
 
   it("falls back to the card holding a half-made decision, then to the first", () => {
     const intent = { id: "b", kind: "approve" as const, note: "" };
     // The selected card has left; the armed one is still waiting.
-    expect(shownId({ selected: "gone", intent }, order)).toBe("b");
-    expect(shownId({ selected: "gone", intent: { ...intent, id: "also-gone" } }, order)).toBe("a");
+    expect(shownId({ selected: "gone", intent, presented: "gone" }, order)).toBe("b");
+    expect(
+      shownId(
+        { selected: "gone", intent: { ...intent, id: "also-gone" }, presented: "gone" },
+        order,
+      ),
+    ).toBe("a");
+  });
+
+  it("falls back to the request already on screen before the first", () => {
+    expect(shownId({ ...idleSelection, presented: "c" }, order)).toBe("c");
+    expect(shownId({ ...idleSelection, presented: "gone" }, order)).toBe("a");
   });
 });
 

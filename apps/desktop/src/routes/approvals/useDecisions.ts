@@ -6,10 +6,12 @@ import { MOVED_ON, resolveApproval } from "../../sdk/approvals";
 import { api, describeError } from "../../sdk/client";
 import type { Intent, IntentKind, SelectionAction } from "./approvalsModel";
 import {
+  type Answer,
   type Departure,
   type Receipt,
   type RunEnd,
   type StatusTone,
+  answered,
   collapse,
   depart,
   failedLine,
@@ -60,7 +62,7 @@ export function useDecisions(
   const [statusTone, setStatusTone] = useState<StatusTone>("working");
   const [receipts, setReceipts] = useState<readonly Receipt[]>([]);
   const statusRef = useRef<HTMLDivElement>(null);
-  const { departures, leave, stay } = useDepartures();
+  const { departures, leave, hear, stay } = useDepartures();
 
   const decide = useCallback(
     async (approval: ApprovalView, intent: Intent) => {
@@ -87,10 +89,14 @@ export function useDecisions(
         setStatus(failedLine(outcome.message));
         setStatusTone("failed");
         // The store has put the request back. Present it, so the reason it
-        // failed is on screen, unless the operator has chosen another since.
+        // failed is on screen, unless another request is on screen by now:
+        // that one stays, and this waits in the queue marked not answered.
         dispatch({ kind: "returned", id: approval.id });
         return;
       }
+      // The stamp has said the decision is being made; now it says what the
+      // runtime did with it, which for a request that had moved on is nothing.
+      hear(approval.id, outcome.kind === "delivered" ? "recorded" : "moved-on");
 
       let run: RunEnd | undefined;
       if (intent.kind === "stop") {
@@ -121,7 +127,7 @@ export function useDecisions(
       }
       reloadRecent();
     },
-    [dispatch, reloadRecent, indexOf, leave, stay],
+    [dispatch, reloadRecent, indexOf, leave, hear, stay],
   );
 
   return { status, statusTone, statusRef, receipts, departures, decide };
@@ -130,10 +136,13 @@ export function useDecisions(
 /**
  * The cards on their way out, each on two timers: stamped, then folded, then
  * gone. Nothing is scheduled under reduced motion, where a card simply leaves.
+ * The stamp follows the runtime's answer (`hear`) whenever it comes; the
+ * timers do not wait for it.
  */
 function useDepartures(): {
   departures: readonly Departure[];
   leave: (approval: ApprovalView, kind: IntentKind, index: number) => void;
+  hear: (id: string, answer: Exclude<Answer, "sent">) => void;
   stay: (id: string) => void;
 } {
   const [departures, setDepartures] = useState<readonly Departure[]>([]);
@@ -169,6 +178,10 @@ function useDepartures(): {
     [clear],
   );
 
+  const hear = useCallback((id: string, answer: Exclude<Answer, "sent">) => {
+    setDepartures((list) => answered(list, id, answer));
+  }, []);
+
   const stay = useCallback(
     (id: string) => {
       clear(id);
@@ -177,5 +190,5 @@ function useDepartures(): {
     [clear],
   );
 
-  return { departures, leave, stay };
+  return { departures, leave, hear, stay };
 }

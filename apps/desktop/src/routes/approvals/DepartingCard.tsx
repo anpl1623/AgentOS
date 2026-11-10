@@ -1,11 +1,12 @@
 import { Icon } from "../../components/common";
 import { riskTone } from "../../components/status";
 import { CardBody, CardHead } from "./CardParts";
-import { type Departure, STAMP } from "./decisionModel";
+import { type Departure, stampOf } from "./decisionModel";
 
 /**
  * An answered card on its way out: the same card, stamped with a check or a
- * cross, then folded shut so the cards after it rise into its place.
+ * cross, then folded shut so the cards after it rise into its place. The stamp
+ * says only what the runtime has said (see `stampOf`).
  *
  * Only a picture. The store took the request out of the queue on the confirm
  * and the status line has already said what was done, so this is hidden from
@@ -13,13 +14,13 @@ import { type Departure, STAMP } from "./decisionModel";
  * read twice, and nothing waits for it to finish.
  */
 export function DepartingCard({ departure, now }: { departure: Departure; now: number }) {
-  const { approval, kind, phase } = departure;
-  const tone = kind === "approve" ? "approved" : "denied";
+  const { approval, phase } = departure;
+  const stamp = stampOf(departure);
   const prefix = `leaving-${approval.id}`;
   return (
     <div className={`approval-slot leaving ${phase}`} aria-hidden="true" inert>
       <div className="ghost-fold">
-        <div className={`approval departing ${tone} risk-${riskTone(approval.risk)}`}>
+        <div className={`approval departing ${stamp.tone} risk-${riskTone(approval.risk)}`}>
           <CardHead approval={approval} now={now} titleId={`${prefix}-title`} />
           <div className="approval-body">
             <CardBody approval={approval} idPrefix={prefix} stop={false} failure={null} />
@@ -30,9 +31,9 @@ export function DepartingCard({ departure, now }: { departure: Departure; now: n
           <div className="approval-stamp" />
           <div className="approval-foot stamped">
             <span className="stamp-mark">
-              <Icon name={kind === "approve" ? "check" : "x"} size={20} />
+              <Icon name={stamp.icon} size={20} />
             </span>
-            <span>{STAMP[kind]}</span>
+            <span>{stamp.words}</span>
           </div>
         </div>
       </div>

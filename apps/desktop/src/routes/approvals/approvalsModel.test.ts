@@ -17,6 +17,7 @@ import {
   nextSelection,
   noteCount,
   offersStop,
+  shownId,
   sortApprovals,
 } from "./approvalsModel";
 
@@ -237,6 +238,7 @@ describe("intent", () => {
     expect(nextSelection(answered, { kind: "returned", id: "b" })).toEqual({
       selected: "b",
       intent: null,
+      presented: "b",
     });
     const chose = nextSelection(answered, { kind: "select", id: "c" });
     expect(nextSelection(chose, { kind: "returned", id: "b" })).toBe(chose);
@@ -246,7 +248,7 @@ describe("intent", () => {
 
   it("is cleared by cancel, which leaves the selection where it was", () => {
     const state = run([{ kind: "intend", id: "a", intent: "deny" }, { kind: "cancel" }]);
-    expect(state).toEqual({ selected: "a", intent: null });
+    expect(state).toEqual({ selected: "a", intent: null, presented: "a" });
   });
 
   it("after a resolution, nothing is selected and no intent is set", () => {
@@ -254,22 +256,33 @@ describe("intent", () => {
       { kind: "move", by: 1, order: ["a", "b"] },
       { kind: "intend", id: "a", intent: "approve" },
       { kind: "resolved" },
-      // The decided card leaves and the next one takes its place.
+      // The decided card leaves and the next one takes its place: on screen,
+      // but neither selected nor armed.
       { kind: "queue", ids: ["b"] },
     ]);
-    expect(state).toEqual(idleSelection);
+    expect(state).toEqual({ ...idleSelection, presented: "b" });
   });
 
   it("resets on a resolution even while the decided card is still in the queue", () => {
     // A failed answer puts the card back. It must come back unarmed, not one
     // press from the approval the operator thought had been sent.
-    const armed: Selection = { selected: "a", intent: { id: "a", kind: "approve", note: "x" } };
-    expect(nextSelection(armed, { kind: "resolved" })).toEqual(idleSelection);
+    const armed: Selection = {
+      selected: "a",
+      intent: { id: "a", kind: "approve", note: "x" },
+      presented: "a",
+    };
+    expect(nextSelection(armed, { kind: "resolved" })).toEqual({
+      ...idleSelection,
+      presented: "a",
+    });
   });
 
   it("drops an intent for a card that left the queue, and keeps one that did not", () => {
     const armed = run([{ kind: "intend", id: "a", intent: "approve" }]);
-    expect(nextSelection(armed, { kind: "queue", ids: ["b", "c"] })).toEqual(idleSelection);
+    expect(nextSelection(armed, { kind: "queue", ids: ["b", "c"] })).toEqual({
+      ...idleSelection,
+      presented: "b",
+    });
     expect(nextSelection(armed, { kind: "queue", ids: ["z", "a"] })).toBe(armed);
   });
 
@@ -283,6 +296,125 @@ describe("intent", () => {
       armed,
     );
     expect(after.intent).toBeNull();
+  });
+});
+
+describe("the request on screen", () => {
+  // The queue as it first loads, and the same queue once a more dangerous
+  // request has arrived and sorted to the top.
+  const loaded = ["a", "b"];
+  const grown = ["z", "a", "b"];
+  const reading = (): Selection => run([{ kind: "queue", ids: loaded }]);
+
+  it("is held while a more dangerous request arrives and nothing is selected", () => {
+    const state = reading();
+    expect(state.selected).toBeNull();
+    expect(shownId(state, loaded)).toBe("a");
+    // Drawn before the queue has been told, and after: the same request.
+    expect(shownId(state, grown)).toBe("a");
+    const after = nextSelection(state, { kind: "queue", ids: grown });
+    expect(shownId(after, grown)).toBe("a");
+    // Holding it selects nothing; a decision still takes its own presses.
+    expect(after.selected).toBeNull();
+    expect(after.intent).toBeNull();
+  });
+
+  it("is the request a decision pressed just after an arrival is made on", () => {
+    // Only the presented card is drawn in full, so its Approve is the one
+    // under the pointer; it must still be the card the operator was reading.
+    const after = nextSelection(reading(), { kind: "queue", ids: grown });
+    const under = shownId(after, grown);
+    expect(under).toBe("a");
+    const armed = nextSelection(after, { kind: "intend", id: under ?? "", intent: "approve" });
+    expect(armed.intent?.id).toBe("a");
+    // And another arrival while it is armed moves nothing either.
+    const more = ["y", "z", "a", "b"];
+    expect(shownId(nextSelection(armed, { kind: "queue", ids: more }), more)).toBe("a");
+  });
+
+  it("changes when the operator selects another request", () => {
+    const after = nextSelection(reading(), { kind: "queue", ids: grown });
+    expect(shownId(nextSelection(after, { kind: "select", id: "z" }), grown)).toBe("z");
+  });
+
+  it("is where the keys take hold, rather than the top of the queue", () => {
+    const after = nextSelection(reading(), { kind: "queue", ids: grown });
+    const down = nextSelection(after, { kind: "move", by: 1, order: grown });
+    expect(down.selected).toBe("a");
+    expect(nextSelection(down, { kind: "move", by: 1, order: grown }).selected).toBe("b");
+    const up = nextSelection(after, { kind: "move", by: -1, order: grown });
+    expect(up.selected).toBe("a");
+    expect(nextSelection(up, { kind: "move", by: -1, order: grown }).selected).toBe("z");
+  });
+
+  it("changes when it leaves the queue, to the most dangerous left, which is then held", () => {
+    const after = nextSelection(reading(), { kind: "queue", ids: grown });
+    // Drawn before the queue has been told: a request that left is not shown.
+    expect(shownId(after, ["z", "b"])).toBe("z");
+    const left = nextSelection(after, { kind: "queue", ids: ["z", "b"] });
+    expect(shownId(left, ["z", "b"])).toBe("z");
+    const more = ["y", "z", "b"];
+    expect(shownId(nextSelection(left, { kind: "queue", ids: more }), more)).toBe("z");
+    expect(shownId(nextSelection(left, { kind: "queue", ids: [] }), [])).toBeNull();
+  });
+
+  it("after a decision, stays on the decided card until it leaves, then holds the next", () => {
+    let state = run([
+      { kind: "queue", ids: loaded },
+      { kind: "intend", id: "a", intent: "deny" },
+      { kind: "resolved" },
+    ]);
+    expect(state.selected).toBeNull();
+    expect(state.intent).toBeNull();
+    // Still listed for a moment: no other request is put in its place yet.
+    expect(shownId(state, loaded)).toBe("a");
+    state = nextSelection(state, { kind: "queue", ids: ["b"] });
+    expect(shownId(state, ["b"])).toBe("b");
+    state = nextSelection(state, { kind: "queue", ids: ["z", "b"] });
+    expect(shownId(state, ["z", "b"])).toBe("b");
+  });
+
+  it("is not taken over by a request whose answer failed", () => {
+    // a was denied; while the answer was out, b was presented in its place.
+    const denied = run([
+      { kind: "queue", ids: loaded },
+      { kind: "intend", id: "a", intent: "deny" },
+      { kind: "resolved" },
+      { kind: "queue", ids: ["b"] },
+    ]);
+    expect(shownId(denied, ["b"])).toBe("b");
+    // The answer failed and a is waiting again, above b. The store restores it
+    // and the screen is told it came back, in either order.
+    const restoredFirst = run(
+      [
+        { kind: "queue", ids: loaded },
+        { kind: "returned", id: "a" },
+      ],
+      denied,
+    );
+    expect(shownId(restoredFirst, loaded)).toBe("b");
+    const returnedFirst = run(
+      [
+        { kind: "returned", id: "a" },
+        { kind: "queue", ids: loaded },
+      ],
+      denied,
+    );
+    expect(shownId(returnedFirst, loaded)).toBe("b");
+  });
+
+  it("presents a request whose answer failed when nothing else is waiting", () => {
+    const state = run([
+      { kind: "queue", ids: ["a"] },
+      { kind: "intend", id: "a", intent: "deny" },
+      { kind: "resolved" },
+      { kind: "queue", ids: [] },
+      { kind: "returned", id: "a" },
+      { kind: "queue", ids: ["a"] },
+    ]);
+    expect(state.selected).toBe("a");
+    expect(state.intent).toBeNull();
+    expect(shownId(state, ["a"])).toBe("a");
   });
 });
 

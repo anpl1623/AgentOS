@@ -96,16 +96,15 @@ export function settledTone(run: RunEnd | undefined): StatusTone {
   return run?.kind === "failed" ? "partial" : "done";
 }
 
-/** The word stamped on a departing card. */
-export const STAMP: Readonly<Record<IntentKind, string>> = {
-  approve: "Approved",
-  deny: "Denied",
-  stop: "Denied, stopping the run",
-};
-
 // ---------------------------------------------------------------------------
 // Departures
 // ---------------------------------------------------------------------------
+
+/**
+ * What the runtime has said about an answer: nothing yet while it is on its
+ * way, that it recorded the decision, or that it found nothing waiting.
+ */
+export type Answer = "sent" | "recorded" | "moved-on";
 
 /**
  * A card on its way out: first stamped with the answer, then folding shut so
@@ -117,6 +116,8 @@ export interface Departure {
   /** Where it stood in the queue when it was answered. */
   index: number;
   phase: "stamp" | "collapse";
+  /** What the runtime has said; the stamp says no more than this. */
+  answer: Answer;
 }
 
 /** Start a departure; a second answer to the same card replaces the first. */
@@ -128,8 +129,65 @@ export function depart(
 ): Departure[] {
   return [
     ...list.filter((each) => each.approval.id !== approval.id),
-    { approval, kind, index: Math.max(0, index), phase: "stamp" },
+    { approval, kind, index: Math.max(0, index), phase: "stamp", answer: "sent" },
   ];
+}
+
+/**
+ * The runtime has answered. A card already gone, or one whose answer was
+ * already heard, is left as it is.
+ */
+export function answered(
+  list: readonly Departure[],
+  id: string,
+  answer: Exclude<Answer, "sent">,
+): Departure[] {
+  return list.map((each) =>
+    each.approval.id === id && each.answer === "sent" ? { ...each, answer } : each,
+  );
+}
+
+/** How a departing card, and its place in the queue, are stamped. */
+export interface Stamp {
+  words: string;
+  /** The class both are drawn with. */
+  tone: "approved" | "denied" | "moved-on";
+  icon: "check" | "x" | "info";
+}
+
+const STAMP_DONE: Readonly<Record<IntentKind, string>> = {
+  approve: "Approved",
+  deny: "Denied",
+  stop: "Denied, stopping the run",
+};
+
+const STAMP_SENT: Readonly<Record<IntentKind, string>> = {
+  approve: "Approving…",
+  deny: "Denying…",
+  stop: "Denying, stopping the run…",
+};
+
+/**
+ * The stamp, which says what the status line says and never more.
+ *
+ * The card leaves on the confirm, before the runtime has answered, so until it
+ * does the stamp says the decision is being made rather than that it was. Once
+ * recorded, it says what was decided. An answer that found nothing waiting
+ * changed nothing, so its card is stamped as having moved on, in no decision's
+ * colour: a card folding away under "Approved" would say a request was
+ * approved that never was.
+ */
+export function stampOf(departure: Pick<Departure, "kind" | "answer">): Stamp {
+  const { kind, answer } = departure;
+  if (answer === "moved-on") {
+    return { words: "Moved on; nothing changed", tone: "moved-on", icon: "info" };
+  }
+  const approve = kind === "approve";
+  return {
+    words: answer === "recorded" ? STAMP_DONE[kind] : STAMP_SENT[kind],
+    tone: approve ? "approved" : "denied",
+    icon: approve ? "check" : "x",
+  };
 }
 
 /** The stamp has been seen; fold the card. */

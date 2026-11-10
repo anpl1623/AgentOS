@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { ApprovalView } from "../../bindings/ApprovalView";
+import approvalsCss from "../../styles/screens/approvals.css?raw";
+import type { IntentKind } from "./approvalsModel";
 import {
   type Departure,
+  type Stamp,
+  answered,
   collapse,
   depart,
   deskEntries,
@@ -11,6 +15,7 @@ import {
   settle,
   settledLine,
   settledTone,
+  stampOf,
 } from "./decisionModel";
 
 function card(id: string): ApprovalView {
@@ -105,6 +110,59 @@ describe("departing cards", () => {
   it("do not fold back open once folding", () => {
     const folded = collapse(depart([], card("a"), "deny", 0), "a");
     expect(collapse(folded, "a")).toEqual(folded);
+  });
+});
+
+describe("the stamp on a departing card", () => {
+  const KINDS: readonly IntentKind[] = ["approve", "deny", "stop"];
+  const stamped = (list: readonly Departure[]) => list.map((each) => stampOf(each));
+
+  it("says the decision is being made until the runtime has answered", () => {
+    expect(stamped(depart([], card("a"), "approve", 0))).toEqual([
+      { words: "Approving…", tone: "approved", icon: "check" },
+    ]);
+    expect(stampOf({ kind: "deny", answer: "sent" }).words).toBe("Denying…");
+    expect(stampOf({ kind: "stop", answer: "sent" }).words).toBe("Denying, stopping the run…");
+  });
+
+  it("says what was decided once the runtime recorded it", () => {
+    const list = answered(depart([], card("a"), "approve", 0), "a", "recorded");
+    expect(stamped(list)).toEqual([{ words: "Approved", tone: "approved", icon: "check" }]);
+    expect(stampOf({ kind: "deny", answer: "recorded" })).toEqual({
+      words: "Denied",
+      tone: "denied",
+      icon: "x",
+    });
+    expect(stampOf({ kind: "stop", answer: "recorded" }).words).toBe("Denied, stopping the run");
+  });
+
+  it.each(KINDS)("claims no %s decision when the request had moved on", (kind) => {
+    const list = answered(depart([], card("a"), kind, 0), "a", "moved-on");
+    const [stamp] = stamped(list);
+    expect(stamp).toEqual({ words: "Moved on; nothing changed", tone: "moved-on", icon: "info" });
+    expect(stamp?.words).not.toMatch(/approv|denied|denying/i);
+  });
+
+  it("keeps the first answer heard, and leaves other cards and gone ones alone", () => {
+    let list = depart(depart([], card("a"), "approve", 0), card("b"), "deny", 1);
+    list = answered(list, "a", "moved-on");
+    expect(answered(list, "a", "recorded")).toEqual(list);
+    expect(list.map((each) => each.answer)).toEqual(["moved-on", "sent"]);
+    expect(answered(list, "gone", "recorded")).toEqual(list);
+    // A card folding when its answer arrives is still stamped with it.
+    const folding = answered(collapse(depart([], card("c"), "approve", 0), "c"), "c", "recorded");
+    expect(folding[0]).toMatchObject({ phase: "collapse", answer: "recorded" });
+  });
+
+  const TONES: readonly Stamp["tone"][] = ["approved", "denied", "moved-on"];
+
+  it.each(TONES)("is drawn in the %s tone by the stylesheet", (tone) => {
+    // Every tone `stampOf` names has its card, its mark and its queue item.
+    expect(approvalsCss).toContain(`.approval.departing.${tone} {`);
+    expect(approvalsCss).toContain(`.approval.${tone} .stamp-mark {`);
+    expect(approvalsCss).toContain(`.approval.${tone} .approval-foot.stamped {`);
+    expect(approvalsCss).toContain(`.rail-ghost.${tone} .queue-item {`);
+    expect(approvalsCss).toContain(`.rail-ghost.${tone} .queue-item-stamp {`);
   });
 });
 

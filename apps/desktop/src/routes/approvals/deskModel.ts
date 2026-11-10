@@ -1,12 +1,12 @@
 /**
- * What the approvals desk shows, without React: which request the detail pane
- * presents, the figures above the queue, and the lines a card builds from the
- * request — the rule that matched, where untrusted data came from, how much of
- * the run's approval budget is spent.
+ * What the approvals desk shows, without React: the figures above the queue,
+ * and the lines a card builds from the request — the rule that matched, where
+ * untrusted data came from, how much of the run's approval budget is spent.
  *
- * Nothing here decides anything. The rules that keep a decision on the card
- * it was made for are in `approvalsModel.ts`; these only say how the queue is
- * laid out for reading.
+ * Nothing here decides anything. Which request the detail pane presents, and
+ * the rules that keep a decision on the card it was made for, are in
+ * `approvalsModel.ts` beside the selection that holds them; these only say how
+ * the queue is laid out for reading.
  */
 
 import type { ApprovalView } from "../../bindings/ApprovalView";
@@ -14,25 +14,7 @@ import type { IconName } from "../../components/icons";
 import { compareRisk, riskTone } from "../../components/status";
 import type { StatTone } from "../../components/StatTile";
 import { humanise } from "../../sdk/format";
-import { type Selection, askedOnlyForTaint, blockedFor } from "./approvalsModel";
-
-/**
- * The request the screen presents as the one to read next: the selected card,
- * else the card holding a half-made decision, else the most dangerous card in
- * the queue. `order` is the queue in reading order.
- *
- * Side by side, this is the request in the detail pane; stacked, it is the
- * card that carries the glow. A selection or intent naming a card that has
- * left falls through, so the pane never shows a request that is not waiting.
- * Presenting a card selects nothing: a decision still needs its own presses on
- * that card's buttons.
- */
-export function shownId(selection: Selection, order: readonly string[]): string | null {
-  const { selected, intent } = selection;
-  if (selected !== null && order.includes(selected)) return selected;
-  if (intent !== null && order.includes(intent.id)) return intent.id;
-  return order[0] ?? null;
-}
+import { askedOnlyForTaint, blockedFor } from "./approvalsModel";
 
 /** The figures over the queue. */
 export interface QueueSummary {

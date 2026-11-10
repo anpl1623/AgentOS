@@ -407,6 +407,12 @@
   --risk-edge: var(--blocked-fg);
   border-color: var(--blocked-line);
 }
+/* The answer found nothing waiting: in no decision's colour, because none
+ * was made. */
+.rail-ghost.moved-on .queue-item {
+  --risk-edge: var(--border-strong);
+  border-color: var(--border-strong);
+}
 .queue-item-stamp {
   display: inline-flex;
   align-items: center;
@@ -419,6 +425,9 @@
 }
 .rail-ghost.denied .queue-item-stamp {
   color: var(--blocked-fg);
+}
+.rail-ghost.moved-on .queue-item-stamp {
+  color: var(--text-dim);
 }
 
 /* --- the card ------------------------------------------------------------ */
@@ -776,6 +785,13 @@
     var(--highlight-inset),
     var(--elev-2);
 }
+.approvals-screen .approval.departing.moved-on {
+  --risk-edge: var(--border-strong);
+  border-color: var(--border-strong);
+  box-shadow:
+    var(--highlight-inset),
+    var(--elev-2);
+}
 .approval-stamp {
   position: absolute;
   inset: 0;
@@ -800,6 +816,9 @@
 .approval.denied .approval-foot.stamped {
   color: var(--blocked-fg);
 }
+.approval.moved-on .approval-foot.stamped {
+  color: var(--text-dim);
+}
 .stamp-mark {
   display: grid;
   place-items: center;
@@ -819,6 +838,11 @@
   color: var(--blocked-fg);
   background: var(--blocked-wash);
   box-shadow: inset 0 0 0 2px var(--blocked-line);
+}
+.approval.moved-on .stamp-mark {
+  color: var(--text-dim);
+  background: var(--surface-sunken);
+  box-shadow: inset 0 0 0 2px var(--border-strong);
 }
 
 /* --- recently decided ---------------------------------------------------- */

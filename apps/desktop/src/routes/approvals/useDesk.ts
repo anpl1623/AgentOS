@@ -18,8 +18,8 @@ import {
   arrivals,
   idleSelection,
   nextSelection,
+  shownId,
 } from "./approvalsModel";
-import { shownId } from "./deskModel";
 
 /** The selection keys. Movement only; see the keyboard effect for why. */
 const MOVES: Readonly<Record<string, 1 | -1>> = { j: 1, ArrowDown: 1, k: -1, ArrowUp: -1 };
@@ -78,7 +78,9 @@ export function useDesk(
   const current = useRef(selection);
   current.current = selection;
 
-  // A card that leaves the queue takes its selection and its intent with it.
+  // A card that leaves the queue takes its selection and its intent with it;
+  // the request on screen is held while it is waiting, so a card arriving
+  // above it is announced and queued rather than put in its place.
   useEffect(() => dispatch({ kind: "queue", ids }), [ids]);
 
   // New requests are announced in one line each time the queue grows; what

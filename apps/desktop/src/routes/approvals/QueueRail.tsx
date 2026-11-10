@@ -1,7 +1,7 @@
 import { Icon, Kbd, Risk, Tainted } from "../../components/common";
 import { riskTone } from "../../components/status";
 import { type Intent, blockedFor } from "./approvalsModel";
-import { type DeskEntry, STAMP } from "./decisionModel";
+import { type DeskEntry, stampOf } from "./decisionModel";
 import { queueItemLabel, toolIcon } from "./deskModel";
 
 /**
@@ -54,11 +54,12 @@ export function QueueRail({
       <ul className="rail-list stagger" role="list">
         {entries.map((entry) => {
           if (entry.kind === "ghost") {
-            const { approval, kind, phase } = entry.departure;
+            const { approval, phase } = entry.departure;
+            const stamp = stampOf(entry.departure);
             return (
               <li
                 key={`leaving-${approval.id}`}
-                className={`rail-ghost ${phase} ${kind === "approve" ? "approved" : "denied"}`}
+                className={`rail-ghost ${phase} ${stamp.tone}`}
                 aria-hidden="true"
               >
                 <div className="ghost-fold">
@@ -66,8 +67,8 @@ export function QueueRail({
                     <span className="queue-item-top">
                       <span className="queue-item-agent">{approval.agent_name}</span>
                       <span className="queue-item-stamp">
-                        <Icon name={kind === "approve" ? "check" : "x"} size={13} />
-                        {STAMP[kind]}
+                        <Icon name={stamp.icon} size={13} />
+                        {stamp.words}
                       </span>
                     </span>
                     <span className="queue-item-tool mono">{approval.tool}</span>

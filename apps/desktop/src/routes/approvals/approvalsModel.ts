@@ -1,12 +1,14 @@
 /**
  * The approvals screen's rules, without React.
  *
- * Two things are decided here: the order the cards are read in, and which
- * card a half-made decision belongs to. The second is the dangerous one. The
- * queue changes underneath the operator — cards arrive by event, and a decided
- * card leaves before the runtime has even answered — so anything that names a
- * card by its place in the list will, sooner or later, name the wrong card.
- * Every intent here names its card by id, and lapses when that card leaves.
+ * Three things are decided here: the order the cards are read in, which card
+ * is on screen to be read, and which card a half-made decision belongs to.
+ * The last two are the dangerous ones. The queue changes underneath the
+ * operator — cards arrive by event, and a decided card leaves before the
+ * runtime has even answered — so anything that names a card by its place in
+ * the list will, sooner or later, name the wrong card. Every intent here
+ * names its card by id, and lapses when that card leaves; and the card on
+ * screen is held by id, so the list re-sorting cannot change what is read.
  */
 
 import type { ApprovalView } from "../../bindings/ApprovalView";
@@ -223,7 +225,8 @@ export interface Intent {
 }
 
 /**
- * The keyboard's place in the queue and the one decision being made.
+ * The keyboard's place in the queue, the request on screen, and the one
+ * decision being made.
  *
  * At most one card holds an intent. Arming another card disarms the first, so
  * there is never a second confirm waiting anywhere on the page.
@@ -231,10 +234,47 @@ export interface Intent {
 export interface Selection {
   selected: string | null;
   intent: Intent | null;
+  /**
+   * The request last put on screen, held while nothing is selected so that
+   * what the operator is reading stays put; see {@link shownId}. Whenever a
+   * card is selected, this is that card.
+   */
+  presented: string | null;
 }
 
-/** Nothing selected, nothing armed. */
-export const idleSelection: Selection = { selected: null, intent: null };
+/** Nothing selected, nothing armed, nothing yet on screen. */
+export const idleSelection: Selection = { selected: null, intent: null, presented: null };
+
+/**
+ * The request the screen presents as the one to read: the selected card, else
+ * the card holding a half-made decision, else the card already on screen,
+ * else the most dangerous card in the queue. `order` is the queue in reading
+ * order.
+ *
+ * Side by side, this is the request in the detail pane, the only one drawn in
+ * full; stacked, it is the card that carries the glow. A card named here that
+ * has left the queue falls through, so the pane never shows a request that is
+ * not waiting.
+ *
+ * The card on screen is held because the queue re-sorts underneath the
+ * operator. Were the most dangerous card always presented, a request arriving
+ * at a higher risk, or one coming back after its answer failed, would take
+ * over the pane while another was being read, with its own Approve drawn
+ * exactly where the one under the pointer had been. So the top of the queue is
+ * only presented when nothing has been yet or the card on screen has left;
+ * otherwise the newcomer is announced and waits its turn in the queue, and
+ * only the operator moving to it puts it on screen.
+ *
+ * Presenting a card selects nothing: a decision still needs its own presses on
+ * that card's buttons.
+ */
+export function shownId(selection: Selection, order: readonly string[]): string | null {
+  const { selected, intent, presented } = selection;
+  if (selected !== null && order.includes(selected)) return selected;
+  if (intent !== null && order.includes(intent.id)) return intent.id;
+  if (presented !== null && order.includes(presented)) return presented;
+  return order[0] ?? null;
+}
 
 /** What can happen to a {@link Selection}. */
 export type SelectionAction =
@@ -252,28 +292,48 @@ export type SelectionAction =
   | { kind: "resolved" }
   /** An answer did not go through, and its request is waiting again. */
   | { kind: "returned"; id: string }
-  /** The queue changed; `ids` is every card now shown. */
+  /** The queue changed; `ids` is every card now waiting, in reading order. */
   | { kind: "queue"; ids: readonly string[] };
 
-/** Apply one action. */
+/**
+ * Apply one action.
+ *
+ * Only the operator's own acts change the request on screen — selecting a
+ * request, moving to one, or pressing a decision on one — and that request
+ * leaving the queue. Nothing that arrives does. See {@link shownId}.
+ */
 export function nextSelection(state: Selection, action: SelectionAction): Selection {
   switch (action.kind) {
     case "move": {
       const { order, by } = action;
       if (order.length === 0) return { ...state, selected: null };
       const at = state.selected === null ? -1 : order.indexOf(state.selected);
+      // With nothing selected, the first press takes hold of the request on
+      // screen rather than jumping to an end of the queue: the keys move on
+      // from what is being read, and a request that arrived above it while it
+      // was read is reached by moving up, like any other.
+      const held = state.presented === null ? -1 : order.indexOf(state.presented);
       const index =
-        at === -1
-          ? by === 1
-            ? 0
-            : order.length - 1
-          : Math.min(order.length - 1, Math.max(0, at + by));
-      return { ...state, selected: order[index] ?? null };
+        at !== -1
+          ? Math.min(order.length - 1, Math.max(0, at + by))
+          : held !== -1
+            ? held
+            : by === 1
+              ? 0
+              : order.length - 1;
+      const selected = order[index] ?? null;
+      return { ...state, selected, presented: selected ?? state.presented };
     }
     case "select":
-      return state.selected === action.id ? state : { ...state, selected: action.id };
+      return state.selected === action.id && state.presented === action.id
+        ? state
+        : { ...state, selected: action.id, presented: action.id };
     case "intend":
-      return { selected: action.id, intent: { id: action.id, kind: action.intent, note: "" } };
+      return {
+        selected: action.id,
+        intent: { id: action.id, kind: action.intent, note: "" },
+        presented: action.id,
+      };
     case "note":
       return state.intent?.id === action.id
         ? { ...state, intent: { ...state.intent, note: action.text } }
@@ -281,24 +341,39 @@ export function nextSelection(state: Selection, action: SelectionAction): Select
     case "cancel":
       return state.intent === null ? state : { ...state, intent: null };
     case "resolved":
-      // Everything goes back to idle, not to the neighbouring card: the card
-      // that slides into the decided card's place has not been read yet.
-      return idleSelection;
+      // Nothing stays selected or armed, and nothing passes to the
+      // neighbouring card: the card that slides into the decided card's place
+      // has not been read yet. The decided card stays the one on screen until
+      // the queue says it has left, so no other request is put in its place
+      // before then.
+      return { ...idleSelection, presented: state.presented };
     case "returned":
       // The request comes back selected, so the side-by-side desk presents it
       // with the reason its answer failed rather than leaving that reason on
-      // a card out of sight. Only while the operator has not moved on: a card
-      // they have chosen since, or a decision they have started, stays theirs.
-      // Selecting arms nothing; deciding it again still takes two presses.
-      return state.selected === null && state.intent === null
-        ? { selected: action.id, intent: null }
+      // a card out of sight. Only while nothing else has the operator's eye: a
+      // card they have chosen since, a decision they have started, or a
+      // request put on screen in its place while the answer was out stays,
+      // and the returned request waits in the queue, marked as not answered,
+      // with the status line saying why. Selecting arms nothing; deciding it
+      // again still takes two presses.
+      return state.selected === null &&
+        state.intent === null &&
+        (state.presented === null || state.presented === action.id)
+        ? { selected: action.id, intent: null, presented: action.id }
         : state;
     case "queue": {
       const present = new Set(action.ids);
       const selected =
         state.selected !== null && present.has(state.selected) ? state.selected : null;
       const intent = state.intent !== null && present.has(state.intent.id) ? state.intent : null;
-      return selected === state.selected && intent === state.intent ? state : { selected, intent };
+      // The request on screen stays while it is waiting; only once it has
+      // left does another take its place, and that one is then held in turn.
+      const presented = shownId({ selected, intent, presented: state.presented }, action.ids);
+      return selected === state.selected &&
+        intent === state.intent &&
+        presented === state.presented
+        ? state
+        : { selected, intent, presented };
     }
   }
 }
