@@ -1,6 +1,7 @@
-import { lazy, memo } from "react";
+import { memo, use } from "react";
 
 import type { Navigate, Route } from "../routes/route";
+import { createModuleCache } from "./moduleCache";
 
 /**
  * Each screen's module, fetched on first use.
@@ -9,10 +10,6 @@ import type { Navigate, Route } from "../routes/route";
  * time, so each is its own chunk: the first paint waits only for the shell
  * and the screen it lands on. The rest are fetched once the window is idle
  * (`preloadScreens`), so moving to a screen later rarely waits at all.
- *
- * The browser keeps a module once it has fetched it, so a later import of the
- * same one — from a move, or from the preload — resolves with that module and
- * fetches nothing.
  */
 const LOADERS = {
   dashboard: () => import("../routes/dashboard"),
@@ -24,15 +21,17 @@ const LOADERS = {
   settings: () => import("../routes/settings"),
 } satisfies Record<Route["name"], () => Promise<unknown>>;
 
-// Each screen's named export, as the default export `lazy` expects. Written
-// out one by one so every screen keeps its own props' types.
-const Dashboard = lazy(() => LOADERS.dashboard().then((m) => ({ default: m.Dashboard })));
-const Approvals = lazy(() => LOADERS.approvals().then((m) => ({ default: m.Approvals })));
-const Tasks = lazy(() => LOADERS.tasks().then((m) => ({ default: m.Tasks })));
-const Schedules = lazy(() => LOADERS.schedules().then((m) => ({ default: m.Schedules })));
-const Agents = lazy(() => LOADERS.agents().then((m) => ({ default: m.Agents })));
-const Activity = lazy(() => LOADERS.activity().then((m) => ({ default: m.Activity })));
-const Settings = lazy(() => LOADERS.settings().then((m) => ({ default: m.Settings })));
+/**
+ * The screens' modules, one promise each for the life of the window, filled
+ * by the preload and read by the draw with `use` rather than through `lazy`.
+ * `lazy` fetches through a promise of its own however recently the preload
+ * fetched the same module, so a first visit still suspended, committed the
+ * skeleton and waited out React's fallback throttle: some 300ms of blank
+ * column on a move that had nothing to wait for. The cache marks a module
+ * that has arrived, so it is drawn in the same render as the move, and only
+ * a screen whose code is really still on its way shows the skeleton.
+ */
+const screens = createModuleCache(LOADERS);
 
 /** How long after the first screen is drawn the rest are fetched, where idle callbacks are missing. */
 const PRELOAD_FALLBACK_MS = 1_500;
@@ -46,8 +45,8 @@ const PRELOAD_FALLBACK_MS = 1_500;
  */
 export function preloadScreens(): () => void {
   const fetchAll = () => {
-    for (const load of Object.values(LOADERS)) {
-      load().catch(() => undefined);
+    for (const name of Object.keys(LOADERS) as Route["name"][]) {
+      void screens.preload(name);
     }
   };
   // WebKit, which the window runs on macOS, has no idle callback; a short
@@ -69,19 +68,33 @@ export const Screen = memo(function Screen({
   navigate: Navigate;
 }) {
   switch (route.name) {
-    case "dashboard":
+    case "dashboard": {
+      const { Dashboard } = use(screens.read("dashboard"));
       return <Dashboard navigate={navigate} />;
-    case "approvals":
+    }
+    case "approvals": {
+      const { Approvals } = use(screens.read("approvals"));
       return <Approvals focus={route.focus} />;
-    case "tasks":
+    }
+    case "tasks": {
+      const { Tasks } = use(screens.read("tasks"));
       return <Tasks route={route} navigate={navigate} />;
-    case "schedules":
+    }
+    case "schedules": {
+      const { Schedules } = use(screens.read("schedules"));
       return <Schedules />;
-    case "agents":
+    }
+    case "agents": {
+      const { Agents } = use(screens.read("agents"));
       return <Agents route={route} navigate={navigate} />;
-    case "activity":
+    }
+    case "activity": {
+      const { Activity } = use(screens.read("activity"));
       return <Activity runId={route.runId} navigate={navigate} />;
-    case "settings":
+    }
+    case "settings": {
+      const { Settings } = use(screens.read("settings"));
       return <Settings navigate={navigate} />;
+    }
   }
 });

@@ -51,7 +51,12 @@ export function Sidebar({
       id={SIDEBAR_ID}
       ref={ref}
       className="sidebar"
-      {...(drawer ? { role: "dialog", "aria-modal": true, "aria-label": "Navigation" } : {})}
+      // As a drawer it can hold focus itself, out of the Tab order, so a
+      // press on a part of it that is no control leaves focus in the drawer
+      // rather than dropping it on the body behind.
+      {...(drawer
+        ? { role: "dialog", "aria-modal": true, "aria-label": "Navigation", tabIndex: -1 }
+        : {})}
     >
       <div className="sidebar-head">
         <Brand />

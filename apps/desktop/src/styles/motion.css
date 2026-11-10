@@ -234,8 +234,8 @@
 
 /* Present while sdk/theme.ts swaps one theme for the other, and only then:
  * colours cross-fade instead of snapping, and nothing fades on load. Only
- * colours move; geometry never transitions here. The module does not add the
- * class under reduced motion. */
+ * colours move; geometry never starts a transition here. The module does not
+ * add the class under reduced motion. */
 :root.theme-switching,
 :root.theme-switching *,
 :root.theme-switching *::before,
@@ -247,5 +247,16 @@
     outline-color var(--dur-theme) var(--ease-in-out),
     fill var(--dur-theme) var(--ease-in-out),
     stroke var(--dur-theme) var(--ease-in-out),
+    box-shadow var(--dur-theme) var(--ease-in-out) !important;
+}
+/* The theme control's thumb is the one thing a theme change also moves: the
+ * press that changes the theme slides it to the chosen segment. The list
+ * above would replace its slide and make it jump, so it keeps the slide
+ * layout.css names beside the colours it fades. */
+:root.theme-switching .theme-thumb {
+  transition:
+    var(--thumb-slide),
+    background-color var(--dur-theme) var(--ease-in-out),
+    border-color var(--dur-theme) var(--ease-in-out),
     box-shadow var(--dur-theme) var(--ease-in-out) !important;
 }

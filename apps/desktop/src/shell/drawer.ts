@@ -8,11 +8,24 @@
  * in, Escape closes it, and focus goes back to the control that opened it. The
  * page behind it is made `inert` by the shell, so a pointer cannot reach it
  * either.
+ *
+ * Unlike an overlay, the drawer's keys are heard on the document rather than
+ * on the drawer. A press on a part of the drawer that takes no focus — its
+ * brand, its padding, and in WebKit, which does not focus a button it presses,
+ * any button — can leave focus on the body, outside the drawer, where a
+ * listener on the drawer would never hear Escape or Tab again. The drawer is
+ * focusable itself while it is one (Sidebar.tsx), so such a press usually
+ * lands on it; listening on the document keeps the promise when it does not.
  */
 
 import { type RefObject, useEffect, useRef } from "react";
 
 import { focusables, trapTab } from "./modal";
+
+/** Whether a modal other than `drawer` is open, which then has the keyboard. */
+function otherModalOpen(drawer: HTMLElement): boolean {
+  return [...document.querySelectorAll('[aria-modal="true"]')].some((modal) => modal !== drawer);
+}
 
 /**
  * Keep the drawer contract for the element in `ref` while `open` is true.
@@ -40,18 +53,23 @@ export function useDrawer(
     start.focus({ preventScroll: true });
 
     const onKeyDown = (event: KeyboardEvent) => {
+      // A dialog raised over the drawer, such as the close guard, keeps its
+      // own contract; the drawer waits beneath it.
+      if (event.defaultPrevented || otherModalOpen(container)) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
         closeRef.current();
         return;
       }
+      // Focus outside the drawer counts as outside the cycle, so the next Tab
+      // brings it back in at the near end.
       trapTab(container, event);
     };
-    container.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown);
 
     return () => {
-      container.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keydown", onKeyDown);
       // Focus goes back to the opener only if it is still in the drawer or
       // was dropped on the body. A move to another screen has already put it
       // on that screen, and taking it back to the menu button would undo that.

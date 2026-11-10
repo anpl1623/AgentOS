@@ -65,6 +65,12 @@
     transform var(--dur-3) var(--ease-out),
     box-shadow var(--dur-3) var(--ease-out);
 }
+/* As a drawer the sidebar takes focus itself when a press lands on no control
+ * in it (Sidebar.tsx), so Escape and Tab still reach it. That focus keeps the
+ * keyboard's place, as the main column's does, and is not drawn. */
+.sidebar:focus {
+  outline: none;
+}
 
 .main {
   position: relative;
@@ -199,6 +205,23 @@
       transform var(--dur-3) var(--ease-out),
       box-shadow var(--dur-3) var(--ease-out),
       visibility 0s;
+  }
+  /* Reduced motion cuts every transition to a hundredth of a millisecond
+   * rather than removing it (base.css). That turns the opening `visibility
+   * 0s` into a real transition, and gives one to every element in the drawer
+   * that names no transitions of its own, since those transition `all`. A
+   * visibility transition begins at hidden, in the very frame the drawer is
+   * given focus, and a hidden element cannot take it: focus fell to the body.
+   * Here visibility flips at once, and the drawer can be focused as it opens.
+   * Nothing slides under reduced motion, so nothing is lost. */
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar,
+    .shell[data-drawer="open"] .sidebar {
+      transition-property: transform, box-shadow;
+    }
+    :where(.sidebar *) {
+      transition-property: none;
+    }
   }
 
   /* Glass over the screen as it scrolls beneath. It shares the main
@@ -498,7 +521,9 @@
   border: 1px solid var(--border-strong);
   box-shadow: var(--highlight-inset), var(--elev-1);
   transform: translateX(calc(var(--index, 0) * 100%));
-  transition: transform var(--dur-3) var(--ease-spring);
+  /* Named, so the theme cross-fade (motion.css) can keep the slide. */
+  --thumb-slide: transform var(--dur-3) var(--ease-spring);
+  transition: var(--thumb-slide);
 }
 .theme-segments > button,
 .theme-segments > button[aria-pressed="true"] {
