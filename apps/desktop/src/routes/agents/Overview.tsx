@@ -114,15 +114,18 @@ export function Overview({
             <dd>{summary.max_steps}</dd>
             <dt>Created</dt>
             <dd>{ago(summary.created_at)}</dd>
+            {/* A long path or id wraps and leaves its copy button at the
+                panel's trailing edge, where a centred tooltip would reach past
+                the column; lined up with the button's end, it opens inwards. */}
             <dt>Workspace</dt>
             <dd>
               <span className="mono">{workspace}</span>
-              <CopyButton text={workspace} label="Copy the workspace path" />
+              <CopyButton text={workspace} label="Copy the workspace path" tipAlign="end" />
             </dd>
             <dt>Identity</dt>
             <dd>
               <span className="mono faint">{summary.id}</span>
-              <CopyButton text={summary.id} label="Copy the agent id" />
+              <CopyButton text={summary.id} label="Copy the agent id" tipAlign="end" />
             </dd>
           </dl>
         </div>

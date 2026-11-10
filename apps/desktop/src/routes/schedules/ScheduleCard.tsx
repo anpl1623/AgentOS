@@ -130,6 +130,9 @@ export function ScheduleCard({
           <span className="visually-hidden">Agent </span>
           {schedule.agent_name}
         </span>
+        {/* The bin ends the footer, so its tooltip lines up with its trailing
+            edge and opens inwards: centred, it would reach past the last card
+            in the row and give the whole screen a sideways scroll. */}
         <button
           type="button"
           className="icon-button schedule-delete"
@@ -137,7 +140,7 @@ export function ScheduleCard({
           aria-disabled={deleting || undefined}
           aria-busy={deleting || undefined}
           onClick={deleting ? undefined : onDelete}
-          {...tip(`Delete ${schedule.name}`, "top")}
+          {...tip(`Delete ${schedule.name}`, "top", "end")}
         >
           <Icon name="trash" size={16} />
         </button>

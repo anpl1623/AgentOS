@@ -2,7 +2,7 @@ import { type CSSProperties, useRef } from "react";
 
 import { Icon } from "../../components/common";
 import type { SectionEntry } from "./sectionsModel";
-import { useMarker } from "./useSectionNav";
+import { revealInStrip, useMarker } from "./useSectionNav";
 
 /**
  * The in-page navigation: one entry per section, with the section being read
@@ -17,6 +17,9 @@ import { useMarker } from "./useSectionNav";
  * Entries are buttons rather than links: the window's address is the hash
  * router's, and a fragment link would be read as a move to another screen.
  * The current one is `aria-current="location"`, a place within this page.
+ *
+ * In the strip, a chip that takes focus is brought wholly into view, as the
+ * current one is, so a person tabbing along it can always see where they are.
  */
 export function SectionNav({
   sections,
@@ -59,6 +62,9 @@ export function SectionNav({
                 className="settings-nav-item"
                 aria-current={entry.id === active ? "location" : undefined}
                 onClick={() => onJump(entry.id)}
+                onFocus={(event) => {
+                  if (track.current) revealInStrip(track.current, event.currentTarget, ready);
+                }}
               >
                 <Icon name={entry.icon} size={16} />
                 <span className="settings-nav-label">{entry.label}</span>

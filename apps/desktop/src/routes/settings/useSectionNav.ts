@@ -22,7 +22,10 @@ const JUMP_HOLD_MS = 900;
  */
 const LINE_SLACK = 24;
 
-/** Room left either side of a chip scrolled into view in the strip. */
+/**
+ * Room left either side of a chip scrolled into view in the strip, clear of
+ * its faded ends; the track's scroll padding in settings.css is the same.
+ */
 const STRIP_PAD = 24;
 
 /** The nearest ancestor that scrolls, or `null` when the document itself does. */
@@ -116,6 +119,31 @@ export function useSectionSpy(ids: readonly string[]): {
   return { active, jump };
 }
 
+/**
+ * Scrolls the strip by no more than it takes to bring `item` wholly into
+ * view, clear of the faded ends. Where the navigation is a column, the track
+ * does not scroll sideways and nothing moves.
+ *
+ * The marker calls this for the current chip, and each chip for itself when it
+ * takes focus. A browser's own scroll on focus is not enough here: Chrome
+ * leaves alone an element that shows at all, so a chip with a sliver in view
+ * would be operated from under the fade. The slide is smooth only once the
+ * navigation has painted, and never for someone who prefers less motion.
+ */
+export function revealInStrip(track: HTMLElement, item: HTMLElement, smooth: boolean): void {
+  if (track.scrollWidth <= track.clientWidth) return;
+  const left = stripScroll(
+    item.offsetLeft,
+    item.offsetWidth,
+    track.scrollLeft,
+    track.clientWidth,
+    STRIP_PAD,
+  );
+  if (left !== track.scrollLeft) {
+    track.scrollTo({ left, behavior: smooth && !prefersReducedMotion() ? "smooth" : "auto" });
+  }
+}
+
 /** Where the marker sits within the navigation's track. */
 export interface MarkerBox {
   left: number;
@@ -168,21 +196,7 @@ export function useMarker(
               height: item.offsetHeight,
             };
       setBox((previous) => (sameBox(previous, next) ? previous : next));
-      if (item !== null && element.scrollWidth > element.clientWidth) {
-        const left = stripScroll(
-          item.offsetLeft,
-          item.offsetWidth,
-          element.scrollLeft,
-          element.clientWidth,
-          STRIP_PAD,
-        );
-        if (left !== element.scrollLeft) {
-          element.scrollTo({
-            left,
-            behavior: readyRef.current && !prefersReducedMotion() ? "smooth" : "auto",
-          });
-        }
-      }
+      if (item !== null) revealInStrip(element, item, readyRef.current);
     };
     measure();
     if (typeof ResizeObserver === "undefined") return;

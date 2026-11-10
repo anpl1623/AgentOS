@@ -144,22 +144,82 @@
  * currentColor only for its opacity. */
 @media (max-width: 959.98px) {
   .settings-nav {
+    /* Half the strip's height: half a chip, the strip's padding and its
+     * border. Its ends are drawn round with it, rather than with the pill
+     * radius, so that the veil below is cut to exactly the same curve. */
+    --settings-strip-round: calc(32px / 2 + var(--s-2) + 1px);
     top: var(--s-4);
     margin-bottom: var(--s-9);
     padding: var(--s-2);
     border: 1px solid var(--glass-border);
-    border-radius: var(--radius-pill);
+    border-radius: var(--settings-strip-round);
     background: var(--glass);
     -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
     backdrop-filter: blur(var(--glass-blur)) saturate(140%);
     box-shadow: var(--highlight-inset), var(--elev-2);
   }
+  /* Pinned, the strip floats a step below the top of the column, and the
+   * sections scrolling beneath would show through that step, sliced, and in
+   * the notches beside its round ends. It is closed as the pinned page header
+   * closes its own (layout.css, .page-head.sticky::before): with the canvas,
+   * the ground colour and the aurora fixed to the window as the body draws
+   * them, masked to the step and the two notches so that nothing of it lies
+   * under the glass.
+   *
+   * The header's glass, and its veil with it, reach a little way past the
+   * column on either side. The strip is only as wide as the column, so its
+   * veil reaches as far past the strip's ends instead; otherwise a border or
+   * selection ring on the column's edge would still show beside it, a pixel
+   * wide. The strip's glass never comes and goes, so neither does the veil:
+   * unpinned, it lies over the empty margin above the strip, where it is the
+   * canvas it matches. */
+  .settings-nav::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    top: calc((var(--s-4) + 1px) * -1);
+    left: calc((var(--s-6) + 1px) * -1);
+    right: calc((var(--s-6) + 1px) * -1);
+    height: calc(var(--s-4) + var(--settings-strip-round));
+    background-color: var(--surface-canvas);
+    background-image: var(--aurora);
+    background-attachment: fixed;
+    /* A mask reads only alpha, so the ink is the text's opaque colour rather
+     * than a literal. */
+    --veil-step: linear-gradient(currentColor 0 0) top / 100% var(--s-4) no-repeat;
+    /* Each notch runs on past the strip's end, as deep as the notch itself;
+     * its curve is centred on the tile's inner lower corner, which is the
+     * centre of the end's own curve. */
+    --veil-notch-start: radial-gradient(
+        circle at 100% 100%,
+        transparent calc(var(--settings-strip-round) - 0.5px),
+        currentColor var(--settings-strip-round)
+      )
+      left bottom / calc(var(--s-6) + var(--settings-strip-round)) var(--settings-strip-round)
+      no-repeat;
+    --veil-notch-end: radial-gradient(
+        circle at 0 100%,
+        transparent calc(var(--settings-strip-round) - 0.5px),
+        currentColor var(--settings-strip-round)
+      )
+      right bottom / calc(var(--s-6) + var(--settings-strip-round)) var(--settings-strip-round)
+      no-repeat;
+    -webkit-mask: var(--veil-step), var(--veil-notch-start), var(--veil-notch-end);
+    mask: var(--veil-step), var(--veil-notch-start), var(--veil-notch-end);
+    pointer-events: none;
+  }
   .settings-nav-title {
     display: none;
   }
+  /* The faded ends are not part of the view: the scroll padding tells the
+   * browser so whenever it scrolls a chip into view itself, as on focus, and
+   * is the same room revealInStrip (useSectionNav.ts) leaves beside a chip.
+   * Chrome scrolls a focused chip only when none of it shows, so a chip with
+   * a sliver in view is brought in by that function instead. */
   .settings-nav-track {
     overflow-x: auto;
     overscroll-behavior-x: contain;
+    scroll-padding-inline: var(--s-10);
     scrollbar-width: none;
     -webkit-mask-image: linear-gradient(
       90deg,
