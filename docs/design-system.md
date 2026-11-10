@@ -16,8 +16,9 @@ Nothing on a resting screen competes for attention, so that when something does,
 
 **Loud only for risk, taint and decisions.** Light, colour and glow are spent on three things: how
 much harm an action could do (the risk chips, with high and critical glowing), whether a run has read
-untrusted data (the taint mark), and anything waiting on a person (the pending approval card and the
-approvals count, both in the attention hue). A glow that is always on stops meaning anything.
+untrusted data (the taint mark), and anything waiting on a person (the approval card presented for a
+decision, the approvals count and a run held on a decision, all in the attention hue). A glow that is
+always on stops meaning anything.
 
 **Motion that means something.** A screen arriving rises into place; a list arrives in reading
 order; a number that changed pops once; a live thing pulses for as long as it is live; an overlay
@@ -46,14 +47,14 @@ load-bearing:
 | --- | --- | --- |
 | 1 | `styles/fonts.css` | Nothing, on purpose: the app uses the system stack. A vendored face would be declared here. |
 | 2 | `styles/tokens.css` | Every colour literal in the app, both themes, the contrast tables, and the reduced-motion overrides. |
-| 3 | `styles/base.css` | Bare elements: the document, the aurora, headings, `kbd`, buttons, fields. |
+| 3 | `styles/base.css` | Bare elements: the document, the aurora, headings, `kbd`, buttons, fields, and the layout of a button that leads with an icon. |
 | 4 | `styles/motion.css` | Keyframes, the motion utilities, and the theme cross-fade. |
 | 5 | `styles/layout.css` | The shell, the three layouts, the page frame, panels, grids and rows. |
-| 6 | `styles/components.css` | The approval card, trace, feed, banners, skeletons, overlays and alerts. |
+| 6 | `styles/components.css` | The approval card, the argument block, trace, feed, banners, skeletons, overlays and alerts. The feed's `.event` rows and the trace's `.trace-step` are no longer drawn by any screen: Activity and the run page draw their own in their sheets. |
 | 7 | `styles/primitives.css` | Icons, tooltips, the spotlight and lift, and the primitives in `components/`. |
 | 8 | `styles/status.css` | The `.risk` and `.verdict` chips. |
 | 9 | `styles/charts.css` | Figures, tracks, bars, legends and the chart tip. |
-| 10 | `styles/screens/<screen>.css` | One sheet per screen, for rules no other screen uses. |
+| 10 | `styles/screens/<screen>.css` | One sheet per screen, for rules no other screen uses. Tasks has two: `tasks.css` for the list and the sections both views share, and `tasks-run.css` for the run view, loaded straight after it. |
 | 11 | `styles/focus.css` | The focus ring, last, so no rule loaded later can remove it. |
 
 The theme logic is `src/sdk/theme.ts`. The shell is `src/shell/`. The primitives are in
@@ -112,11 +113,15 @@ How it behaves:
   the window without being remembered, and a system that cannot report its scheme is treated as
   dark.
 
-The sidebar's `ThemeToggle` (`shell/ThemeToggle.tsx`, names and icons in `shell/themeChoices.ts`) is
-the only control that sets the theme today.
+Two controls set the theme: the sidebar's `ThemeToggle` (`shell/ThemeToggle.tsx`, names and icons in
+`shell/themeChoices.ts`) and the Appearance section of Settings (`routes/settings/Appearance.tsx`),
+three cards that each show a small picture of their theme. Both go through `useTheme`, so they stay
+in step without either knowing of the other.
 
 README screenshots are taken in a chosen theme regardless of the capturing machine:
 `npm run screenshots -- --out <dir> --size 1500x950 --theme dark|light`. The default is `dark`.
+Add `--still` to have Chrome report reduced motion, so every entrance is drawn at its final frame and
+nothing is caught half played.
 
 ## Tokens
 
@@ -150,10 +155,14 @@ Every token is a custom property on `:root` in `styles/tokens.css`.
   `--surface-raised` for this reason. A test checks that the dark theme really does fall short on
   both grounds, so the rule stays justified.
 - **`--danger-fg` is for edges and marks only.** Words in the danger hue use `--danger-text`.
-- **Status glows are for loud moments only**: a pending decision, a high or critical risk chip, a
-  stat tile in an attention or failure tone, the approvals count, a hovered danger button. The accent
-  glow marks where the person is or what they are about to press: the current nav item's bar, the
-  brand tile, the active palette entry, a focused approval card, a hovered primary button.
+- **Status glows are for loud moments only**: a decision waiting on a person (the approval card
+  presented next, the dashboard's decision cards, a run held on a decision), a high or critical risk
+  chip, a stat tile in an attention or failure tone, the approvals count, a hovered danger button,
+  the run page's Stop control and the step where a run failed, an audit chain that did not verify,
+  and the stamp on an approval just approved. The accent glow marks where the person is or what they
+  are about to press, such as the current nav item's bar and the settings section marker, the brand
+  tile, the active palette entry, a focused approval card, the task composer while it holds focus,
+  and a hovered primary button.
 
 ### Grounds
 
@@ -182,8 +191,11 @@ From the darkest to the lightest. Every text token is measured against all of th
 | `--glass-blur` | `16px` | shared | Used as `blur(var(--glass-blur)) saturate(140%)` |
 
 The aurora is `body::before` in `base.css`: fixed, at `z-index: -1`, ignoring the pointer, two radial
-gradients. It shows through glass and anything transparent, and opaque panels hide it, which keeps
-every measurement on a panel true. The tables measure text on glass at the aurora's brightest point.
+gradients. The gradients are one value, `--aurora`, declared on `:root` in `base.css` beside the rule
+that draws it, so anything that must paint the canvas exactly as it shows behind it (the strip above
+a pinned page header) can draw the same picture at a fixed attachment and meet it without a seam. It
+shows through glass and anything transparent, and opaque panels hide it, which keeps every
+measurement on a panel true. The tables measure text on glass at the aurora's brightest point.
 
 Glass is written the same way everywhere:
 
@@ -207,7 +219,7 @@ even though the fill alone is what the tables measure.
 
 | Token | Dark | Light | Use |
 | --- | --- | --- | --- |
-| `--border-hairline` | `rgba(130,152,186,.10)` | `rgba(15,23,42,.06)` | Between the lines of the activity feed |
+| `--border-hairline` | `rgba(130,152,186,.10)` | `rgba(15,23,42,.06)` | Between the lines of the activity feed and the fields of an argument block; a chart's data table |
 | `--border-subtle` | `#1a2433` | `#e2e7ef` | Between rows; the resting edge of panels and cards |
 | `--border-strong` | `#263347` | `#d2d9e4` | Chips, tags, a lifted card's edge, scrollbars |
 | `--border-emphasis` | `#34455e` | `#bcc6d5` | The one card that asks for a decision |
@@ -253,7 +265,7 @@ one-pixel ring plus a soft bloom, meant to be stacked after an elevation:
 | Hue | Means | `fg` dark / light | `text` dark / light | Glow |
 | --- | --- | --- | --- | --- |
 | `ok` | Succeeded, enabled, healthy | `#46b877` / `#13693a` | `#9bd8b3` / `#0f5530` | `--ok-glow` |
-| `warn` | Attention: pending approvals, untrusted data, stale data, fixture data | `#d9a441` / `#8c5a00` | `#e8cd97` / `#6e4708` | `--warn-glow` |
+| `warn` | Attention: pending approvals, a run waiting on a decision, untrusted data, stale data, fixture data | `#d9a441` / `#8c5a00` | `#e8cd97` / `#6e4708` | `--warn-glow` |
 | `danger` | A failure | `#e0644f` / `#c43a2a` (edges and marks only) | `#ef8878` / `#a62c1e` | `--danger-glow` |
 | `critical` | The top risk step | `#ff7a91` / `#b3173f` | `#ff9aab` / `#991437` | `--critical-glow` |
 | `info` | A run in flight; neutral information | `#7fb2ff` / `#2257c4` | `#a8c4ee` / `#1d479c` | none |
@@ -272,7 +284,7 @@ It is told apart from a live run by its opaque edge and the bar on its leading s
 | `--elev-1` | A resting card |
 | `--elev-2` | A lifted or hovered card, a pending approval card, a pinned page header, tooltips, the chart tip |
 | `--elev-3` | Overlays: dialogs, the palette, alerts, the open drawer |
-| `--shadow-overlay` | An alias of `--elev-3`, kept for older rules |
+| `--shadow-overlay` | An alias of `--elev-3`. No rule reads it; see below |
 | `--spotlight` | The colour of the pointer light on `[data-spotlight]` elements |
 | `--scrim` | The dimmed backdrop behind overlays and the drawer |
 
@@ -367,9 +379,9 @@ duration token is covered.
 
 These tokens exist in `tokens.css` but no rule reads them at present: `--brand-outer` and
 `--brand-inner` (the brand tile uses `--accent-gradient` and `--on-accent`), `--fs-display`,
-`--ok-glow`, `--z-base`, and the older `--motion-fast`, `--motion-base` and `--motion-ease`. New rules
-use the `--dur-*` and `--ease-*` scale. Either use one of these deliberately or remove it with its
-light value; do not add another.
+`--shadow-overlay`, `--z-base`, and the older `--motion-fast`, `--motion-base` and `--motion-ease`.
+New rules use the `--dur-*` and `--ease-*` scale. Either use one of these deliberately or remove it
+with its light value; do not add another.
 
 ## Layout modes and the shell
 
@@ -385,6 +397,12 @@ breakpoints (`BREAKPOINTS = { compact: 720, wide: 1200 }`), and `shell/layout.te
 | `wide` | 1200px and up | `(min-width: 1200px)` | A full column (`--sidebar-w`): icons, labels and counts | Collapses the column to the rail (`--rail-w`) and expands it again. The choice is kept in `localStorage["agentos.sidebar"]` as `"collapsed"` or `"expanded"` |
 | `compact` | 720px to 1199px | `(min-width: 720px) and (max-width: 1199.98px)` | The icon rail, with labels as tooltips | Opens the full sidebar as a drawer over the screen. The column keeps the rail's width, so the screen does not move |
 | `narrow` | under 720px | `(max-width: 719.98px)` | No column. A glass top bar (`--topbar-h`) and an off-canvas drawer from the left | The top bar's menu button opens the drawer; the button inside the drawer closes it |
+
+In the narrow layout the top bar shares the main column's grid cell, above it, and `.main` takes
+`padding-top: var(--topbar-h)` so the screen starts below the bar. Inside `.main` a sticky element's
+`top` is measured below the column's padding, which already includes the top bar, so `top` must not
+add `--topbar-h` again: `top: var(--s-4)` already stops a step below the bar, and
+`calc(var(--topbar-h) + …)` would hold the element a whole bar lower than meant.
 
 The Tauri window is at least 940×620, which is `compact`. At 200% zoom it is 470px wide, which is
 `narrow`. All three layouts therefore occur in real use.
@@ -424,7 +442,8 @@ Each screen is drawn in `.content`: `max-width: var(--content-max)`, centred, wi
 responsive rules without writing any:
 
 - `.grid.stats` is `repeat(auto-fit, minmax(min(180px, 100%), 1fr))`, and `.grid.two` the same at
-  320px.
+  320px. A `.grid.two` of fields drops its row gap, since each field carries its own space beneath
+  it.
 - `.row` wraps its trailing chips under the title rather than drawing over it, and a long word in
   `.row-meta` breaks anywhere.
 - Under 720px, `dl.facts` and `dl.args` inside `.content` stack each label over its value.
@@ -436,7 +455,7 @@ responsive rules without writing any:
 
 | Module | Responsibility |
 | --- | --- |
-| `Shell.tsx` | Composition. Holds the overlay, drawer and collapse state. Starts the event stream and installs the spotlight listener once. Keeps scroll memory per address, names the window after the screen, and moves focus to `main` after a move. Makes `main` inert while the drawer is open. |
+| `Shell.tsx` | Composition. Holds the overlay, drawer and collapse state. Starts the event stream, installs the spotlight listener and starts the screen preload once. Keeps scroll memory per address, names the window after the screen, and moves focus to `main` after a move. Makes `main` inert while the drawer is open. |
 | `layout.ts` | Pure decisions: `layoutMode(width)`, `mediaQuery(mode)`, `sidebarPresentation(mode, collapsed, drawerOpen)` (`full`, `rail`, `drawer` or `hidden`), `sidebarToggle(…)`, `applySidebarAction(…)`, the preference codec, `SIDEBAR_KEY` and `SIDEBAR_ID`. Tested in `layout.test.ts`. |
 | `useLayout.ts` | `useLayoutMode()` and `useSidebarCollapsed()`. |
 | `Sidebar.tsx` | The brand and the sidebar button, `PaletteLauncher`, `NavList`, and the foot (`ConnectionStatus`, `ThemeToggle`, the keyboard shortcuts button). While it is a drawer it is `role="dialog" aria-modal="true" aria-label="Navigation"`. |
@@ -449,7 +468,8 @@ responsive rules without writing any:
 | `ConnectionStatus.tsx` | "Fixture data — not connected to a runtime" in the attention hue (`role="status"`), or a pulsing `LiveDot` with "Local runtime". When the event feed's last read failed it reads "Runtime not answering" and the dot turns to attention and stops pulsing. |
 | `ApprovalsBadge.tsx` | `ApprovalsCount` pops when the count changes and marks itself stale when the read failed, keeping the last count. `ApprovalsAnnouncer` is the polite live region, mounted outside the sidebar so it is still heard in the narrow layout. |
 | `Brand.tsx` | The shield mark on a tile in the accent gradient. |
-| `Screen.tsx` | Maps a route to its screen. |
+| `Screen.tsx` | Maps a route to its screen. Each screen is its own chunk, loaded lazily (`LOADERS` and one `lazy` wrapper per screen), so the first paint waits only for the shell and the screen it lands on. `preloadScreens()` fetches the rest once the window is idle, or after 1.5s where WebKit has no idle callback. |
+| `ScreenFallback.tsx` | What stands in while a screen's code is fetched: the frame of a screen in skeleton (`.screen-pending`), held invisible for 200ms before it fades in, so a quick fetch never flashes it. Reduced motion keeps the delay and drops the fade. |
 | `nav.ts` | `NAV`: each screen's route, label, description and icon, in sidebar order. One list serves the sidebar, the `Cmd/Ctrl+1…7` accelerators, the palette and the window title. |
 | `keys.ts`, `useShellKeys.ts` | The window accelerators as a pure function of one key press, and the listener that carries them out. They stand aside while any `[aria-modal="true"]` is open, the drawer included. |
 | `palette.ts` | The palette's entries, ranking and icons, as pure functions. |
@@ -462,13 +482,15 @@ The order inside `.shell` is:
 2. `header.topbar`.
 3. `#sidebar.sidebar`.
 4. `.sidebar-scrim`.
-5. `main#main.main` > `.content` > the screen's error boundary > `.screen.screen-enter`, keyed on
-   `route.name`.
+5. `main#main.main` > `.content` > the screen's error boundary > `Suspense`, with `ScreenFallback` as
+   its fallback > `.screen.screen-enter`, keyed on `route.name`.
 6. The approvals announcer, the alert hosts, the palette or shortcut sheet when open, the leave
    confirmation and the close guard.
 
 The screen wrapper is keyed on the route's name, not its address, so a new screen rises in and a
-change of parameter, such as opening a run in Tasks, does not remount it.
+change of parameter, such as opening a run in Tasks, does not remount it. The `Suspense` boundary
+sits outside the keyed wrapper, so the wrapper mounts, and rises in, only once the screen's code has
+arrived; a fetch that fails throws to the error boundary above it, as a screen would.
 
 ## Motion vocabulary
 
@@ -480,21 +502,25 @@ The keyframes in `motion.css` are a contract: screens use these names and do not
 | --- | --- | --- |
 | `screen-enter` | Fade in and rise 8px | `.screen-enter`, `.stagger > *`, the top bar's screen name |
 | `pop` | Scale 1 → 1.18 → 1 | `.pop` (the approvals count) |
-| `pulse-ring` | Scale 1 → 2.8 while fading | `.live-dot.pulsing::after`, live and running verdict chips |
+| `pulse-ring` | Scale 1 → 2.8 while fading | `.live-dot.pulsing::after`, live and running verdict chips, a busy switch's knob, the present moment on a live run's timeline |
 | `sheen` | `translateX(-100%)` → `translateX(100%)` | `.sheen::after`, a hovered `button.primary` |
 | `shimmer` | Background position sweep | `.skeleton`, `.skeleton-line` |
 | `overlay-in` | Fade in and scale 0.96 → 1 | `.dialog`, `.palette` |
-| `backdrop-in` | Fade in | `.dialog-backdrop`, `.palette-backdrop`, `.chart-tip` |
+| `backdrop-in` | Fade in | `.dialog-backdrop`, `.palette-backdrop`, `.chart-tip`, `.screen-pending` |
 | `toast-in` | From beyond the right edge, fading in | `.alert`, with `--ease-spring` |
 | `grow-x` | `scaleX(0)` → none; the element sets its own `transform-origin` | `.chart-span`, `.chart-bar`, `.sparkline` |
 | `countdown` | `scaleX(1)` → `scaleX(0)` | `.alert-countdown` |
 | `drawer-in` | From `translateX(-100%)` | Nothing at present. The drawer slides by a transform transition, so that it can slide out as well |
 
+The screens' own sheets use the same keyframes for their own marks and entrances: a feed row
+arriving, a decided approval's stamp popping, a meter or a bar growing, a run's waiting card rising
+in. Each sheet takes its own out under reduced motion beside its rules.
+
 ### Utilities
 
 ```tsx
 <div key={route.name} className="screen-enter">…</div>   {/* the shell does this; key on the name */}
-<ul className="plain-list stagger">{items}</ul>          {/* children 35ms apart, capped at the 12th */}
+<div role="list" className="stagger">{items}</div>       {/* children 35ms apart, capped at the 12th */}
 <span key={key} className={popping ? "nav-count pop" : "nav-count"}>{count}</span>
 <div className="progress-fill sheen" />                  {/* a band of light crosses while in progress */}
 ```
@@ -509,7 +535,10 @@ The keyframes in `motion.css` are a contract: screens use these names and do not
 - `.sheen` takes over the element's `::after` and sets `position: relative; overflow: hidden`. The
   band crosses every `2 × --dur-shimmer` for as long as the class is present, so put it only on
   something that is still in progress.
-- `.stagger` and `.sheen` are ready to use but no screen uses them yet.
+- `.stagger` brings in most of the app's lists and figure rows, from the dashboard's figures to the
+  approvals queue. `.sheen` crosses a running card's budget meter on the dashboard, a schedule's
+  cycle bar while the scheduler is ticking, and the audit check's bar in Settings while it verifies,
+  and comes off each when the work stops.
 
 ### Entrances fill backwards, never forwards
 
@@ -525,7 +554,10 @@ alert countdown, which is not an entrance and holds no fixed content.
   `overlay-in` over `--dur-3` on `--ease-spring`.
 - `.alert` runs `toast-in` over `--dur-4` on `--ease-spring`.
 - Chart spans and bars run `grow-x` over `--dur-4` on `--ease-out`. It plays once on insertion, so
-  re-rendering the same spans does not replay it.
+  re-rendering the same spans does not replay it. Spans along a track grow in the order they
+  happened, one `--stagger-step` apart, capped at the twelfth as `.stagger` is.
+- A live run's timeline marks its present moment at the right edge with a dashed hairline and a dot
+  whose ring pulses for as long as the run is live, in the attention hue while it waits on a person.
 - The chart tip fades in over `--dur-1`. It must not use `overlay-in`, because its own `transform`
   positions it.
 
@@ -558,9 +590,11 @@ The duration tokens already go to near zero. On top of that, the loops and entra
 outright, because a loop of near-zero length is a flicker and an entrance would hold content
 invisible for a frame: `.screen-enter`, `.stagger > *`, `.pop`, `.sheen::after`, skeletons, overlays,
 alerts, chart spans, bars and the tip, and the sparkline all have `animation: none`. The live ring is
-hidden and its dot stays. The alert countdown stays as a full bar: time still passes, shown without
-movement. `base.css` keeps a global override as a safety net for any rule that names a duration of
-its own, and turns off smooth scrolling.
+hidden and its dot stays, and a busy switch's ring and the ring on a timeline's present moment are
+hidden the same way. The alert countdown stays as a full bar: time still passes, shown without
+movement. A screen still being fetched keeps its 200ms delay, which is not a duration, and appears
+without the fade. `base.css` keeps a global override as a safety net for any rule that names a
+duration of its own, and turns off smooth scrolling.
 
 ## Primitives
 
@@ -577,7 +611,10 @@ import {
 ```
 
 Styles for the primitives are in `styles/primitives.css`. The motion hooks are imported from
-`components/motion` directly.
+`components/motion` directly, as are the larger shared pieces from their own modules
+(`ArgumentBlock`, `ConfirmDialog`, `RunTimeline`, the charts, the hooks). Model files, and the odd
+component that needs only a helper, take types and pure helpers such as `IconName`, `StatTone`,
+`riskTone` and `compareRisk` from the module that defines them.
 
 ### Icon
 
@@ -588,8 +625,8 @@ name, `IconName` is their union, and `isIconName(string)` checks a name that arr
 - Screens: `dashboard approvals tasks schedules agents activity settings`.
 - Chrome and controls: `search command menu close chevron-left chevron-right chevron-down
   sidebar-collapse sidebar-expand sun moon monitor check x alert info play pause stop retry plus copy
-  external filter trash edit lock key globe terminal folder window cpu zap eye shield sparkles clock
-  calendar user link refresh more`.
+  external filter trash edit lock key globe terminal folder database window cpu zap eye shield
+  sparkles clock calendar user link refresh more`.
 
 | Prop | Type | Default | |
 | --- | --- | --- | --- |
@@ -627,9 +664,13 @@ hover a tooltip appears after 380ms, so a pointer crossing a row of icons does n
 of labels; on keyboard focus it appears at once. On a screen with no hover a tap would leave it stuck
 on, so it is suppressed there.
 
-`tip(label, side = "bottom")` returns `{ "aria-label", "data-tip", "data-tip-side"? }` for the
-usual case, where the name and the tooltip are the same words. `side` is `"bottom"`, `"top"` (for a
-control near the foot of the window) or `"right"` (for the rail).
+`tip(label, side = "bottom", align = "center")` returns
+`{ "aria-label", "data-tip", "data-tip-side"?, "data-tip-align"? }` for the usual case, where the
+name and the tooltip are the same words. `side` is `"bottom"`, `"top"` (for a control near the foot
+of the window) or `"right"` (for the rail). Above or below, a tooltip is centred on its element
+unless `align` is `"end"`, which lines it up with the element's trailing edge and grows it from
+that corner. Use `"end"` for a control at the end of a row: centred there, the tooltip would reach
+past the column and, even unseen, give it a sideways scroll.
 
 ```tsx
 <button type="button" className="icon-button" {...tip("Copy the run id")}>
@@ -645,13 +686,21 @@ chrome and toolbars, not inside cards.
 ### PageHeader
 
 `components/PageHeader.tsx`. The title block of a screen, top to bottom: an optional breadcrumb, an
-eyebrow, the title row (an `h1` with the actions beside it), and a subtitle.
+eyebrow, the title row (an `h1`, anything drawn before it, and the actions beside it), and a
+subtitle.
 
 Only the title row pins. Once the main column scrolls past it, it becomes a floating glass bar 8px
 below the top and its title scales to 0.8. A zero-height sentinel and an `IntersectionObserver`
 detect the moment, and the component adds `.stuck`; nothing runs on scroll. The row's box grows out
-by exactly its own padding, so the title does not move when it pins. In the narrow layout the row
-does not pin, because the top bar already names the screen.
+by exactly its own padding, so the title does not move when it pins. The step above the pinned bar
+and the notches beside its rounded corners are closed with the canvas itself, the ground and
+`--aurora` at a fixed attachment, so the screen scrolling beneath shows only through the glass.
+
+In the narrow layout the row does not pin, because the top bar already names the screen. Its actions
+wrap below the title there, and would come between the title and the sentence that explains it, so
+a header with actions also draws its subtitle inside the row, after the title and before the
+actions. The stylesheet shows exactly one of the two copies; the other is `display: none`, so it is
+neither seen nor read twice.
 
 | Prop | Type | Default |
 | --- | --- | --- |
@@ -660,7 +709,9 @@ does not pin, because the top bar already names the screen.
 | `subtitle` | `ReactNode` | none |
 | `actions` | `ReactNode` | none |
 | `parent` | `{ label: string; onActivate: () => void }` | none. A back crumb with a chevron |
+| `leading` | `ReactNode` | none. Drawn before the title and outside the `h1`, such as an avatar, so the heading names the screen in words alone. It shrinks with the title when the row pins |
 | `sticky` | `boolean` | `true` |
+| `clampPinned` | `boolean` | `false`. While pinned, the title keeps to one line and ends in an ellipsis. The height the clamp takes is measured and added to the bar's margin as `--page-head-hold`, so nothing beneath it moves. The narrow layout ignores it |
 
 ```tsx
 <PageHeader
@@ -670,19 +721,41 @@ does not pin, because the top bar already names the screen.
   actions={<button type="button" className="primary">New agent</button>}
 />
 
-<PageHeader title={run.id} parent={{ label: "Tasks", onActivate: () => navigate({ name: "tasks" }) }} />
+<PageHeader
+  clampPinned
+  parent={{ label: "Tasks", onActivate: () => navigate({ name: "tasks" }) }}
+  title={trace.objective}
+/>
+
+<PageHeader
+  eyebrow="Agent"
+  parent={parent}
+  leading={<AgentAvatar name={summary.name} enabled={enabled} size="sm" />}
+  title={summary.name}
+/>
 ```
 
 `PageHeader` returns a fragment. Render it as a direct child of the screen's root element, so the
-pinned row can stick for the whole length of the screen. Tasks, Run, Schedules, Agents and Settings
-use it. Dashboard, Approvals and Activity still write `.page-head` by hand: they get the 26px title
-but do not pin until they move to `PageHeader`.
+pinned row can stick for the whole length of the screen. Every screen draws its title with it, and
+none writes `.page-head` by hand. Settings passes `sticky={false}`: its section navigation is what
+stays in reach there, and two sticky bars would take too much of a short window. The run page passes
+`clampPinned`, because its title is the run's objective, often a sentence long; an agent's page
+passes its avatar as `leading`.
 
 ### StatTile
 
 `components/StatTile.tsx`. A figure on a raised card: an icon and a label, a value that counts up, an
-optional delta or hint, and an optional sparkline along its foot. With `onClick` it is a real
-`<button>` with `.lift`, `data-spotlight` and a chevron. Without it, it is a quiet card.
+optional delta or hint, and an optional sparkline along its foot. With `onClick` its label becomes a
+real `<button>`, whose hit area is stretched over the whole card; the card takes `.is-action`,
+`.lift`, `data-spotlight` and a chevron, and carries the focus ring in its own shape. Without it, it
+is a quiet card.
+
+The card is the same element whatever it does, so it is never remounted: a tile whose action comes
+and goes keeps its place in a staggered row without playing its entrance again. A tile that has once
+been a button stays one for as long as it is drawn, `aria-disabled` while there is nothing to do,
+because a control that vanished from under the keyboard would drop focus to the top of the window.
+It then loses its chevron and stops lifting, and the label keeps its ink. A tile that has never had
+an action is not a button.
 
 | Prop | Type | Default | |
 | --- | --- | --- | --- |
@@ -692,8 +765,11 @@ optional delta or hint, and an optional sparkline along its foot. With `onClick`
 | `icon` | `IconName` | none | |
 | `hint` | `ReactNode` | none | |
 | `delta` | `{ text: string; direction: "up" \| "down" \| "flat"; sentiment?: "good" \| "bad" \| "neutral" }` | none | `direction` sets the arrow; `sentiment` sets the colour |
-| `trend` | `readonly number[]` | none | A sparkline, oldest first. A `critical` tile draws it in the danger hue |
-| `tone` | `"accent" \| "ok" \| "warn" \| "danger" \| "critical" \| "info"` | `"accent"` | Colours the icon tile, and the figure for every tone but `accent`. `warn`, `danger` and `critical` also give the card an edge and glow in the hue |
+| `trend` | `readonly number[]` | none | A sparkline, oldest first. A `critical` tile draws it in the danger hue, a `blocked` one in the accent |
+| `trendLabel` | `string` | `"<label>, trend"` | What the series is, for the sparkline's accessible name; the numbers are added to it |
+| `trendCaption` | `string` | none | A few words over the sparkline saying what it counts and how far back, such as "per day, last 7 days". Hidden from assistive technology, which hears `trendLabel` |
+| `tone` | `"accent" \| "ok" \| "warn" \| "danger" \| "critical" \| "info" \| "blocked"` | `"accent"` | Colours the icon tile, and the figure for every tone but `accent`. `warn`, `danger` and `critical` also give the card an edge and glow in the hue. `blocked`, the hue of a refusal, takes the edge without the glow: the policy working is to be seen, not to alarm |
+| `className` | `string` | none | Added after the tile's own classes, for a screen's layout |
 | `onClick` | `() => void` | none | Makes the tile a button |
 
 ```tsx
@@ -711,8 +787,11 @@ optional delta or hint, and an optional sparkline along its foot. With `onClick`
 ```
 
 The moving digits are `aria-hidden`; a visually hidden span gives assistive technology the final
-figure, so a number is never read part-way. No screen uses `StatTile` yet: the dashboard still draws
-the older `Stat`.
+figure, so a number is never read part-way. A tile that is a button is named by its label and final
+figure together and described by the line beneath. The figures on the dashboard, the approvals queue,
+a run's page, Activity, the agents list, an agent's overview, Schedules and Settings are all
+`StatTile`s. A run's state tile, whose value is a chip rather than a figure, is drawn in the tile's
+own classes beside them. No screen draws the older `Stat`.
 
 ### EmptyState
 
@@ -747,16 +826,27 @@ state from `aria-checked`, so what is drawn and what is announced cannot disagre
 knob that springs across and stretches towards where it is going while pressed, and the accent
 gradient when on. The hit target is at least 32px tall, 40px on a coarse pointer.
 
+While `busy`, a change it must wait for is in flight. It is never disabled then, since a focused
+control that becomes disabled drops focus to the top of the window: it is `aria-busy` and
+`aria-disabled`, ignores presses, and is drawn and announced at the state it was last pressed
+towards. The knob therefore moves when it is pressed rather than when the runtime answers, goes back
+if the answer is no, and a ring spreads from it until then. Busy with work it was not pressed for,
+it holds where it is. It keeps its ink rather than greying out, because it is working, not refused.
+
 | Prop | Type | |
 | --- | --- | --- |
 | `checked` | `boolean` | |
 | `onChange` | `(checked: boolean) => void` | |
 | `label` | `ReactNode` | A visible label, which is also the name |
 | `ariaLabel` | `string` | The name when the words that name it sit elsewhere on the row |
-| `disabled` | `boolean` | |
+| `describedBy` | `string` | The id of what describes it, such as a note on what turning it on will do |
+| `busy` | `boolean` | A change is in flight; presses are ignored until it is done |
+| `disabled` | `boolean` | Unavailable. Ignored while `busy` |
+| `tip` | `string` | A tooltip, such as what pressing it will do. Never its only name |
+| `className` | `string` | Added after `switch`, for a screen's layout |
 
 ```tsx
-<Switch checked={running} onChange={setRunning} label="Scheduler running" />
+<Switch checked={view.running} busy={busy} onChange={(on) => void apply(on)} label="Scheduler" />
 ```
 
 ### CopyButton
@@ -772,10 +862,15 @@ copy".
 | `text` | `string` | required | |
 | `label` | `string` | `"Copy"` | The name and tooltip, such as "Copy the run id" |
 | `showLabel` | `boolean` | `false` | Draws the words as well. Otherwise it is an icon button |
+| `tipAlign` | `"center" \| "end"` | `"center"` | Where the icon button's tooltip lines up with it. A button at the trailing edge of a row takes `"end"`, so the tooltip opens inwards |
 
 ```tsx
 <CopyButton text={run.id} label="Copy the run id" />
 ```
+
+In a `dl.facts` value the button shares the line's centre with the value, which breaks anywhere
+rather than push it off the card, and it reaches into the row gap instead of adding height, so a row
+with one is spaced like the rows without.
 
 `useCopy(feedbackMs = 2000)` takes how long its result stands before the control resets.
 
@@ -839,7 +934,7 @@ with a visually hidden noun ("risk", "outcome", "run", "task", "agent"), so it i
 | --- | --- | --- |
 | `Risk` | `level` | `none`, `low`, `medium`, `high` or `critical` |
 | `Verdict` | `outcome` | A tool call's outcome |
-| `State` | `state` | A run state; a live run carries a pulsing dot |
+| `State` | `state` | A run state; a live run carries a pulsing dot. A run waiting for approval is in the attention hue with a dot that holds still, since what it waits on is a person |
 | `Status` | `status` | A task status |
 | `Enabled` | `status` | Whether an agent may be given work, deliberately not a run state |
 | `Tainted` | `label?`, `explanation?` | The mark for anything that has read untrusted data |
@@ -858,17 +953,17 @@ From `components/common.tsx`:
 
 | Component | Use |
 | --- | --- |
-| `Panel` | A raised card (`.panel`) |
+| `Panel` | A raised card (`.panel`). Screens write the class directly, and none uses the component now |
 | `Row` | One line of a list. With `onActivate` it is a real `<button>` carrying `data-spotlight`; without it, a plain `<div>`. Pass `onActivate` only when activation does something, and never to a row that holds its own buttons |
 | `Empty` | A one-line empty list, `role="status"` |
 | `Loading` | "Loading … ", `role="status"`, polite |
 | `SkeletonRows` | Placeholder rows shaped like a row's title and meta, hidden from assistive technology. Pair it with `Loading`, which is what speaks |
 | `ErrorBanner` | An async failure, `role="alert"` |
 | `Stale` | "showing data from 3m ago", for a screen whose last refresh failed |
-| `Stat` | The older labelled number. Prefer `StatTile` in new work |
+| `Stat` | The older labelled number. No screen draws it now; use `StatTile` |
 
 ```tsx
-<Panel>
+<div className="panel">
   {agents.loading ? (<><Loading what="agents" /><SkeletonRows count={2} /></>) : null}
   {agents.data?.length === 0 ? <Empty>No agents yet.</Empty> : null}
   <div role="list" aria-label="Agents">
@@ -878,8 +973,11 @@ From `components/common.tsx`:
       </div>
     ))}
   </div>
-</Panel>
+</div>
 ```
+
+The dashboard, Settings and Agents each wrap the two roles in a small `List` and `Item` of their own
+(`dashboard/Section.tsx`, `settings/parts.tsx`, `agents/lists.tsx`), named by the section's heading.
 
 ### Shared classes
 
@@ -891,12 +989,23 @@ The look of bare elements and the classes every screen uses:
   accent gradient, laid under its border too; on hover it darkens, takes `--accent-glow` and sends one
   sheen across beneath the label (it isolates its stacking, so it gives up its `::after`).
   `button.danger` is danger-edged with `--danger-text` and glows on hover. `button.ghost` is
-  transparent and dim until hovered. Any button with `aria-pressed="true"` takes the accent wash.
+  transparent and dim until hovered. Any button with `aria-pressed="true"` takes the accent wash, a
+  ghost toggle included. A button with `aria-disabled="true"` is drawn as a disabled one and is deaf
+  to the pointer, but keeps focus: a control that waits on its own work (Stop, Retry, Verify) uses
+  it instead of `disabled`, and its handler ignores a press until the work is done.
+- **A button that leads with an icon** or a `LiveDot` sets it on the label's centre line, with a
+  `--s-3` gap. The rule reaches only the standard looks (a bare button, `primary`, `danger`,
+  `ghost`) and is held at no specificity, so a button with a class of its own lays itself out, and
+  a modifier beside a look class still decides its own display and spacing.
 - **Fields** are sunken wells (`--surface-sunken`, `--shadow-well`) with the control edge. The edge
   brightens on hover, and focus adds an accent border beside the ring. Placeholders are
   `--text-faint`. Checkboxes, radios and ranges keep their native shape in the accent colour.
-- **`.segmented`** is a two-to-four way choice: a sunken track with the chosen segment as a raised
-  key (`aria-pressed`). The key's fill and shadow cross-fade at hover speed as the choice moves.
+- **`.segmented`** is a two-to-six way choice, such as a filter by status: a sunken track with the
+  chosen segment as a raised key (`aria-pressed`). The key's fill and shadow cross-fade at hover
+  speed as the choice moves. The keys wrap onto a second line rather than run out of a narrow
+  window. Each is 32px tall (40px on a coarse pointer) and the track hugs it with a pixel of well,
+  so the control stands no taller than the fields and buttons beside it. A key may hold a dot, a
+  count or an icon beside its word, all on the word's centre line.
 - **`.check`** is a selectable card for a checkbox; `.check.on` takes the accent wash, and its note
   moves from faint to dim text.
 - **`.banner`** (`.error`, `.info`, `.warn`) is a rounded sentence the page wants read first, with a
@@ -904,9 +1013,16 @@ The look of bare elements and the classes every screen uses:
 - **`.approval`** is the approval card. While undecided it has the warn edge and glow, the same hue
   as the approvals count; `.selected` takes the accent line, `.focused` the accent ring and glow,
   `.decided` goes quiet. Its footer is sticky glass, so Approve and Deny stay on screen beside large
-  arguments.
-- **`.tag`**, **`pre.code`** (`.wrap` for arguments awaiting a decision), **`dl.facts`** and
-  **`dl.args`** are the fact and code shapes.
+  arguments. The approvals desk refines this in its own sheet: only the card presented next, the
+  one selected or the one holding focus glows, in its risk's glow; the rest keep their risk's edge.
+- **`.tag`**, **`pre.code`** (`.wrap` so a long line wraps instead of hiding its tail behind a
+  sideways scroll), **`dl.facts`** and **`dl.args`** are the fact and code shapes.
+- **`ArgumentBlock`** (`components/ArgumentBlock.tsx`, styled under "argument block" in
+  `components.css`) draws a tool call's exact arguments as one sunken well: a head with the Fields
+  and Raw switch and Copy JSON, any notes on what the text holds, then the fields one to a line with
+  a hairline between them, or the raw JSON in `pre.code.wrap`. A literal is told from a string by
+  the quotes around a string, and its hue only repeats that. The approval card and a run's call
+  details both draw it, and a new place that shows a call's arguments should too.
 - **`.stale`**, **`.muted`**, **`.faint`**, **`.mono`**, **`.prose`**, **`.field-note`**,
   **`.visually-hidden`**, **`.inline`**, **`.stack`**, **`.spacer`** are the utilities.
 - **`kbd`** is a small raised key cap. Scrollbars are thin in `--border-strong`, and the selection is
@@ -1017,9 +1133,13 @@ them by using that piece rather than writing its own.
    the grounds the tables cover, and keep faint text off hovered controls and washes.
 2. **Focus is always visible.** `focus.css` draws one ring for everything, only when focus arrived by
    keyboard: a 2px `--focus` outline at a 2px offset, and a 6px `--focus-glow` halo. While a control
-   is focused the halo replaces its own shadow, so the ring wins. Rows, palette entries, segmented
-   buttons and the palette input draw it inside. `main` takes focus on navigation but draws nothing.
-   SVG chart spans use a `--focus` stroke. A component may move the ring; it may never remove it.
+   is focused the halo replaces its own shadow, so the ring wins. The ring follows each element's own
+   radius, so a focused card keeps its 12px corners; only an element that declares no radius, such
+   as a link, is given `--radius-md`, at no specificity. Rows, palette entries, segmented buttons,
+   the palette input and an argument block's raw view draw it inside. A `StatTile` that leads
+   somewhere draws it around the whole card. `main` takes focus on navigation but draws nothing. SVG
+   chart spans use a `--focus` stroke. A component may move the ring; it may never remove it. Nor is
+   focus dropped: a control that waits on its own work is `aria-disabled`, never `disabled`.
 3. **Colour is never the only signal.** Pair every hue with a shape, an icon or words.
 4. **Every control has a name.** Icon-only controls use `tip()` or `aria-label`; a tooltip is never
    the only name. A decorative icon is `aria-hidden`; an icon that carries meaning alone has a
@@ -1061,22 +1181,27 @@ A checklist for whoever owns a screen. The route item applies only to a new scre
       `<screen>Model.ts`, tested in `<screen>Model.test.ts`. The component only draws.
 - [ ] A new screen adds its variant to `Route` in `routes/route.ts`, its address to `shell/hash.ts`
       with a round-trip test, its entry to `NAV` in `shell/nav.ts` (with a distinct icon), and its
-      case to `shell/Screen.tsx`. The accelerator, palette entry and window title follow from `NAV`.
+      loader in `LOADERS`, its `lazy` wrapper and its case to `shell/Screen.tsx`, so it is its own
+      chunk. The accelerator, palette entry and window title follow from `NAV`. Its sheet is
+      imported in `styles.css` among the others, and its route is added to `ROUTES` in
+      `scripts/screenshots.mjs`.
 - [ ] It receives its route's parameters and `navigate` as props and never reaches into the shell.
 
 **Page frame**
 
-- [ ] `PageHeader` is the first child of the screen's root fragment, with a `title`, a `subtitle` of
+- [ ] `PageHeader` is the first child of the screen's root element, with a `title`, a `subtitle` of
       one sentence, and the screen's primary action as a `button.primary` in `actions`. A detail
-      screen passes `parent` for the way back.
+      screen passes `parent` for the way back. A title that runs long passes `clampPinned`; a mark
+      beside the title goes in `leading`, not in the title.
 - [ ] Sections are introduced with `h2`. There is one `h1`, and `PageHeader` draws it.
 
 **Content**
 
 - [ ] Figures go in `.grid.stats` as `StatTile`s. A tile that leads somewhere gets `onClick`. A tone
       other than `accent` is used only when the figure asks for attention.
-- [ ] Lists are `Panel`s of `Row`s inside `role="list"` and `role="listitem"`, or a `.plain-list`.
-      A row gets `onActivate` only when activation does something.
+- [ ] Lists are `Row`s or cards inside `role="list"` and `role="listitem"`, in a `.panel` where they
+      are rows. A row gets `onActivate` only when activation does something. (`.plain-list` is still
+      in `layout.css`, but no screen uses it.)
 - [ ] Cards that do something use `.lift` with `data-spotlight`. Static content uses neither.
 - [ ] `.stagger` is used only on a list whose arrival order means something.
 - [ ] Risk, outcome, run and task states use the status chips, never a hand-coloured span. Anything
@@ -1097,7 +1222,9 @@ A checklist for whoever owns a screen. The route item applies only to a new scre
 **Style**
 
 - [ ] New classes go in `styles/screens/<screen>.css` and read tokens only: no colour literal, no
-      duration or easing that is not a token, no spacing off the `--s-*` scale.
+      duration or easing that is not a token, no spacing off the `--s-*` scale. A screen with two
+      large views may give the second a sheet of its own, as Tasks does with `tasks-run.css`,
+      imported straight after the first.
 - [ ] Nothing is styled inline. Geometry that only the data knows is passed as a custom property that
       a class reads, as in `style={{ "--w": "62%" }}`.
 - [ ] A shape another screen could use belongs in `layout.css`, `components.css` or
