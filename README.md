@@ -590,7 +590,7 @@ AgentOS is currently under active development. The architecture and APIs are exp
   and a scripted mock
 - The `agentos` CLI
 - The desktop application: dashboard, the approval card, live execution traces, agent and policy
-  editing, a streaming activity feed, and settings
+  editing, a streaming activity feed, and settings, in a dark or light theme and at any window size
 
 - An end-to-end demonstration: a local mock CRM, driven by a real browser, with a prompt-injection
   payload planted in one of the customer records
@@ -598,8 +598,12 @@ AgentOS is currently under active development. The architecture and APIs are exp
 - Schedules and task graphs: cron or interval standing instructions, tasks that wait on other
   tasks, and a scheduler that runs them unattended behind a deny-all approval gate
 
-**Not built yet:** agent orchestration, multi-agent execution, and integrations. See the
-roadmap below.
+- Agent orchestration: an agent delegates to others, each held to every policy above it
+
+- The GitHub integration, with each credential bound to its origin
+
+**Not built yet:** integrations beyond GitHub, and the plugin and agent SDKs. See the roadmap
+below.
 
 The project is **not yet intended for unrestricted autonomous operation of production businesses.**
 
@@ -857,6 +861,12 @@ models, so a change on one side fails to compile on the other.
 Running `npm run dev` alone opens the interface in an ordinary browser against fixture data, which is
 useful for working on a screen without launching the whole application. Those fixtures are
 development-only and are removed from a production build.
+
+The interface is built to [`docs/design-system.md`](docs/design-system.md): colours come only from
+tokens, both themes carry contrast tables that the tests recompute, every animation stops under
+reduced motion, and the layout has three modes — a full sidebar, a rail, and a top bar with a
+drawer — chosen by the window's width. `npm test` runs its unit tests; `npm run screenshots`
+photographs every screen against the fixtures.
 
 ## Commands
 
