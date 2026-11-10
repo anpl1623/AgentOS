@@ -83,7 +83,6 @@ export function Dashboard({ navigate }: { navigate: Navigate }) {
         today={today.data}
         todayFailed={today.error !== null}
         usage={usage.data}
-        days={days}
         navigate={navigate}
       />
 

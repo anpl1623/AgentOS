@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 
 import type { ToolUsageView } from "../../bindings/ToolUsageView";
-import { Empty, ErrorBanner, Risk, Row, SkeletonRows } from "../../components/common";
+import { Empty, ErrorBanner, Risk, Row, SkeletonRows, Sparkline } from "../../components/common";
 import { ago, duration } from "../../sdk/format";
 import {
   type MeterPart,
@@ -12,6 +12,7 @@ import {
   toolRows,
 } from "./dashboardModel";
 import { Item, List, Section } from "./Section";
+import { perDayLabel } from "./usageModel";
 
 /** Placeholder rows on first paint. */
 const SKELETON_ROWS = 3;
@@ -25,13 +26,14 @@ const PART_NAMES: Readonly<Record<MeterPart["kind"], string>> = {
 };
 
 /**
- * Each tool's calls over the last 7 or 30 days, as a row and a meter.
+ * Each tool's calls over the last 7 or 30 days, as a row, a meter and a line.
  *
  * The meter is the busiest tool's length scaled down, split by how the calls
  * ended, and it grows in from the left whenever the window changes. It is a
  * second way of saying what the row's words already say, so it is hidden from
  * assistive technology; the refused part is hatched as well as tinted, so it
- * still reads without colour.
+ * still reads without colour. The line at the row's end is the tool's calls
+ * day by day, which the words do not say, so it is named with the series.
  */
 export function ToolUsage({
   usage,
@@ -113,8 +115,9 @@ function ToolLine({ row, busiest }: { row: ToolRow; busiest: number }) {
   return (
     <Row className={row.mostlyRefused ? "dash-tool alarming" : "dash-tool"}>
       <div className="row-main">
-        {/* The alarm rides on the title line, so the meter beneath always
-            runs the row's full width, however narrow the column. */}
+        {/* The alarm rides on the title line, which always has the row's
+            full width; the meter and the words beneath it share theirs with
+            the line of days. */}
         <div className="row-title dash-tool-title">
           <span className="mono">{row.tool}</span>
           {row.risk ? <Risk level={row.risk} /> : null}
@@ -146,6 +149,15 @@ function ToolLine({ row, busiest }: { row: ToolRow; busiest: number }) {
           </span>
           {row.risk === null ? <span>no longer offered</span> : null}
         </div>
+        {/* A line needs two days to say anything; one day is the meter's job. */}
+        {row.daily !== null && row.daily.length > 1 ? (
+          <span className="dash-tool-spark">
+            <Sparkline
+              values={row.daily}
+              label={perDayLabel(`${row.tool} calls`, row.daily.length)}
+            />
+          </span>
+        ) : null}
       </div>
     </Row>
   );

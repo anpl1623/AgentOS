@@ -58,4 +58,14 @@ risk: string | null,
 /**
  * Whether the catalogue says the tool reads the world outside the runtime.
  */
-returns_untrusted_data: boolean, };
+returns_untrusted_data: boolean, 
+/**
+ * Calls on each day of the window, oldest first, today last.
+ *
+ * One entry per day, days with no calls included, so it is as long as
+ * the window is in days and always sums to `calls`. A day is the
+ * machine's local calendar day, the one an operator reads a chart in,
+ * and the window is whole days of it: seven days is today and the six
+ * before. All zeros for a tool with no calls.
+ */
+daily: Array<number>, };

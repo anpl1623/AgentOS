@@ -9,7 +9,6 @@ import {
   LONG_WAIT_MS,
   agentActivity,
   auditSummary,
-  callsDelta,
   callsTotal,
   decisionSummary,
   greeting,
@@ -99,6 +98,7 @@ function usage(tool: string, calls: number): ToolUsageView {
     last_used_at: null,
     risk: "low",
     returns_untrusted_data: false,
+    daily: [calls],
   };
 }
 
@@ -202,24 +202,9 @@ describe("tool call figures", () => {
     expect(callsTotal([])).toBe(0);
   });
 
-  it("compares the day with the window's daily average", () => {
-    expect(callsDelta(40, 70, 7)).toEqual({
-      text: "vs 10/day over 7d",
-      direction: "up",
-      sentiment: "neutral",
-    });
-    expect(callsDelta(2, 70, 7)?.direction).toBe("down");
-    expect(callsDelta(11, 70, 7)?.direction).toBe("flat");
-  });
-
-  it("writes a small average to one decimal", () => {
-    expect(callsDelta(1, 12, 30)?.text).toBe("vs 0.4/day over 30d");
-  });
-
-  it("has nothing to compare with when the window is empty", () => {
-    expect(callsDelta(5, 0, 7)).toBeNull();
-    expect(callsDelta(5, 10, 0)).toBeNull();
-  });
+  // How today compares with the days before it is in usageModel.test.ts:
+  // since the report counts whole local days, the comparison needs the
+  // window's day-by-day series rather than its total.
 });
 
 describe("running", () => {

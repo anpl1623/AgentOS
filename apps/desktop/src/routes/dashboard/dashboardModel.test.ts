@@ -110,6 +110,8 @@ function task(
 }
 
 function usage(tool: string, extra: Partial<ToolUsageView> = {}): ToolUsageView {
+  // A one-day window unless given one, so the series always sums to the calls.
+  const calls = extra.calls ?? 0;
   return {
     tool,
     calls: 0,
@@ -123,6 +125,7 @@ function usage(tool: string, extra: Partial<ToolUsageView> = {}): ToolUsageView 
     last_used_at: null,
     risk: "low",
     returns_untrusted_data: false,
+    daily: [calls],
     ...extra,
   };
 }
@@ -138,6 +141,7 @@ function row(extra: Partial<ToolRow>): ToolRow {
     totalMs: 0,
     lastUsedAt: null,
     mostlyRefused: false,
+    daily: null,
     ...extra,
   };
 }
@@ -328,6 +332,11 @@ describe("toolRows", () => {
   it("keeps a tool the catalogue no longer offers, without a risk", () => {
     const [row] = toolRows([usage("retired", { calls: 1, executed: 1, risk: null })]);
     expect(row?.risk).toBeNull();
+  });
+
+  it("carries each tool's calls per day through for its sparkline", () => {
+    const [row] = toolRows([usage("t", { calls: 5, executed: 5, daily: [0, 2, 0, 3] })]);
+    expect(row?.daily).toEqual([0, 2, 0, 3]);
   });
 });
 

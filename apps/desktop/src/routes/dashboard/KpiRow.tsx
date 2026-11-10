@@ -5,13 +5,13 @@ import { LiveDot, StatTile } from "../../components/common";
 import type { Navigate } from "../route";
 import { refusedTotal } from "./dashboardModel";
 import {
-  callsDelta,
   callsTotal,
   longestWait,
   runningBreakdown,
   runningHint,
   toolsCalled,
 } from "./overviewModel";
+import { callsDelta, dailyCalls, perDayCaption, perDayLabel } from "./usageModel";
 
 /** A figure that failed to load, as opposed to one still loading (`null`). */
 const UNKNOWN = "unknown";
@@ -26,9 +26,10 @@ const UNKNOWN = "unknown";
  * approvals in the attention hue, refusals in the blocked hue a refusal is
  * drawn in everywhere else.
  *
- * The usage report has no per-day series, so the tool-call tile compares the
- * day with the window's daily average in words instead of drawing a
- * sparkline it would have to invent.
+ * "Today" is the machine's own calendar day, since local midnight, as the
+ * runtime counts it. The tool-call tile draws each day of the tool panel's
+ * window beneath its figure, today last and still under way, and says what
+ * the line is, since it carries no axis.
  */
 export function KpiRow({
   now,
@@ -39,7 +40,6 @@ export function KpiRow({
   today,
   todayFailed,
   usage,
-  days,
   navigate,
 }: {
   now: number;
@@ -47,12 +47,11 @@ export function KpiRow({
   approvalsKnown: boolean;
   approvalsFailed: boolean;
   running: readonly TaskSummary[] | null;
-  /** The last day's usage report. */
+  /** Today's usage report, since local midnight. */
   today: readonly ToolUsageView[] | null;
   todayFailed: boolean;
-  /** The tool panel's window, for the daily average. */
+  /** The tool panel's window, for the line of days. */
   usage: readonly ToolUsageView[] | null;
-  days: number;
   navigate: Navigate;
 }) {
   const waiting = approvalsKnown ? approvals.length : approvalsFailed ? UNKNOWN : null;
@@ -65,7 +64,8 @@ export function KpiRow({
   const refused = today ? refusedTotal(today) : todayFailed ? UNKNOWN : null;
 
   const calls = today ? callsTotal(today) : null;
-  const delta = calls !== null && usage ? callsDelta(calls, callsTotal(usage), days) : null;
+  const series = usage ? dailyCalls(usage) : null;
+  const delta = calls !== null ? callsDelta(calls, series) : null;
 
   return (
     // Named as a group, as the "At a glance" heading once named these figures,
@@ -98,27 +98,23 @@ export function KpiRow({
         }
         onClick={() => navigate({ name: "tasks" })}
       />
-      <div
-        className={
-          typeof refused === "number" && refused > 0
-            ? "dash-kpi-refused active"
-            : "dash-kpi-refused"
-        }
-      >
-        <StatTile
-          label="Refused · 24h"
-          value={refused}
-          icon="lock"
-          hint="by policy, by you, or by budget"
-          onClick={() => navigate({ name: "activity" })}
-        />
-      </div>
       <StatTile
-        label="Tool calls · 24h"
+        label="Refused · today"
+        value={refused}
+        icon="lock"
+        tone={typeof refused === "number" && refused > 0 ? "blocked" : "accent"}
+        hint="by policy, by you, or by budget"
+        onClick={() => navigate({ name: "activity" })}
+      />
+      <StatTile
+        label="Tool calls · today"
         value={calls ?? (todayFailed ? UNKNOWN : null)}
         icon="zap"
         delta={delta ?? undefined}
         hint={today ? toolCount(toolsCalled(today)) : undefined}
+        trend={series ?? undefined}
+        trendLabel={series ? perDayLabel("Tool calls", series.length) : undefined}
+        trendCaption={series ? perDayCaption(series.length) : undefined}
       />
     </div>
   );

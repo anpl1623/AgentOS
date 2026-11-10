@@ -349,7 +349,7 @@ mod tests {
     use agentos_core::risk::RiskLevel;
     use agentos_core::task::{Task, TaskRun, TaskState};
     use agentos_core::tool::ToolOutcome;
-    use agentos_persistence::ToolExecutionRecord;
+    use agentos_persistence::{ToolExecutionRecord, UsageWindow};
     use agentos_runtime::{AuditCheckpoint, RunApprovalGate, RunStateMachine};
     use agentos_secrets::InMemorySecretStore;
     use agentos_tools::{ApprovalGate, ApprovalOutcome};
@@ -760,7 +760,11 @@ mod tests {
         let (_, old_run) = task_with_run(&runtime, &agent, "Old.", TaskState::Completed).await;
         let (_, new_run) = task_with_run(&runtime, &agent, "New.", TaskState::Completed).await;
         let now = agentos_core::now();
-        let month_ago = now - Duration::from_secs(30 * 24 * 60 * 60);
+        // Twenty-nine days of hours back, not thirty: the window is whole local
+        // days, and a change of the clocks in the month can put a call made
+        // exactly thirty days of hours ago, just after midnight, on the day
+        // before the month's first.
+        let month_ago = now - Duration::from_secs(29 * 24 * 60 * 60);
         let executions = runtime.database().executions();
 
         executions
@@ -813,6 +817,64 @@ mod tests {
                 .map(|row| row.calls),
             Some(2)
         );
+    }
+
+    #[tokio::test]
+    async fn each_tool_counts_its_calls_on_every_day_of_the_window() {
+        let (_guard, runtime, agent) = runtime_with_agent().await;
+        let (_, run) = task_with_run(&runtime, &agent, "Read.", TaskState::Completed).await;
+        let now = agentos_core::now();
+        let two_days_ago = now - Duration::from_secs(2 * 24 * 60 * 60);
+        let executions = runtime.database().executions();
+        for at in [now, now, two_days_ago] {
+            executions
+                .insert(&execution(
+                    &run,
+                    "filesystem.read",
+                    ToolOutcome::Success,
+                    at,
+                ))
+                .await
+                .unwrap();
+        }
+
+        let usage = insights::tool_usage_in(&runtime, UsageWindow::ending_on(&now, 7))
+            .await
+            .unwrap();
+        let read = usage
+            .iter()
+            .find(|row| row.tool == "filesystem.read")
+            .expect("a used tool is listed");
+        assert_eq!(read.calls, 3);
+        assert_eq!(
+            read.daily.last(),
+            Some(&2),
+            "today's calls are the last day's"
+        );
+        for row in &usage {
+            assert_eq!(row.daily.len(), 7, "{}", row.tool);
+            assert_eq!(row.daily.iter().sum::<u64>(), row.calls, "{}", row.tool);
+        }
+        // A tool the catalogue offers and nothing called is a week of quiet
+        // days, not an empty series a chart would have to guess the length of.
+        let unused = usage
+            .iter()
+            .find(|row| row.calls == 0)
+            .expect("an unused catalogue tool");
+        assert_eq!(unused.daily, vec![0; 7]);
+    }
+
+    #[tokio::test]
+    async fn the_series_is_as_many_days_as_the_window_asked_for() {
+        let (_guard, runtime, _agent) = runtime_with_agent().await;
+        for (asked, days) in [(30, 30), (1, 1), (0, 1), (-5, 1), (99_999, 3_650)] {
+            let usage = insights::tool_usage_over(&runtime, asked).await.unwrap();
+            assert!(!usage.is_empty(), "the catalogue is listed");
+            assert!(
+                usage.iter().all(|row| row.daily.len() == days),
+                "{asked} days asked for"
+            );
+        }
     }
 
     #[tokio::test]

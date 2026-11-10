@@ -5,7 +5,8 @@
  * claims lives here as a pure function, so a test fails when one of them
  * changes. The components in this folder only render what these return. What
  * stands between an installation and its first run is in `readinessModel.ts`,
- * and the overview's wording and arithmetic in `overviewModel.ts`.
+ * the overview's wording and arithmetic in `overviewModel.ts`, and the tool
+ * usage day by day in `usageModel.ts`.
  */
 
 import type { ApprovalView } from "../../bindings/ApprovalView";
@@ -15,6 +16,7 @@ import type { TaskSummary } from "../../bindings/TaskSummary";
 import type { ToolUsageView } from "../../bindings/ToolUsageView";
 import { humanise } from "../../sdk/format";
 import { sortApprovals } from "../approvals/approvalsModel";
+import { toolSeries } from "./usageModel";
 
 // ---------------------------------------------------------------------------
 // Time
@@ -225,6 +227,8 @@ export interface ToolRow {
   lastUsedAt: string | null;
   /** Refused more often than it ran: the row the panel exists to show. */
   mostlyRefused: boolean;
+  /** Calls per day over the window, today last; `null` when the runtime sent none. */
+  daily: readonly number[] | null;
 }
 
 /** Every refusal, whoever made it: the policy, a person, or the approval budget. */
@@ -257,6 +261,7 @@ export function toolRows(usage: readonly ToolUsageView[]): ToolRow[] {
         totalMs: each.total_duration_ms,
         lastUsedAt: each.last_used_at,
         mostlyRefused: refused > each.executed,
+        daily: toolSeries(each),
       };
     })
     .sort(
@@ -270,9 +275,9 @@ export function toolRows(usage: readonly ToolUsageView[]): ToolRow[] {
 /**
  * Every refusal across every tool in a usage report.
  *
- * The dashboard asks for a one-day report for its `refused (24h)` tile. The
- * refusal list beside it is capped by the runtime, so counting that list
- * would stop at its cap and call it the day's total.
+ * The dashboard asks for a one-day report — today, since local midnight — for
+ * its refused tile. The refusal list beside it is capped by the runtime, so
+ * counting that list would stop at its cap and call it the day's total.
  */
 export function refusedTotal(usage: readonly ToolUsageView[]): number {
   return usage.reduce((sum, each) => sum + refusedOf(each), 0);

@@ -69,22 +69,6 @@
 .dash-kpis > * {
   min-width: 0;
 }
-/* The refused tile takes the blocked hue a refusal wears everywhere else. The
- * tile has no blocked tone of its own, so the wrapper lends it one. */
-.dash-kpi-refused {
-  display: grid;
-}
-.dash-kpi-refused.active .stat-tile-value {
-  color: var(--blocked-fg);
-}
-.dash-kpi-refused.active .stat-tile-icon {
-  color: var(--blocked-fg);
-  background: var(--blocked-wash);
-  box-shadow: inset 0 0 0 1px var(--blocked-line);
-}
-.dash-kpi-refused.active .stat-tile {
-  border-color: var(--blocked-line);
-}
 .dash-live-hint {
   display: inline-flex;
   align-items: center;
@@ -544,6 +528,28 @@ button.dash-run:hover:not(:disabled) {
 .dash-tool-swatch.other {
   background-color: var(--border-control);
 }
+/* Each tool's calls day by day, at the row's end beside its meter and words:
+ * the title line keeps the full width, so its alarm chip does not wrap for
+ * it. Short, so a column of them is compared at a glance, and wide enough
+ * that a month's thirty points do not crowd. */
+.dash-tool .row-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--s-7);
+  align-items: center;
+}
+.dash-tool .row-main > :not(.dash-tool-spark) {
+  grid-column: 1;
+}
+.dash-tool .row-main > .dash-tool-title {
+  grid-column: 1 / -1;
+}
+.dash-tool-spark {
+  grid-column: 2;
+  grid-row: 2 / span 2;
+  width: 72px;
+  height: 28px;
+}
 .dash-tool-legend {
   margin: 0;
   padding: var(--s-5) var(--s-8);
@@ -801,21 +807,6 @@ button.dash-run:hover:not(:disabled) {
 }
 .dash-agent-busy.queued {
   color: var(--text-dim);
-}
-
-/* --- focus --------------------------------------------------------------- */
-
-/* focus.css gives every focused control the radius of a small control, and it
- * loads last. A card keeps its own corners while it carries the ring, so the
- * ring follows the card's shape and the card does not change shape as focus
- * arrives. The ring itself is focus.css's and is left alone. */
-.dash-decision:focus-visible,
-.dash-decision-more:focus-visible,
-.dash-run:focus-visible {
-  border-radius: var(--radius-xl);
-}
-.dash-setup-step:focus-visible {
-  border-radius: var(--radius-lg);
 }
 
 /* --- narrow -------------------------------------------------------------- */

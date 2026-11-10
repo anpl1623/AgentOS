@@ -12,7 +12,6 @@ import type { TaskSummary } from "../../bindings/TaskSummary";
 import type { ToolUsageView } from "../../bindings/ToolUsageView";
 import type { IconName } from "../../components/icons";
 import type { LiveTone } from "../../components/LiveDot";
-import type { StatDelta } from "../../components/StatTile";
 import { isLive, tokens } from "../../sdk/format";
 import { NOT_YET, type Tile, firstLine, span } from "./dashboardModel";
 
@@ -157,22 +156,6 @@ export function callsTotal(usage: readonly ToolUsageView[]): number {
 /** How many tools in a usage report were called at all. */
 export function toolsCalled(usage: readonly ToolUsageView[]): number {
   return usage.filter((each) => each.calls > 0).length;
-}
-
-/**
- * How far the last day's calls stand from the window's daily average, as a
- * tile's delta, or `null` when there is no average to compare with.
- *
- * Within 15% either way counts as level: a day's calls wander by that much on
- * their own, and an arrow for every wobble would teach a person to ignore it.
- * Neutral either way, because more tool calls is neither good nor bad news.
- */
-export function callsDelta(today: number, windowCalls: number, days: number): StatDelta | null {
-  if (!(days > 0) || !(windowCalls > 0)) return null;
-  const average = windowCalls / days;
-  const direction = today > average * 1.15 ? "up" : today < average * 0.85 ? "down" : "flat";
-  const shown = average < 10 ? String(Math.round(average * 10) / 10) : String(Math.round(average));
-  return { text: `vs ${shown}/day over ${days}d`, direction, sentiment: "neutral" };
 }
 
 /** The running tasks, split by whether anything is moving. */
