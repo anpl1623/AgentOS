@@ -1,0 +1,915 @@
+/* The approvals screen: rules no other screen uses. Shared shapes belong in
+ * layout.css, components.css or primitives.css, and colours in tokens.css.
+ *
+ * The screen is a desk. On a wide window the queue runs down the side and the
+ * request being read sits beside it, both held in view while the page
+ * scrolls; narrower, the cards stack and are the queue. Light is spent on one
+ * card at a time: the one presented as the next to read carries its risk's
+ * glow, and the rest keep only the risk's edge. */
+
+.approvals-screen {
+  /* Where the desk's sticky columns stop: below the pinned title row, which
+   * floats --s-4 from the top and is about 45px tall, with a step to spare. */
+  --desk-top: calc(var(--s-11) + var(--s-9) + var(--s-4));
+}
+
+/* --- risk hues ----------------------------------------------------------- */
+
+/* One set of custom properties per risk step, read by the card's edge, its
+ * mark, its glow and the queue item's edge. A pending card's glow is the
+ * attention hue until the risk is high enough to have its own. */
+.approvals-screen :is(.approval, .queue-item) {
+  --risk-edge: var(--border-control);
+  --risk-ink: var(--text-dim);
+  --risk-wash: var(--surface-sunken);
+  --risk-glow: var(--warn-glow);
+}
+.approvals-screen :is(.approval, .queue-item).risk-none {
+  --risk-edge: var(--border-strong);
+  --risk-ink: var(--text-faint);
+}
+.approvals-screen :is(.approval, .queue-item).risk-medium {
+  --risk-edge: var(--warn-fg);
+  --risk-ink: var(--warn-fg);
+  --risk-wash: var(--warn-wash);
+}
+.approvals-screen :is(.approval, .queue-item).risk-high {
+  --risk-edge: var(--danger-fg);
+  --risk-ink: var(--danger-fg);
+  --risk-wash: var(--danger-wash);
+  --risk-glow: var(--danger-glow);
+}
+.approvals-screen :is(.approval, .queue-item).risk-critical {
+  --risk-edge: var(--critical-fg);
+  --risk-ink: var(--critical-fg);
+  --risk-wash: var(--critical-wash);
+  --risk-glow: var(--critical-glow);
+}
+
+/* --- header and figures -------------------------------------------------- */
+
+/* The count beside the title, in the approvals badge's hue. */
+.approvals-waiting {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-2) var(--s-6);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-pill);
+  background: var(--warn-wash);
+  color: var(--warn-text);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  box-shadow: var(--highlight-inset), var(--warn-glow);
+}
+.approvals-waiting.calm {
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
+  color: var(--text-dim);
+  box-shadow: var(--highlight-inset);
+}
+
+/* A size container, so the figures go two by two whenever four will not fit
+ * across, rather than three and an orphan: the column is narrowest at the
+ * low end of the compact layout, where the rail is beside it, not under 720px
+ * alone. Four need about 190px each before their hints wrap into a column. */
+.approvals-stats-frame {
+  container: approvals-stats / inline-size;
+  margin-bottom: var(--s-8);
+}
+@container approvals-stats (max-width: 795.98px) {
+  .grid.stats.approvals-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* --- the record of this visit -------------------------------------------- */
+
+.decision-log {
+  margin-bottom: var(--s-6);
+}
+/* Never display: none, even empty: the region must be in the accessibility
+ * tree before its first message, or that message is not spoken. */
+.decision-status:not(:empty) {
+  margin-bottom: var(--s-4);
+  padding: var(--s-4) var(--s-7);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-panel);
+  color: var(--text);
+  box-shadow:
+    var(--highlight-inset),
+    var(--elev-1),
+    inset 3px 0 0 var(--accent);
+}
+/* The words say what went wrong; the leading edge only repeats it, in the
+ * hue the screen uses for each: a failed answer in danger, a denial whose run
+ * could not be stopped in attention. */
+.decision-status.failed:not(:empty) {
+  box-shadow:
+    var(--highlight-inset),
+    var(--elev-1),
+    inset 3px 0 0 var(--danger-fg);
+}
+.decision-status.partial:not(:empty) {
+  box-shadow:
+    var(--highlight-inset),
+    var(--elev-1),
+    inset 3px 0 0 var(--warn-fg);
+}
+.receipts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.receipt {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+.receipt-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-pill);
+}
+.receipt.approved .receipt-mark {
+  color: var(--ok-fg);
+  background: var(--ok-wash);
+  box-shadow: inset 0 0 0 1px var(--ok-line);
+}
+.receipt.denied .receipt-mark {
+  color: var(--blocked-fg);
+  background: var(--blocked-wash);
+  box-shadow: inset 0 0 0 1px var(--blocked-line);
+}
+
+.approvals-keys {
+  margin: 0 0 var(--s-6);
+  line-height: 1.9;
+}
+
+.approvals-empty .empty-state-mark {
+  color: var(--ok-fg);
+  background: var(--ok-wash);
+  box-shadow:
+    inset 0 0 0 1px var(--ok-line),
+    0 0 0 6px var(--ok-wash);
+}
+
+/* --- the desk ------------------------------------------------------------ */
+
+.approvals-rail {
+  display: none;
+}
+.approvals-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-7);
+}
+.approval-slot {
+  min-width: 0;
+}
+
+/* Side by side once the window is wide. Only the presented card is drawn in
+ * full; the rest are their queue items. A departing card is drawn above the
+ * presented one, so the next request rises into place as it folds. */
+@media (min-width: 1200px) {
+  .approvals-desk {
+    display: grid;
+    grid-template-columns: minmax(232px, 300px) minmax(0, 1fr);
+    gap: var(--s-8);
+    align-items: start;
+  }
+  .approvals-rail {
+    display: block;
+    position: sticky;
+    top: var(--desk-top);
+    max-height: calc(100vh - var(--desk-top) - var(--s-8));
+    overflow-y: auto;
+    /* Room inside the scroll box for the items' focus rings and glow. */
+    margin: calc(var(--s-4) * -1);
+    padding: var(--s-4);
+  }
+  .approvals-cards {
+    position: sticky;
+    top: var(--desk-top);
+  }
+  .approval-slot:not(.shown, .leaving) {
+    display: none;
+  }
+  .approval-slot.leaving {
+    order: -1;
+  }
+  /* Replayed each time another request is presented, because the slot comes
+   * back from display: none; a re-render of the same one does not replay it. */
+  .approval-slot.shown {
+    animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+  }
+  .approvals-cards .approval {
+    max-height: calc(100vh - var(--desk-top) - var(--s-8));
+  }
+  /* Said in the queue's foot instead. */
+  .approvals-keys {
+    display: none;
+  }
+}
+
+/* --- the queue beside the request ---------------------------------------- */
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: 0 var(--s-2) var(--s-5);
+}
+.rail-head h2 {
+  margin: 0;
+}
+.rail-count {
+  min-width: 20px;
+  padding: 0 var(--s-3);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-pill);
+  background: var(--warn-wash);
+  color: var(--warn-text);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.rail-foot {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-4);
+  margin-top: var(--s-7);
+  padding: var(--s-6) var(--s-2) 0;
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--fs-meta);
+  color: var(--text-faint);
+  line-height: 1.9;
+}
+.rail-foot .icon {
+  flex: none;
+  margin-top: var(--s-2);
+  color: var(--text-faint);
+}
+.rail-foot p {
+  margin: 0;
+}
+.rail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+/* A card that presents its request. Rises under the pointer like any card
+ * that does something (.lift); the risk is its leading edge. */
+.queue-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  width: 100%;
+  min-width: 0;
+  padding: var(--s-5) var(--s-6) var(--s-5) calc(var(--s-6) + var(--s-2));
+  text-align: left;
+  color: var(--text);
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+}
+.queue-item::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: var(--s-5);
+  bottom: var(--s-5);
+  width: 3px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--risk-edge);
+}
+/* Hovered, it takes the raised fill rather than the hover fill, so the dim
+ * text on it keeps its measured contrast. */
+.queue-item:hover:not(:disabled) {
+  background-color: var(--surface-raised);
+}
+.queue-item[aria-current="true"],
+.queue-item[aria-current="true"]:hover:not(:disabled) {
+  background-color: var(--surface-raised);
+  border-color: var(--warn-line);
+  box-shadow:
+    var(--highlight-inset),
+    var(--elev-2),
+    var(--risk-glow);
+}
+.queue-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  min-width: 0;
+}
+.queue-item-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+  font-weight: var(--fw-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queue-item-agent .icon {
+  flex: none;
+  color: var(--text-dim);
+}
+.queue-item-tool {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.queue-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-5);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+.queue-item-age {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-variant-numeric: tabular-nums;
+}
+.queue-item-armed {
+  padding: 0 var(--s-3);
+  border-radius: var(--radius-pill);
+  font-weight: var(--fw-medium);
+}
+.queue-item-armed.approving {
+  color: var(--text-accent);
+  background: var(--accent-wash);
+}
+.queue-item-armed.denying {
+  color: var(--danger-text);
+  background: var(--danger-wash);
+}
+/* Its answer failed, and the reason is on its card. */
+.queue-item-failed {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 0 var(--s-3);
+  border-radius: var(--radius-pill);
+  font-weight: var(--fw-medium);
+  color: var(--danger-text);
+  background: var(--danger-wash);
+}
+.queue-item-failed .icon {
+  color: var(--danger-text);
+}
+
+/* An item whose request was just answered: stamped, then folded shut. */
+.approvals-screen .rail-ghost {
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: none;
+  transition:
+    grid-template-rows var(--dur-4) var(--ease-in-out),
+    opacity var(--dur-4) var(--ease-out),
+    margin-bottom var(--dur-4) var(--ease-in-out);
+}
+.approvals-screen .rail-ghost.collapse {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  margin-bottom: calc(var(--s-4) * -1);
+}
+.rail-ghost .queue-item {
+  position: relative;
+}
+.rail-ghost.approved .queue-item {
+  --risk-edge: var(--ok-fg);
+  border-color: var(--ok-line);
+}
+.rail-ghost.denied .queue-item {
+  --risk-edge: var(--blocked-fg);
+  border-color: var(--blocked-line);
+}
+/* The answer found nothing waiting: in no decision's colour, because none
+ * was made. */
+.rail-ghost.moved-on .queue-item {
+  --risk-edge: var(--border-strong);
+  border-color: var(--border-strong);
+}
+.queue-item-stamp {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+}
+.rail-ghost.approved .queue-item-stamp {
+  color: var(--ok-text);
+}
+.rail-ghost.denied .queue-item-stamp {
+  color: var(--blocked-fg);
+}
+.rail-ghost.moved-on .queue-item-stamp {
+  color: var(--text-dim);
+}
+
+/* --- the card ------------------------------------------------------------ */
+
+/* Resting: the risk's edge and a quiet border. The card isolates its own
+ * stacking, so the edge and the sticky foot layer inside it and never over
+ * the pinned page header. */
+.approvals-screen .approval {
+  position: relative;
+  isolation: isolate;
+}
+.approvals-screen .approval::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: calc(var(--z-sticky) + 1);
+  width: 3px;
+  pointer-events: none;
+  background: var(--risk-edge);
+}
+.approvals-screen .approval:not(.decided) {
+  border-color: var(--border-emphasis);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+}
+/* The one card presented as next to read, the one the keyboard is acting
+ * on, and the one focus is inside: lit in its risk's glow. */
+.approvals-screen .approval:not(.decided):is(.shown, .selected, :focus-within) {
+  border-color: var(--warn-line);
+  box-shadow:
+    var(--highlight-inset),
+    var(--elev-2),
+    var(--risk-glow);
+}
+/* The card a link sent the operator to, once selected: the accent ring. */
+.approvals-screen .approval.focused:not(.decided) {
+  border-color: var(--accent);
+  box-shadow:
+    var(--highlight-inset),
+    var(--elev-2),
+    0 0 0 1px var(--accent),
+    var(--accent-glow);
+}
+
+.approvals-screen .approval-head {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--s-5) var(--s-7);
+  padding: var(--s-7) var(--s-8);
+}
+.approval-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-lg);
+  color: var(--risk-ink);
+  background: var(--risk-wash);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.approval-who {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+.approvals-screen .approval-title {
+  font-size: var(--fs-title);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+.approval-tool {
+  font-size: 0.9em;
+  padding: 0 var(--s-3);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.approvals-screen .approval-meta {
+  margin-top: var(--s-4);
+  gap: var(--s-2) var(--s-7);
+}
+.approval-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+.approval-fact .icon {
+  flex: none;
+  color: var(--text-faint);
+}
+/* The approval budget as a short bar beside its words. */
+.budget-meter {
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.budget-meter::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--fill, 0%);
+  border-radius: inherit;
+  background: var(--info-fg);
+}
+.budget-meter.warn::after {
+  background: var(--warn-fg);
+}
+.budget-meter.spent::after {
+  background: var(--danger-fg);
+}
+.approval-aside {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-4);
+  margin-left: auto;
+}
+.approval-drill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.approval-drill .icon {
+  transition: transform var(--dur-2) var(--ease-spring);
+}
+.approval-drill:hover:not(:disabled) .icon {
+  transform: translateX(2px);
+}
+
+.approvals-screen .approval-body {
+  padding: var(--s-8);
+}
+.approvals-screen .approval-explanation {
+  font-weight: var(--fw-medium);
+  color: var(--text);
+  margin-bottom: var(--s-8);
+}
+
+/* The taint warning: the loudest block inside the card, because it says the
+ * rest of the card may have been written by someone else. */
+.approvals-screen .approval-warning {
+  margin: 0 0 var(--s-8);
+  padding: var(--s-6) var(--s-7);
+  border: 1px solid var(--warn-line);
+  border-left: 3px solid var(--warn-fg);
+  border-radius: var(--radius-lg);
+  background: var(--warn-wash);
+  box-shadow: var(--highlight-inset);
+}
+.approval-warning-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin: 0 0 var(--s-2);
+  font-weight: var(--fw-semibold);
+  color: var(--warn-text);
+}
+.approval-warning-title .icon {
+  color: var(--warn-fg);
+}
+.approval-warning-text {
+  margin: 0;
+}
+.taint-origins {
+  list-style: none;
+  margin: var(--s-5) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-3);
+}
+.taint-origin {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  max-width: 100%;
+  padding: var(--s-2) var(--s-5);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.taint-origin .icon {
+  flex: none;
+  color: var(--warn-fg);
+}
+.taint-origin-kind {
+  flex: none;
+  font-family: var(--font-sans);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.taint-origin-detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.approvals-screen .approval-facts {
+  margin-bottom: var(--s-8);
+}
+.approval-rule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-4);
+}
+.rule-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 0 var(--s-3);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-md);
+  background: var(--accent-wash);
+  color: var(--text-accent);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.approval-stop-note {
+  margin: var(--s-6) 0 0;
+  font-size: var(--fs-small);
+}
+
+/* --- the decision -------------------------------------------------------- */
+
+.approvals-screen .approval-foot {
+  flex-wrap: wrap;
+  gap: var(--s-4);
+  padding: var(--s-6) var(--s-8);
+}
+.approval-foot button.decision {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-3);
+  min-height: var(--s-11);
+  padding: var(--s-3) var(--s-8);
+  font-weight: var(--fw-medium);
+}
+.approval-foot button.primary.decision {
+  padding-inline: var(--s-10);
+  /* Past the spacer on one line; and when a narrow card wraps the foot, still
+   * at the trailing edge of its own line rather than under Deny. */
+  margin-left: auto;
+}
+/* A half-made decision: the note above, the confirm below, and the foot's
+ * top edge in the hue of what a confirm would do. */
+.approvals-screen .approval-foot.armed {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s-5);
+}
+.approval-foot.armed.approving {
+  border-top-color: var(--accent-line);
+  box-shadow: inset 0 1px 0 var(--accent-line);
+}
+.approval-foot.armed.denying {
+  border-top-color: var(--danger-line);
+  box-shadow: inset 0 1px 0 var(--danger-line);
+}
+.decision-note label {
+  margin-bottom: var(--s-3);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+}
+.decision-note-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-6);
+}
+/* Dim rather than faint: the foot is glass, and faint text is held to the
+ * opaque grounds. */
+.approval-foot .field-note {
+  margin: var(--s-3) 0 0;
+  color: var(--text-dim);
+}
+.note-count {
+  flex: none;
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.note-count.near {
+  color: var(--warn-text);
+}
+.decision-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4);
+}
+.decision-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: var(--s-11);
+}
+
+/* --- a card on its way out ----------------------------------------------- */
+
+/* Stamped with its answer under a pane of glass, then folded shut: the row it
+ * stands in shrinks to nothing, so the cards after it rise rather than jump.
+ * The negative margin takes back the column's gap as it folds. */
+.approval-slot.leaving {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition:
+    grid-template-rows var(--dur-4) var(--ease-in-out),
+    opacity var(--dur-4) var(--ease-out),
+    margin-bottom var(--dur-4) var(--ease-in-out);
+}
+.approval-slot.leaving.collapse {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  margin-bottom: calc(var(--s-7) * -1);
+}
+/* clip rather than hidden, as on .approval: hidden would make this box the
+ * stamped foot's scroll container, and the foot would then sit at the card's
+ * bottom, below the window, instead of sticking where the confirm was
+ * pressed. hidden stays as the fallback for a webview without clip. */
+.ghost-fold {
+  min-height: 0;
+  overflow: hidden;
+  overflow: clip;
+}
+.approvals-screen .approval.departing.approved {
+  --risk-edge: var(--ok-fg);
+  border-color: var(--ok-line);
+  box-shadow:
+    var(--highlight-inset),
+    var(--elev-2),
+    var(--ok-glow);
+}
+.approvals-screen .approval.departing.denied {
+  --risk-edge: var(--blocked-fg);
+  border-color: var(--blocked-line);
+  box-shadow:
+    var(--highlight-inset),
+    var(--elev-2);
+}
+.approvals-screen .approval.departing.moved-on {
+  --risk-edge: var(--border-strong);
+  border-color: var(--border-strong);
+  box-shadow:
+    var(--highlight-inset),
+    var(--elev-2);
+}
+.approval-stamp {
+  position: absolute;
+  inset: 0;
+  z-index: calc(var(--z-sticky) - 1);
+  pointer-events: none;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(var(--s-2)) saturate(140%);
+  backdrop-filter: blur(var(--s-2)) saturate(140%);
+  animation: backdrop-in var(--dur-2) var(--ease-out) backwards;
+}
+/* Centred: the answer is the card's last word, not one more button in a row. */
+.approvals-screen .approval-foot.stamped {
+  justify-content: center;
+  gap: var(--s-5);
+  font-size: var(--fs-title);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-tight);
+}
+.approval.approved .approval-foot.stamped {
+  color: var(--ok-text);
+}
+.approval.denied .approval-foot.stamped {
+  color: var(--blocked-fg);
+}
+.approval.moved-on .approval-foot.stamped {
+  color: var(--text-dim);
+}
+.stamp-mark {
+  display: grid;
+  place-items: center;
+  width: var(--s-11);
+  height: var(--s-11);
+  border-radius: var(--radius-pill);
+  animation: pop var(--dur-4) var(--ease-spring);
+}
+.approval.approved .stamp-mark {
+  color: var(--ok-fg);
+  background: var(--ok-wash);
+  box-shadow:
+    inset 0 0 0 2px var(--ok-line),
+    var(--ok-glow);
+}
+.approval.denied .stamp-mark {
+  color: var(--blocked-fg);
+  background: var(--blocked-wash);
+  box-shadow: inset 0 0 0 2px var(--blocked-line);
+}
+.approval.moved-on .stamp-mark {
+  color: var(--text-dim);
+  background: var(--surface-sunken);
+  box-shadow: inset 0 0 0 2px var(--border-strong);
+}
+
+/* --- recently decided ---------------------------------------------------- */
+
+.approvals-recent h2 {
+  scroll-margin-top: var(--desk-top);
+}
+.recent-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+}
+.recent-mark.ok {
+  color: var(--ok-fg);
+  background: var(--ok-wash);
+  box-shadow: inset 0 0 0 1px var(--ok-line);
+}
+.recent-mark.blocked {
+  color: var(--blocked-fg);
+  background: var(--blocked-wash);
+  box-shadow: inset 0 0 0 1px var(--blocked-line);
+}
+.recent-mark.neutral {
+  color: var(--text-dim);
+  background: var(--surface-sunken);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+/* --- narrow -------------------------------------------------------------- */
+
+@media (max-width: 719.98px) {
+  /* Two by two rather than three and an orphan; and tighter, so the first
+   * request is not pushed below the fold by its own summary. */
+  .grid.stats.approvals-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--s-4);
+  }
+  .approvals-stats .stat-tile {
+    gap: var(--s-2);
+    padding: var(--s-5) var(--s-6);
+  }
+  .approvals-screen .approval-head,
+  .approvals-screen .approval-body {
+    padding: var(--s-6) var(--s-7);
+  }
+  .approvals-screen .approval-foot {
+    padding: var(--s-5) var(--s-7);
+  }
+  .approval-aside {
+    flex-basis: 100%;
+    justify-content: space-between;
+    margin-left: 0;
+  }
+}
+
+/* --- reduced motion ------------------------------------------------------ */
+
+/* No card departs under reduced motion (the hook schedules none); the rest
+ * of the screen's entrances are taken out so nothing is held invisible. */
+@media (prefers-reduced-motion: reduce) {
+  .receipt,
+  .approval-slot.shown,
+  .approval-stamp,
+  .stamp-mark {
+    animation: none;
+  }
+}

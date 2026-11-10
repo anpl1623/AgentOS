@@ -46,4 +46,13 @@ pub struct ToolUsageView {
     pub risk: Option<String>,
     /// Whether the catalogue says the tool reads the world outside the runtime.
     pub returns_untrusted_data: bool,
+    /// Calls on each day of the window, oldest first, today last.
+    ///
+    /// One entry per day, days with no calls included, so it is as long as
+    /// the window is in days and always sums to `calls`. A day is the
+    /// machine's local calendar day, the one an operator reads a chart in,
+    /// and the window is whole days of it: seven days is today and the six
+    /// before. All zeros for a tool with no calls.
+    #[ts(type = "Array<number>")]
+    pub daily: Vec<u64>,
 }

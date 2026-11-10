@@ -1,19 +1,7 @@
-import type { SpanTarget, Timeline, TimelineSpan } from "../routes/runModel";
+import type { SpanTarget, Timeline, TimelineSpan } from "../routes/tasks/run/timelineModel";
 import { clock } from "../sdk/format";
-import {
-  AXIS_HEIGHT,
-  Axis,
-  Figure,
-  HatchDefs,
-  Legend,
-  type LegendItem,
-  TRACK_GAP,
-  TRACK_HEIGHT,
-  Track,
-  elapsed,
-  type TrackMarker,
-  useHatches,
-} from "./charts";
+import { Axis, Figure, HatchDefs, Legend, type LegendItem, Track, useHatches } from "./chartParts";
+import { AXIS_HEIGHT, TRACK_GAP, TRACK_HEIGHT, type TrackMarker, elapsed } from "./charts";
 
 const LEGEND: readonly LegendItem[] = [
   { label: "model turn", tone: "info" },
@@ -39,7 +27,9 @@ const TAINT_LEGEND: LegendItem = {
  * is the one delay the operator causes and the only one they can remove.
  *
  * A pure function of the timeline it is given, which is a pure function of
- * the trace: no animation, nothing measured, nothing kept between renders.
+ * the trace: nothing measured, nothing kept between renders. The spans grow
+ * in once, one after another, when they first appear; a live run's right edge
+ * is the present, marked by a pulsing line that stops when the run does.
  * Renders nothing when there is no timeline, so a run with nothing to show
  * gets no empty chart.
  */
@@ -79,7 +69,12 @@ export function RunTimeline({
       table={<SpanTable tracks={tracks} taint={timeline.taint} />}
     >
       <div className="chart">
-        <svg role="group" aria-label="Where the run's time went" height={axisY + AXIS_HEIGHT}>
+        <svg
+          className="run-timeline"
+          role="group"
+          aria-label="Where the run's time went"
+          height={axisY + AXIS_HEIGHT}
+        >
           <HatchDefs hatches={hatches} />
           <Axis y={axisY} domain={domain} />
           {tracks.map((track, index) => (
@@ -94,9 +89,22 @@ export function RunTimeline({
               onSelect={select(track.spans)}
             />
           ))}
+          {timeline.live ? (
+            // The present moment, at the right edge: a hairline down the
+            // tracks and a pulsing dot on the axis, for as long as the run is
+            // live, in the attention hue while it waits on a person.
+            // Decoration; the summary and the state chip say it in words.
+            <g className={`chart-now tone-${timeline.nowTone}`} aria-hidden="true">
+              <line x1="100%" x2="100%" y1="0" y2={axisY} />
+              <circle className="chart-now-ring" cx="100%" cy={axisY} r="3.5" />
+              <circle cx="100%" cy={axisY} r="3.5" />
+            </g>
+          ) : null}
         </svg>
       </div>
-      <p className="chart-summary">{timeline.summary}</p>
+      <p className={timeline.waitingMs > 0 ? "chart-summary waited" : "chart-summary"}>
+        {timeline.summary}
+      </p>
       <Legend items={legend} hatches={hatches} />
     </Figure>
   );

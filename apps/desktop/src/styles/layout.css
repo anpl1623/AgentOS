@@ -1,19 +1,37 @@
 /* The shell, the page frame, and the list shapes every screen is built from.
  *
- * Tracks are content-relative minima rather than fixed pixels, so the sidebar
- * and the fact lists give way before they clip when text is enlarged.
+ * The shell has three layouts, chosen here by media queries so the first
+ * paint is already right and a resize never waits on a render. shell/layout.ts
+ * holds the same breakpoints, and a test holds the two together:
+ *
+ *   wide     ≥ 1200px      the full sidebar in its column; collapsible to a rail
+ *   compact  720–1199px    the icon rail; its button opens the full sidebar as
+ *                          a drawer over the screen
+ *   narrow   < 720px       no column; a glass top bar, and the sidebar as a
+ *                          drawer from the left behind the menu button
+ *
+ * Script holds only two facts the stylesheet cannot know, written on .shell:
+ * `data-collapsed` (the wide sidebar folded to its rail, remembered between
+ * launches) and `data-drawer` (the drawer is open). What the sidebar shows at
+ * the width it ends up is decided by its own container query, further down,
+ * so no rule here needs to know which layout made it narrow.
  */
 
 /* --- shell --------------------------------------------------------------- */
 
-/* The sidebar takes a share of the window between two bounds. `minmax()`
- * beside a `1fr` track always resolves to its maximum, so it never gave way;
- * a viewport share does, down to the width its labels need. */
+/* Two tracks: the sidebar's, whose width each layout sets through --nav-col,
+ * and the main column. The column eases when the wide sidebar folds, and when
+ * a resize crosses a breakpoint. The main column is held to no minimum by its
+ * own min-width rather than by minmax(), which beside 1fr would never give
+ * way. */
 .shell {
+  --nav-col: var(--sidebar-w);
   display: grid;
-  grid-template-columns: clamp(11rem, 20vw, 13rem) 1fr;
+  grid-template-columns: var(--nav-col) 1fr;
+  grid-template-rows: 100%;
   height: 100%;
   min-height: 100%;
+  transition: grid-template-columns var(--dur-3) var(--ease-out);
 }
 
 /* Both columns are scroll containers and containing blocks. Positioned
@@ -21,72 +39,418 @@
  * scrolls with its column. Without a positioned ancestor it is placed against
  * the document instead, and with the body allowed to scroll for zoom reflow,
  * text below the fold made the whole window scroll and carried the sidebar off
- * the top. */
+ * the top.
+ *
+ * The sidebar is glass over the canvas's aurora, and a size container named
+ * `sidebar`: everything inside it reads its width, not the window's. */
 .sidebar {
   position: relative;
-  background: var(--surface-nav);
-  border-right: 1px solid var(--border-subtle);
+  z-index: var(--z-chrome);
+  grid-column: 1;
+  grid-row: 1;
+  container: sidebar / inline-size;
   display: flex;
   flex-direction: column;
-  padding: var(--s-7) var(--s-5);
-  gap: var(--s-1);
+  gap: var(--s-2);
+  min-width: 0;
+  padding: var(--s-6) var(--s-5) var(--s-5);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  border-right: 1px solid var(--glass-border);
+  overflow-x: hidden;
   overflow-y: auto;
+  transition:
+    width var(--dur-3) var(--ease-out),
+    transform var(--dur-3) var(--ease-out),
+    box-shadow var(--dur-3) var(--ease-out);
+}
+/* As a drawer the sidebar takes focus itself when a press lands on no control
+ * in it (Sidebar.tsx), so Escape and Tab still reach it. That focus keeps the
+ * keyboard's place, as the main column's does, and is not drawn. */
+.sidebar:focus {
+  outline: none;
 }
 
-.brand {
+.main {
+  position: relative;
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  overflow-y: auto;
+  /* Keyboard scrolling and focus stop short of the pinned page header. */
+  scroll-padding-top: var(--topbar-h);
+}
+/* The shell focuses the main column on navigation so the next Tab starts at
+ * the page. That focus is for the keyboard's position, not something to draw. */
+.main:focus {
+  outline: none;
+}
+
+/* The page's column: centred, never wider than a line can comfortably run,
+ * with a gutter that grows with the window. */
+.content {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: calc(var(--gutter) * 0.8) var(--gutter) calc(var(--gutter) * 2);
+}
+.screen {
+  min-width: 0;
+}
+
+/* A screen whose code is still being fetched (shell/ScreenFallback.tsx): the
+ * frame of a screen in skeleton. It is held invisible for a moment before it
+ * fades in, so a fetch quicker than that — nearly all of them, from a local
+ * bundle — never flashes it. The delay is not a duration, so reduced motion
+ * keeps it: the frame then appears after the same moment, without the fade. */
+.screen-pending {
+  --pending-delay: 200ms;
+  animation: backdrop-in var(--dur-3) var(--ease-out) var(--pending-delay) backwards;
+}
+.screen-pending-head {
   display: flex;
-  align-items: center;
-  gap: var(--s-4);
-  padding: var(--s-3) var(--s-4) var(--s-8);
-  font-weight: var(--fw-semibold);
-  letter-spacing: 0.2px;
+  flex-direction: column;
+  gap: var(--s-5);
+  margin-bottom: var(--s-9);
 }
-.brand-mark {
-  width: 20px;
-  height: 20px;
-  flex: none;
+.screen-pending-eyebrow {
+  width: 9ch;
+  height: var(--fs-eyebrow);
 }
-/* The mark's strokes come from tokens so the SVG carries no colour of its own:
- * the ring takes .brand-mark-outer, the eye's ring .brand-mark-inner, and its
- * pupil .brand-mark-dot, which is filled rather than stroked. */
-.brand-mark-outer {
-  stroke: var(--brand-outer);
+.screen-pending-title {
+  width: min(22rem, 60%);
+  height: var(--fs-hero);
 }
-.brand-mark-inner {
-  stroke: var(--brand-inner);
-}
-.brand-mark-dot {
-  fill: var(--brand-inner);
+.screen-pending-sub {
+  width: min(34rem, 85%);
+  height: var(--fs-small);
 }
 
-.nav-item {
+/* The scrim behind a drawer. Present only where there is a drawer, and
+ * transparent to the pointer until one is open. */
+.sidebar-scrim {
+  display: none;
+}
+
+/* The top bar belongs to the narrow layout alone. */
+.topbar {
+  display: none;
+}
+
+/* --- wide: the full sidebar, or the rail it folds to --------------------- */
+
+@media (min-width: 1200px) {
+  .shell[data-collapsed="true"] {
+    --nav-col: var(--rail-w);
+  }
+  /* The rail's tooltips open to its right, outside it; a scroll container
+   * would clip them. Seven screens fit any window this wide. */
+  .shell[data-collapsed="true"] .sidebar {
+    overflow: visible;
+  }
+}
+
+/* --- compact: the rail, and the drawer it opens -------------------------- */
+
+/* The sidebar leaves the grid and floats at the rail's width, so opening it
+ * widens it over the screen rather than pushing the screen aside. The column
+ * it left keeps the rail's width. */
+@media (min-width: 720px) and (max-width: 1199.98px) {
+  .shell {
+    --nav-col: var(--rail-w);
+  }
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: var(--z-drawer);
+    width: var(--rail-w);
+    overflow: visible;
+  }
+  .shell[data-drawer="open"] .sidebar {
+    width: var(--sidebar-w);
+    overflow-x: hidden;
+    overflow-y: auto;
+    background: var(--glass-strong);
+    box-shadow: var(--elev-3);
+  }
+}
+
+/* --- narrow: the top bar, and the drawer behind the menu ----------------- */
+
+@media (max-width: 719.98px) {
+  .shell {
+    --nav-col: 0px;
+  }
+  /* Off the screen and hidden from every input while shut. Visibility waits
+   * for the slide out to finish before it hides, and returns at once on the
+   * way in, so the drawer is never seen without being reachable. */
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: var(--z-drawer);
+    width: min(calc(var(--sidebar-w) + var(--s-10)), 86vw);
+    background: var(--glass-strong);
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition:
+      transform var(--dur-3) var(--ease-out),
+      box-shadow var(--dur-3) var(--ease-out),
+      visibility 0s linear var(--dur-3);
+  }
+  .shell[data-drawer="open"] .sidebar {
+    transform: none;
+    visibility: visible;
+    box-shadow: var(--elev-3);
+    transition:
+      transform var(--dur-3) var(--ease-out),
+      box-shadow var(--dur-3) var(--ease-out),
+      visibility 0s;
+  }
+  /* Reduced motion cuts every transition to a hundredth of a millisecond
+   * rather than removing it (base.css). That turns the opening `visibility
+   * 0s` into a real transition, and gives one to every element in the drawer
+   * that names no transitions of its own, since those transition `all`. A
+   * visibility transition begins at hidden, in the very frame the drawer is
+   * given focus, and a hidden element cannot take it: focus fell to the body.
+   * Here visibility flips at once, and the drawer can be focused as it opens.
+   * Nothing slides under reduced motion, so nothing is lost. */
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar,
+    .shell[data-drawer="open"] .sidebar {
+      transition-property: transform, box-shadow;
+    }
+    :where(.sidebar *) {
+      transition-property: none;
+    }
+  }
+
+  /* Glass over the screen as it scrolls beneath. It shares the main
+   * column's cell, above it, rather than taking a row of its own: a row
+   * would put the screen below it, with nothing to see through the glass. */
+  .topbar {
+    display: flex;
+    grid-column: 2;
+    grid-row: 1;
+    align-self: start;
+    z-index: var(--z-chrome);
+    align-items: center;
+    gap: var(--s-3);
+    height: var(--topbar-h);
+    padding: 0 var(--s-4) 0 var(--s-3);
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+    backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+    border-bottom: 1px solid var(--glass-border);
+  }
+  .main {
+    padding-top: var(--topbar-h);
+    scroll-padding-top: calc(var(--topbar-h) + var(--s-4));
+  }
+}
+
+/* --- the drawer's scrim, in the two layouts that have a drawer ------------ */
+
+@media (max-width: 1199.98px) {
+  .sidebar-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: calc(var(--z-drawer) - 1);
+    background: var(--scrim);
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-3) var(--ease-out);
+  }
+  .shell[data-drawer="open"] .sidebar-scrim {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* --- sidebar contents ---------------------------------------------------- */
+
+.sidebar-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--s-4);
-  padding: var(--s-3) var(--s-5);
-  border-radius: var(--radius-md);
-  color: var(--text-dim);
-  border: 1px solid transparent;
-  background: none;
-  text-align: left;
+  min-height: 36px;
+  padding: 0 0 var(--s-6) var(--s-2);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-5);
+  min-width: 0;
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-tight);
+  color: var(--text);
+}
+.brand-name {
+  white-space: nowrap;
+}
+/* The shield on the accent gradient, lit from above. The mark's strokes take
+ * --on-accent, the colour measured against both ends of the gradient. */
+.brand-tile {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-lg);
+  background: var(--accent-gradient);
+  box-shadow: var(--highlight-inset), var(--accent-glow);
+}
+.brand-mark {
+  width: 18px;
+  height: 18px;
+}
+.brand-mark-outer,
+.brand-mark-inner {
+  stroke: var(--on-accent);
+}
+.brand-mark-dot {
+  fill: var(--on-accent);
+}
+
+/* A search field's shape that opens the palette. */
+.palette-launcher {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
   width: 100%;
+  min-height: 36px;
+  margin: 0 0 var(--s-6);
+  padding: 0 var(--s-3) 0 var(--s-5);
+  font-size: var(--fs-small);
+  text-align: left;
+  color: var(--text-dim);
+  background-color: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-well);
+}
+.palette-launcher:hover:not(:disabled) {
+  background-color: var(--surface-sunken);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.palette-launcher-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The screens. The track is the marker's containing block; the marker is one
+ * pill that slides to whichever item is current (shell/NavList.tsx). */
+.sidebar-nav {
+  flex: none;
+}
+.nav-track {
+  position: relative;
+}
+.nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+.nav-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--h);
+  transform: translateY(var(--y));
+  border-radius: var(--radius-lg);
+  background: var(--accent-wash);
+  box-shadow:
+    inset 0 0 0 1px var(--accent-line),
+    var(--highlight-inset);
+  pointer-events: none;
+}
+/* The bar on the marker's leading edge, in the gradient, glowing. */
+.nav-indicator::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 22%;
+  bottom: 22%;
+  width: 3px;
+  border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
+  background: var(--accent-gradient);
+  box-shadow: var(--accent-glow);
+}
+/* Only once the window is showing: on the first paint it is simply there. */
+.nav-indicator[data-ready] {
+  transition:
+    transform var(--dur-3) var(--ease-spring),
+    height var(--dur-3) var(--ease-out);
+}
+
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s-5);
+  width: 100%;
+  min-height: 36px;
+  padding: 0 var(--s-4) 0 var(--s-6);
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--text-dim);
+  font-weight: var(--fw-medium);
+  text-align: left;
 }
 .nav-item:hover:not(:disabled) {
-  background: var(--surface-panel);
+  background-color: var(--surface-raised);
   border-color: transparent;
   color: var(--text);
 }
-.nav-item.active,
-.nav-item.active:hover:not(:disabled) {
-  background: var(--accent-wash);
+/* The current screen sits on the marker, not on a fill of its own. */
+.nav-item[aria-current="page"],
+.nav-item[aria-current="page"]:hover:not(:disabled) {
+  background-color: transparent;
   color: var(--text-accent);
-  border-color: var(--accent-line);
+}
+.nav-icon {
+  flex: none;
+  transition: transform var(--dur-2) var(--ease-spring);
+}
+.nav-item:hover:not(:disabled) .nav-icon {
+  transform: translateX(1px) scale(1.06);
+}
+.nav-item:active:not(:disabled) .nav-icon {
+  transform: scale(0.9);
+}
+.nav-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
 }
 
 /* Pending approvals are attention, not failure: the dashboard's banner calls
  * the same fact a warning, and the two must agree. */
 .nav-count {
+  display: inline-block;
+  min-width: 20px;
+  text-align: center;
   font-size: var(--fs-meta);
   font-variant-numeric: tabular-nums;
   background: var(--warn-fg);
@@ -95,65 +459,477 @@
   padding: var(--s-1) var(--s-3);
   line-height: var(--lh-tight);
   font-weight: var(--fw-bold);
+  box-shadow: var(--warn-glow);
 }
 
 .sidebar-foot {
   margin-top: auto;
-  padding: var(--s-5) var(--s-4) var(--s-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+  padding: var(--s-6) var(--s-1) 0;
+  border-top: 1px solid var(--glass-border);
+}
+.sidebar-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+}
+
+/* What the window is connected to. */
+.connection {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  min-height: 20px;
+  padding: 0 var(--s-2);
   font-size: var(--fs-meta);
-  color: var(--text-faint);
-  border-top: 1px solid var(--border-subtle);
+  color: var(--text-dim);
+}
+.connection.failing {
+  color: var(--warn-text);
 }
 .fixture-warning {
   color: var(--warn-fg);
 }
 
-.main {
+/* The theme control: three segments and a thumb that slides between them.
+ * The segments are transparent and the thumb is the chosen fill, so the
+ * pressed state is drawn by the thumb's position; the attribute still
+ * carries it for assistive technology. */
+.theme-segments {
   position: relative;
-  overflow-y: auto;
-  padding: var(--s-10) var(--s-10) var(--s-11);
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 32px;
+  padding: 2px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-well);
 }
-/* The shell focuses the main column on navigation so the next Tab starts at
- * the page. That focus is for the keyboard's position, not something to draw. */
-.main:focus {
-  outline: none;
+.theme-thumb {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: 32px;
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+  transform: translateX(calc(var(--index, 0) * 100%));
+  /* Named, so the theme cross-fade (motion.css) can keep the slide. */
+  --thumb-slide: transform var(--dur-3) var(--ease-spring);
+  transition: var(--thumb-slide);
+}
+.theme-segments > button,
+.theme-segments > button[aria-pressed="true"] {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-md);
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--text-faint);
+}
+.theme-segments > button:hover:not(:disabled),
+.theme-segments > button[aria-pressed="true"]:hover:not(:disabled) {
+  background-color: transparent;
+  color: var(--text);
+}
+.theme-segments > button[aria-pressed="true"] {
+  color: var(--text);
+}
+/* The rail's single theme button; the full sidebar has the segments instead.
+ * Scoped to the toggle so it outranks the icon button's own display. */
+.theme-toggle .theme-cycle {
+  display: none;
+}
+
+/* --- the top bar's contents ---------------------------------------------- */
+
+.topbar .brand-tile {
+  width: 26px;
+  height: 26px;
+}
+.topbar .brand-mark {
+  width: 15px;
+  height: 15px;
+}
+.topbar-title {
+  min-width: 0;
+  margin-left: var(--s-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-tight);
+}
+.topbar-fixture {
+  position: relative;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--warn-fg);
+}
+/* The approvals button: a pill with the queue's count, so what is waiting is
+ * one press away at any width. */
+.topbar-approvals {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  height: 32px;
+  padding: 0 var(--s-4);
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
+}
+.topbar-approvals[aria-current="page"] {
+  background-color: var(--accent-wash);
+  border-color: var(--accent-line);
+  color: var(--text-accent);
+}
+
+/* --- the rail ------------------------------------------------------------ */
+
+/* Whatever made the sidebar narrow — the wide layout folded, or the compact
+ * layout — it is a rail when its own width says so. Labels leave the eye but
+ * stay in the DOM, where assistive technology still reads them, and come back
+ * as tooltips; counts shrink to a badge on the icon. */
+@container sidebar (max-width: 120px) {
+  .sidebar-head {
+    flex-direction: column;
+    gap: var(--s-4);
+    padding: 0 0 var(--s-5);
+  }
+  .brand-name,
+  .nav-label,
+  .palette-launcher-label,
+  .palette-launcher .kbd,
+  .connection-label,
+  .nav-meta .stale {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .palette-launcher {
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    margin-inline: auto;
+    padding: 0;
+  }
+  .nav-item {
+    justify-content: center;
+    min-height: 40px;
+    padding: 0;
+  }
+  .nav-meta {
+    position: absolute;
+    top: 2px;
+    right: 3px;
+  }
+  .nav-count {
+    min-width: 17px;
+    padding: 0 var(--s-2);
+    font-size: var(--fs-micro);
+    line-height: 17px;
+  }
+  .nav-indicator::before {
+    top: 28%;
+    bottom: 28%;
+  }
+  .connection {
+    justify-content: center;
+    padding: 0;
+  }
+  .sidebar-tools {
+    flex-direction: column;
+    gap: var(--s-2);
+  }
+  .theme-segments {
+    display: none;
+  }
+  .theme-toggle .theme-cycle {
+    display: inline-grid;
+  }
+}
+
+/* With room for its labels, the sidebar shows them, and the tooltips that
+ * stand in for them in the rail have nothing to add. The full sidebar scrolls,
+ * so it clips anything drawn outside it: the two buttons that keep a tooltip
+ * open theirs inwards, from their own trailing edge. */
+@container sidebar (min-width: 121px) {
+  .nav-item[data-tip]::after,
+  .palette-launcher[data-tip]::after,
+  .connection[data-tip]::after {
+    content: none;
+  }
+  .sidebar .sidebar-toggle[data-tip]::after {
+    left: auto;
+    right: 0;
+    top: calc(100% + var(--s-3));
+    transform: translateY(-2px) scale(0.96);
+  }
+  .sidebar .shortcuts-button[data-tip]::after {
+    left: auto;
+    right: 0;
+    top: auto;
+    bottom: calc(100% + var(--s-3));
+    transform: translateY(2px) scale(0.96);
+  }
+  .sidebar :is(.sidebar-toggle, .shortcuts-button)[data-tip]:is(:hover, :focus-visible)::after {
+    transform: none;
+  }
+}
+
+/* A webview without backdrop-filter draws the glass as its fill alone; the
+ * chrome takes its opaque ground there instead, so a busy screen does not show
+ * through it unsoftened. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .sidebar,
+  .topbar {
+    background: var(--surface-nav);
+  }
+  .page-head.stuck {
+    background: var(--surface-panel);
+  }
 }
 
 /* --- page frame ---------------------------------------------------------- */
-
-.page-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--s-8);
-  margin-bottom: var(--s-2);
-}
-.page-sub {
-  color: var(--text-dim);
-  margin: 0 0 var(--s-9);
-  font-size: var(--fs-small);
-}
 
 .crumbs {
   display: flex;
   align-items: center;
   gap: var(--s-3);
-  margin-bottom: var(--s-2);
+  margin-bottom: var(--s-4);
   font-size: var(--fs-small);
   color: var(--text-faint);
 }
 .crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
   font: inherit;
   color: var(--text-dim);
   background: none;
   border: none;
   border-radius: var(--radius-sm);
+  box-shadow: none;
   padding: 0;
 }
 .crumb:hover:not(:disabled) {
   background: none;
   color: var(--text);
-  text-decoration: underline;
+}
+.crumb:hover:not(:disabled) .icon {
+  transform: translateX(-2px);
+}
+.crumb .icon {
+  transition: transform var(--dur-2) var(--ease-spring);
+}
+
+/* Small capitals over a title: the area a screen belongs to. */
+.page-eyebrow {
+  margin-bottom: var(--s-3);
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4) var(--s-8);
+  margin-bottom: var(--s-2);
+}
+/* Something drawn before the title and outside its words, such as an
+ * agent's avatar: it travels with the title, and shrinks with it when the row
+ * pins. */
+.page-title-lead {
+  display: flex;
+  align-items: center;
+  gap: var(--s-6);
+  min-width: 0;
+}
+.page-title-lead > .page-title {
+  min-width: 0;
+}
+.page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4);
+}
+.page-sub {
+  color: var(--text-dim);
+  margin: 0 0 var(--s-9);
+  font-size: var(--fs-small);
+  max-width: 72ch;
+}
+/* The subtitle's place inside the title row, used only by the narrow layout
+ * (below). Everywhere else the row holds the title and actions alone. */
+.page-sub-inline {
+  display: none;
+}
+
+/* PageHeader's title row pins once the column scrolls past it (the component
+ * adds .stuck), floating a step below the top as a glass bar. Its box grows
+ * out on every side by exactly the padding it adds, so the title sits where
+ * an unpinned row's would and does not move when it pins; the title shrinks
+ * by transform, which moves nothing around it. */
+.page-head.sticky {
+  position: sticky;
+  top: var(--s-4);
+  z-index: var(--z-sticky);
+  margin: calc(var(--s-3) * -1) calc(var(--s-6) * -1) calc(var(--s-2) - var(--s-3));
+  padding: var(--s-3) var(--s-6);
+  border: 1px solid transparent;
+  border-radius: var(--radius-xl);
+  transition:
+    background-color var(--dur-3) var(--ease-out),
+    border-color var(--dur-3) var(--ease-out),
+    box-shadow var(--dur-3) var(--ease-out);
+}
+.page-head.sticky :is(.page-title, .page-title-lead) {
+  transform-origin: left center;
+  transition: transform var(--dur-3) var(--ease-out);
+}
+.page-head.stuck {
+  background-color: var(--glass);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  border-color: var(--glass-border);
+  box-shadow: var(--highlight-inset), var(--elev-2);
+}
+.page-head.stuck .page-title,
+.page-head.stuck .page-title-lead {
+  transform: scale(0.8);
+}
+/* Inside a lead the group shrinks as one, so the title is not shrunk twice. */
+.page-head.stuck .page-title-lead > .page-title {
+  transform: none;
+}
+
+/* The pinned bar floats a step below the top of the column, and the screen
+ * scrolling beneath would show through that step and in the notches beside
+ * its rounded top corners. The strip is closed with the canvas itself: the
+ * ground colour and the aurora, fixed to the window exactly as the body draws
+ * them, so it meets the canvas around it without a seam. The mask keeps the
+ * strip to the step and the two corner notches; nothing of it lies under the
+ * glass, which still shows the screen through its blur. It comes and goes
+ * with the glass. */
+.page-head.sticky::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: calc((var(--s-4) + 1px) * -1);
+  left: -1px;
+  right: -1px;
+  height: calc(var(--s-4) + var(--radius-xl));
+  background-color: var(--surface-canvas);
+  background-image: var(--aurora);
+  background-attachment: fixed;
+  /* A mask reads only alpha, so the ink is the text's opaque colour rather
+   * than a literal. */
+  --veil-step: linear-gradient(currentColor 0 0) top / 100% var(--s-4) no-repeat;
+  --veil-notch-start: radial-gradient(
+      circle at 100% 100%,
+      transparent calc(var(--radius-xl) - 0.5px),
+      currentColor var(--radius-xl)
+    )
+    left bottom / var(--radius-xl) var(--radius-xl) no-repeat;
+  --veil-notch-end: radial-gradient(
+      circle at 0 100%,
+      transparent calc(var(--radius-xl) - 0.5px),
+      currentColor var(--radius-xl)
+    )
+    right bottom / var(--radius-xl) var(--radius-xl) no-repeat;
+  -webkit-mask: var(--veil-step), var(--veil-notch-start), var(--veil-notch-end);
+  mask: var(--veil-step), var(--veil-notch-start), var(--veil-notch-end);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-3) var(--ease-out);
+}
+.page-head.stuck::before {
+  opacity: 1;
+}
+
+/* Opted into by a screen whose title runs long (the run page's objective):
+ * pinned, the title keeps to one line and ends in an ellipsis, so the bar
+ * stays slim. PageHeader measures what the clamp took away and adds it to the
+ * bar's margin as --page-head-hold, so the bar's place in the column is the
+ * same height pinned or not, and nothing beneath it moves. */
+.page-head.stuck[data-clamped] .page-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.page-head.sticky[data-clamped] {
+  margin-bottom: calc(var(--s-2) - var(--s-3) + var(--page-head-hold, 0px));
+}
+
+/* The narrow layout's top bar already names the screen; the row scrolls away
+ * with the rest of the header there. Its actions wrap below the title, and
+ * would come between the title and the sentence that explains it, so the
+ * sentence moves into the row after the title and the actions follow it. */
+@media (max-width: 719.98px) {
+  .page-head.sticky {
+    position: static;
+  }
+  .page-head.stuck {
+    background-color: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .page-head.sticky::before {
+    content: none;
+  }
+  .page-head.stuck .page-title,
+  .page-head.stuck .page-title-lead {
+    transform: none;
+  }
+  .page-head.stuck[data-clamped] .page-title {
+    overflow: visible;
+    white-space: normal;
+  }
+  .page-head > .page-sub-inline {
+    display: block;
+    order: 1;
+    flex: 1 1 100%;
+    margin: calc(var(--s-2) - var(--s-4)) 0 var(--s-2);
+  }
+  .page-head > .page-actions {
+    order: 2;
+  }
+  .page-head:has(> .page-sub-inline) + .page-sub {
+    display: none;
+  }
+  .page-head:has(> .page-sub-inline) {
+    margin-bottom: var(--s-9);
+  }
+  .page-head.sticky:has(> .page-sub-inline) {
+    margin-bottom: calc(var(--s-9) - var(--s-3));
+  }
 }
 
 .skip-link {
@@ -185,12 +961,30 @@
   border: 0;
 }
 
+/* Under 720px a two-column list of facts or arguments has no room for both
+ * columns; each label sits over its value instead. Scoped to the content
+ * column so the rule outranks the lists' own column template. */
+@media (max-width: 719.98px) {
+  .content dl.facts,
+  .content dl.args {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--s-1);
+  }
+  .content dl.facts dd,
+  .content dl.args dd {
+    margin-bottom: var(--s-4);
+  }
+}
+
 /* --- panels and grids ---------------------------------------------------- */
 
+/* A panel is a raised card: its own fill, a hairline of light along its top
+ * edge, and the resting shadow. */
 .panel {
   background: var(--surface-panel);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--highlight-inset), var(--elev-1);
   overflow: hidden;
 }
 .panel + .panel {
@@ -210,8 +1004,14 @@
 .grid.two {
   grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
 }
+/* Fields carry their own space beneath them. When a pair of them stacks on a
+ * narrow window, a row gap on top of that would part the two by more than any
+ * other two fields on the form. */
+.grid.two:has(> .field) {
+  row-gap: 0;
+}
 .grid.stats {
-  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
 }
 
 .stack {

@@ -1,14 +1,25 @@
 /* The stylesheet manifest. Rules live in styles/; this file only fixes their
- * order, which is load-bearing: tokens before anything that reads them, and
- * focus last, after every component and chart rule, so none of them can
- * remove the ring by loading later.
+ * order, which is load-bearing: tokens before anything that reads them, each
+ * screen's own sheet after the shared ones it builds on, and focus last, after
+ * every component, chart and screen rule, so none of them can remove the ring
+ * by loading later.
  */
 
 @import "./styles/fonts.css";
 @import "./styles/tokens.css";
 @import "./styles/base.css";
+@import "./styles/motion.css";
 @import "./styles/layout.css";
 @import "./styles/components.css";
+@import "./styles/primitives.css";
 @import "./styles/status.css";
 @import "./styles/charts.css";
+@import "./styles/screens/dashboard.css";
+@import "./styles/screens/approvals.css";
+@import "./styles/screens/tasks.css";
+@import "./styles/screens/tasks-run.css";
+@import "./styles/screens/schedules.css";
+@import "./styles/screens/agents.css";
+@import "./styles/screens/activity.css";
+@import "./styles/screens/settings.css";
 @import "./styles/focus.css";

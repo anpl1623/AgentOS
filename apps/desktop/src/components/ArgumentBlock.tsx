@@ -16,6 +16,7 @@ import {
   sizeNote,
 } from "./argumentText";
 import { useCopy } from "./hooks";
+import { Icon } from "./icons";
 
 /**
  * Matches an element the keyboard scrolls, marked `data-scroll-region`. A
@@ -77,10 +78,16 @@ export function ArgumentBlock({
   );
   const labelId = `${id}-label`;
 
+  // One sunken well: a head with the view switch and the copy control, any
+  // warnings about what the text holds, then the arguments themselves. The
+  // look is in styles/screens/approvals.css, under "argument block".
   return (
-    <div className="field">
-      <div className="inline">
-        <label id={labelId}>Exact arguments</label>
+    <div className="field arg-block">
+      <div className="arg-head">
+        <span className="arg-title">
+          <Icon name="terminal" size={14} />
+          <label id={labelId}>Exact arguments</label>
+        </span>
         {view.kind === "fields" ? (
           <div className="segmented" role="group" aria-label="Show the arguments as">
             <button
@@ -96,7 +103,12 @@ export function ArgumentBlock({
           </div>
         ) : null}
         <span className="spacer" />
-        <button type="button" className="ghost" onClick={() => void copy(copyableJson(json))}>
+        <button
+          type="button"
+          className={state === "copied" ? "ghost arg-copy copied" : "ghost arg-copy"}
+          onClick={() => void copy(copyableJson(json))}
+        >
+          <Icon name={state === "copied" ? "check" : state === "failed" ? "alert" : "copy"} size={14} />
           {state === "copied" ? "Copied" : state === "failed" ? "Could not copy" : "Copy JSON"}
         </button>
         <span className="visually-hidden" role="status">
@@ -108,18 +120,22 @@ export function ArgumentBlock({
         </span>
       </div>
 
-      {view.kind === "raw" ? <p className="field-note">{view.why}</p> : null}
-      {warning !== null ? (
-        <div className="banner warn" role="note">
-          {warning}
+      {view.kind === "raw" || warning !== null || blank !== null || size !== null ? (
+        <div className="arg-notes">
+          {view.kind === "raw" ? <p className="field-note">{view.why}</p> : null}
+          {warning !== null ? (
+            <div className="banner warn" role="note">
+              {warning}
+            </div>
+          ) : null}
+          {blank !== null ? (
+            <div className="banner warn" role="note">
+              {blank}
+            </div>
+          ) : null}
+          {size !== null ? <p className="faint">{size}</p> : null}
         </div>
       ) : null}
-      {blank !== null ? (
-        <div className="banner warn" role="note">
-          {blank}
-        </div>
-      ) : null}
-      {size !== null ? <p className="faint">{size}</p> : null}
 
       {shown === "raw" || view.kind !== "fields" ? (
         // Focusable so a keyboard can scroll it: without the tab stop, the
@@ -145,7 +161,9 @@ export function ArgumentBlock({
                   <Visible text={field.key} />
                 </dt>
                 <dd>
-                  <span className="arg-value">
+                  {/* A string and a literal are told apart by the quotes
+                      around a string; the literal's hue only repeats it. */}
+                  <span className={field.string ? "arg-value" : "arg-value literal"}>
                     <span className="faint">{open}</span>
                     <Visible text={fold ?? field.text} />
                     {/* A folded string is left open: its end is not shown. */}

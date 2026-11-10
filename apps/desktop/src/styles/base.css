@@ -1,8 +1,9 @@
 /* Element defaults: the document, type, and the native controls.
  *
- * Nothing here names a component. A rule that needs a class belongs in
+ * Nothing here styles a component. A rule that needs a class belongs in
  * layout.css or components.css, so this file stays the answer to "what does a
- * bare element look like".
+ * bare element look like". The one class read here is a condition, not a
+ * target: a bare button that holds an icon lays its contents out for it.
  */
 
 * {
@@ -16,29 +17,76 @@ body,
   margin: 0;
 }
 
+/* Scrollbars stay thin and take the strong border's tone, so a scrolling
+ * column reads as part of the chrome rather than a grey slab beside it. The
+ * colour is inherited; the width is not, hence the universal rule. */
+:root {
+  scrollbar-color: var(--border-strong) transparent;
+}
+* {
+  scrollbar-width: thin;
+}
+
 /* The shell's main column is the scroll container in normal use. The document
  * itself may scroll too, so that at 200% zoom — when the shell's minimum
  * content is larger than the window — nothing is clipped out of reach. */
 body {
-  background: var(--surface-base);
+  background: var(--surface-canvas);
   color: var(--text);
   font-family: var(--font-sans);
   font-size: var(--fs-body);
   line-height: var(--lh-body);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   overflow: auto;
 }
 
-h1 {
-  font-size: var(--fs-title);
-  margin: 0;
-  font-weight: var(--fw-semibold);
+/* The aurora: two broad glows fixed behind the top of the main column. Drawn
+ * as the body's own layer beneath everything in the root, so it never takes a
+ * pointer event or a scroll and costs one paint. The glass chrome above it
+ * lets it through; a panel, being opaque, does not, which keeps every text
+ * measurement in tokens.css true.
+ *
+ * The glows are one value, so anything that must paint the canvas exactly as
+ * it shows behind it — the strip above a pinned page header — draws the same
+ * picture with a fixed attachment and meets the aurora without a seam. The
+ * colours are tokens, so the value follows the theme. */
+:root {
+  --aurora:
+    radial-gradient(52rem 30rem at 34% -6%, var(--aurora-1), transparent 70%),
+    radial-gradient(44rem 28rem at 82% -10%, var(--aurora-2), transparent 70%);
+}
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: var(--aurora);
 }
 
+::selection {
+  background: var(--accent-line);
+  color: var(--text);
+}
+
+/* A page title. Large, tight and heavy enough to anchor the page without a
+ * rule beneath it. */
+h1 {
+  font-size: var(--fs-hero);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--tracking-tight);
+  margin: 0;
+  font-weight: var(--fw-heading);
+}
+
+/* A section label: small capitals, tracked out, a step quieter than the text
+ * of the section it names. */
 h2 {
-  font-size: var(--fs-code);
+  font-size: var(--fs-eyebrow);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--tracking-eyebrow);
   color: var(--text-dim);
   margin: var(--s-10) 0 var(--s-5);
   font-weight: var(--fw-semibold);
@@ -53,64 +101,135 @@ h3 {
   font-weight: var(--fw-semibold);
 }
 
+/* A key on a keyboard: a small raised cap, its lower edge thicker so it reads
+ * as something that is pressed. */
 kbd {
   display: inline-block;
+  min-width: 1.7em;
+  text-align: center;
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   line-height: var(--lh-tight);
   color: var(--text-dim);
-  background: var(--surface-sunken);
+  background: var(--surface-raised);
   border: 1px solid var(--border-strong);
   border-bottom-width: 2px;
   border-radius: var(--radius-sm);
+  box-shadow: var(--highlight-inset);
   padding: var(--s-1) var(--s-2);
   white-space: nowrap;
 }
 
 /* --- buttons ------------------------------------------------------------- */
 
+/* Raised: a fill a step above the panel, a hairline of light along the top
+ * edge, and the control border that is held to 3:1. Hover lifts the fill and
+ * the edge together; a press sinks it. Colour moves at hover speed and the
+ * press at press speed, so a click feels immediate. */
 button {
   font: inherit;
   color: inherit;
   cursor: pointer;
   border: 1px solid var(--border-control);
-  background: var(--surface-raised);
+  background-color: var(--surface-raised);
   border-radius: var(--radius-md);
   padding: var(--s-3) var(--s-6);
+  box-shadow: var(--highlight-inset);
   transition:
-    background var(--motion-fast) var(--motion-ease),
-    border-color var(--motion-fast) var(--motion-ease);
+    background-color var(--dur-2) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out),
+    color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
 }
 button:hover:not(:disabled) {
-  background: var(--surface-hover);
+  background-color: var(--surface-hover);
   border-color: var(--border-control-hover);
+}
+/* Rows, palette entries and navigation items are buttons for their keyboard
+ * handling, not for their look; they press in their own way or not at all. A
+ * button that is unavailable does not press either. */
+button:active:not(:disabled):where(:not(.row, .palette-entry, .nav-item, [aria-disabled="true"])) {
+  transform: scale(0.97);
+  box-shadow: none;
 }
 button:disabled {
   opacity: 0.45;
   cursor: default;
 }
+/* Unavailable while its own request runs, but still focusable. A focused
+ * button that becomes disabled drops focus to the top of the window, so a
+ * control that waits on its own work — Stop, Retry — says so with
+ * aria-disabled instead, and its handler ignores a press until the work is
+ * done. Drawn as a disabled button is, and deaf to the pointer, so it neither
+ * lights on hover nor sinks when pressed. */
+button[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* A button with an icon beside its words — or a live dot, which stands where
+ * an icon would — sets it on the label's centre line rather than on the
+ * text's baseline, and keeps its words centred when it is stretched. It
+ * reaches only the standard looks (a bare button, primary, danger, ghost): a
+ * button with a class of its own (a row, a crumb, a nav item, an icon button)
+ * lays itself out, and would otherwise inherit an alignment it never asked
+ * for. :where() holds the rule at no specificity, so a modifier beside a look
+ * class still decides its own display and spacing. */
+:where(button:is(:not([class]), .primary, .danger, .ghost):has(> .icon, > .live-dot)) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-3);
+}
 
 /* A toggle that is on. Any button carrying aria-pressed reads its state from
  * the attribute, so the pressed look and the announced state cannot disagree. */
 button[aria-pressed="true"] {
-  background: var(--accent-wash);
+  background-color: var(--accent-wash);
   border-color: var(--accent);
   color: var(--text-accent);
 }
 button[aria-pressed="true"]:hover:not(:disabled) {
-  background: var(--accent-wash);
+  background-color: var(--accent-wash);
   border-color: var(--accent);
 }
 
+/* The one action a screen most expects. The gradient runs under the border
+ * too, so the edge is the fill's own; hover darkens both ends (white text is
+ * measured on all four), adds the accent glow and sends a sheen across. The
+ * sheen is a layer beneath the label: the button isolates its own stacking,
+ * and the sheen sits at -1 inside it, above the fill and below the text. */
 button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background-color: var(--accent);
+  background-image: var(--accent-gradient);
+  background-origin: border-box;
+  border-color: transparent;
   color: var(--on-accent);
   font-weight: var(--fw-medium);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+}
+button.primary::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 25%, var(--sheen) 50%, transparent 75%);
+  transform: translateX(-100%);
 }
 button.primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
+  background-color: var(--accent-hover);
+  background-image: var(--accent-gradient-hover);
+  border-color: transparent;
+  box-shadow: var(--highlight-inset), var(--accent-glow);
+}
+button.primary:hover:not(:disabled)::after {
+  animation: sheen calc(var(--dur-4) * 2) var(--ease-in-out);
 }
 
 button.danger {
@@ -118,20 +237,38 @@ button.danger {
   color: var(--danger-text);
 }
 button.danger:hover:not(:disabled) {
-  background: var(--danger-wash);
+  background-color: var(--danger-wash);
   border-color: var(--danger-fg);
+  box-shadow: var(--highlight-inset), var(--danger-glow);
 }
 
 button.ghost {
-  background: transparent;
+  background-color: transparent;
   border-color: transparent;
+  box-shadow: none;
   color: var(--text-dim);
   padding: var(--s-2) var(--s-4);
 }
 button.ghost:hover:not(:disabled) {
-  background: var(--surface-raised);
+  background-color: var(--surface-raised);
   border-color: transparent;
   color: var(--text);
+}
+/* A ghost toggle that is on. button.ghost is exactly as specific as the
+ * pressed rule above and loads after it, so without this a pressed ghost
+ * would be drawn exactly like a resting one while it announced itself as on. */
+button.ghost[aria-pressed="true"],
+button.ghost[aria-pressed="true"]:hover:not(:disabled) {
+  background-color: var(--accent-wash);
+  border-color: var(--accent);
+  color: var(--text-accent);
+}
+
+/* Hit targets on a touch screen are a finger's width, whatever the density. */
+@media (pointer: coarse) {
+  button {
+    min-height: 40px;
+  }
 }
 
 /* --- fields -------------------------------------------------------------- */
@@ -140,17 +277,28 @@ button.ghost:hover:not(:disabled) {
  * sliders keep their native shape — a range input stretched to full width with
  * text padding is a different control — and a number input keeps the look but
  * not the full width. :where() holds the specificity at zero so any class can
- * adjust a field without an arms race. */
+ * adjust a field without an arms race. A field is a well: sunken below the
+ * panel and shaded from above, the opposite of a button. */
 :where(input:not([type="checkbox"], [type="radio"], [type="range"])),
 :where(textarea, select) {
   font: inherit;
   color: var(--text);
-  background: var(--surface-sunken);
+  background-color: var(--surface-sunken);
   border: 1px solid var(--border-control);
   border-radius: var(--radius-md);
   padding: var(--s-3) var(--s-5);
   width: 100%;
-  transition: border-color var(--motion-fast) var(--motion-ease);
+  box-shadow: var(--shadow-well);
+  transition:
+    border-color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out),
+    background-color var(--dur-2) var(--ease-out);
+}
+:where(input:not([type="checkbox"], [type="radio"], [type="range"]), textarea, select):hover:not(
+    :disabled,
+    :focus
+  ) {
+  border-color: var(--border-control-hover);
 }
 :where(input[type="number"]) {
   width: auto;
@@ -160,6 +308,10 @@ button.ghost:hover:not(:disabled) {
 :where(input[type="checkbox"], input[type="radio"], input[type="range"]) {
   accent-color: var(--accent);
   margin: 0;
+}
+::placeholder {
+  color: var(--text-faint);
+  opacity: 1;
 }
 
 /* A multiple select is a list box, not a drop-down: its rows are the control,
@@ -207,8 +359,10 @@ label {
 /* --- motion -------------------------------------------------------------- */
 
 /* A person who has asked the system for less motion gets none: no fades, no
- * skeleton sweep, no smooth scrolling. Durations go to near zero rather than
- * zero so transitionend and animationend still fire for any code awaiting them. */
+ * skeleton sweep, no smooth scrolling. The duration tokens already go to near
+ * zero (tokens.css); this catches any rule that names a duration of its own.
+ * Durations go to near zero rather than zero so transitionend and animationend
+ * still fire for any code awaiting them. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

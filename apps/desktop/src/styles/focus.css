@@ -4,11 +4,25 @@
  * keyboard. It is loaded after the components so no component rule can quietly
  * remove it; a component that needs the ring placed differently changes its
  * offset here or beside its own rule, never its presence.
+ *
+ * The ring is the 2px outline in --focus, which tokens.css holds to 3:1 against
+ * every ground it can sit beside. Outside it a soft halo in --focus-glow makes
+ * the jump from one control to the next easy to follow; the halo is decoration
+ * and carries none of the contrast. It is a shadow, so for as long as focus is
+ * on a control it replaces that control's own shadow — the ring wins.
  */
 
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+  box-shadow: 0 0 0 6px var(--focus-glow);
+}
+/* An outline follows its element's corners, so the ring takes each control's
+ * own radius: a focused card keeps its 12px corners rather than snapping to
+ * a control's 6px. Only an element that declares no radius of its own, such
+ * as a link or a span made focusable, is given the control's soft corner, and
+ * :where() holds that at no specificity so any radius a rule sets wins. */
+:where(:focus-visible) {
   border-radius: var(--radius-md);
 }
 :focus:not(:focus-visible) {
@@ -16,16 +30,25 @@
 }
 
 /* A row spans its panel edge to edge. Inset the ring so it sits inside the
- * panel rather than over the neighbouring row's separator. */
+ * panel rather than over the neighbouring row's separator, and keep the halo
+ * inside with it. */
 .row.clickable:focus-visible,
 .palette-entry:focus-visible {
   outline-offset: -2px;
   border-radius: 0;
+  box-shadow: inset 0 0 0 6px var(--focus-glow);
+}
+
+/* The main column takes focus on navigation for the keyboard's position, not
+ * to be drawn; the shell says so for the outline, and the halo follows. */
+main:focus-visible {
+  box-shadow: none;
 }
 
 /* Chart spans are SVG; the ring follows the shape rather than a box. */
 .chart-span:focus-visible {
   outline: none;
+  box-shadow: none;
   stroke: var(--focus);
   stroke-width: 2px;
 }

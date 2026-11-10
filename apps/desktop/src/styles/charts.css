@@ -18,10 +18,11 @@
 
 .figure {
   margin: 0;
-  padding: var(--s-7) var(--s-8);
+  padding: var(--s-8) var(--s-9);
   background: var(--surface-panel);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--highlight-inset), var(--elev-1);
 }
 .figure + .figure,
 .panel + .figure,
@@ -89,12 +90,20 @@
 }
 
 /* One span on a track. The fill is the hue's line colour and the edge its
- * foreground, which keeps a short span visible against the panel. */
+ * foreground, which keeps a short span visible against the panel. A span grows
+ * from its start when it first appears — once, on insertion, so a chart that
+ * re-renders with the same spans does not replay it. */
 .chart-span {
   fill: var(--surface-hover);
   stroke: var(--border-control);
   stroke-width: 1px;
   cursor: pointer;
+  transform-box: fill-box;
+  transform-origin: 0 50%;
+  animation: grow-x var(--dur-4) var(--ease-out) backwards;
+  transition:
+    fill var(--dur-2) var(--ease-out),
+    stroke var(--dur-2) var(--ease-out);
 }
 .chart-span.ok {
   fill: var(--ok-line);
@@ -118,6 +127,79 @@
 }
 .chart-span:hover {
   stroke: var(--text);
+  filter: brightness(1.15);
+}
+
+/* Spans arrive in the order they happened along a track: each starts its
+ * growth a stagger step after the one before it, capped at the twelfth so a
+ * long run's last calls are not kept waiting. Spans are the only groups in a
+ * track before its markers, so their place among the groups is their order. */
+.chart-span:nth-of-type(2) {
+  animation-delay: calc(var(--stagger-step) * 1);
+}
+.chart-span:nth-of-type(3) {
+  animation-delay: calc(var(--stagger-step) * 2);
+}
+.chart-span:nth-of-type(4) {
+  animation-delay: calc(var(--stagger-step) * 3);
+}
+.chart-span:nth-of-type(5) {
+  animation-delay: calc(var(--stagger-step) * 4);
+}
+.chart-span:nth-of-type(6) {
+  animation-delay: calc(var(--stagger-step) * 5);
+}
+.chart-span:nth-of-type(7) {
+  animation-delay: calc(var(--stagger-step) * 6);
+}
+.chart-span:nth-of-type(8) {
+  animation-delay: calc(var(--stagger-step) * 7);
+}
+.chart-span:nth-of-type(9) {
+  animation-delay: calc(var(--stagger-step) * 8);
+}
+.chart-span:nth-of-type(10) {
+  animation-delay: calc(var(--stagger-step) * 9);
+}
+.chart-span:nth-of-type(11) {
+  animation-delay: calc(var(--stagger-step) * 10);
+}
+.chart-span:nth-of-type(n + 12) {
+  animation-delay: calc(var(--stagger-step) * 11);
+}
+
+/* A track's lane: a shallow well the spans sit in. Translucent, so the axis's
+ * grid lines, drawn beneath it, still read through. */
+.chart-well {
+  fill: var(--surface-sunken);
+  fill-opacity: 0.6;
+  stroke: var(--border-subtle);
+  stroke-width: 1px;
+}
+
+/* A live run's present moment at the chart's right edge: a dashed hairline
+ * and a dot on the axis whose ring pulses for as long as the run is live. */
+.chart-now line {
+  stroke: var(--info-fg);
+  stroke-width: 1px;
+  stroke-dasharray: 3 3;
+}
+.chart-now circle {
+  fill: var(--info-fg);
+}
+/* While the run waits on a person the present is theirs to move, so it is
+ * drawn in the attention hue, as the waiting track beside it and the live dot
+ * in the run's eyebrow are. */
+.chart-now.tone-warn line {
+  stroke: var(--warn-fg);
+}
+.chart-now.tone-warn circle {
+  fill: var(--warn-fg);
+}
+.chart-now .chart-now-ring {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: pulse-ring var(--dur-pulse) var(--ease-out) infinite;
 }
 
 /* Hatch lines inside the shared <pattern> definitions. One ink for every
@@ -141,7 +223,8 @@
   height: var(--chart-row);
   margin-bottom: var(--chart-gap);
   background: var(--surface-sunken);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-well);
 }
 .chart-bar {
   position: absolute;
@@ -149,9 +232,11 @@
   bottom: 0;
   left: var(--x, 0);
   width: max(var(--w, 0%), 0.4%);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: var(--surface-hover);
   border: 1px solid var(--border-control);
+  transform-origin: 0 50%;
+  animation: grow-x var(--dur-4) var(--ease-out) backwards;
 }
 .chart-bar.ok {
   background: var(--ok-line);
@@ -221,6 +306,12 @@
   margin-top: var(--s-4);
   font-size: var(--fs-small);
 }
+/* Time spent waiting on a person is the one delay the reader caused; the
+ * sentence that counts it carries the attention hue's bar. */
+.chart-summary.waited {
+  padding-left: var(--s-5);
+  border-left: 2px solid var(--warn-fg);
+}
 
 /* Positioned by --x and --y relative to .chart, above the point it describes. */
 .chart-tip {
@@ -230,13 +321,28 @@
   z-index: var(--z-sticky);
   transform: translate(-50%, calc(-100% - var(--s-3)));
   max-width: 18rem;
-  padding: var(--s-2) var(--s-4);
+  padding: var(--s-3) var(--s-5);
   font-size: var(--fs-meta);
   color: var(--text);
-  background: var(--surface-raised);
-  border: 1px solid var(--border-emphasis);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-overlay);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--highlight-inset), var(--elev-2);
   pointer-events: none;
   white-space: nowrap;
+  animation: backdrop-in var(--dur-1) var(--ease-out) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-span,
+  .chart-bar,
+  .chart-tip {
+    animation: none;
+  }
+  .chart-now .chart-now-ring {
+    animation: none;
+    opacity: 0;
+  }
 }

@@ -1,0 +1,456 @@
+/* The tasks screen: rules no other screen uses. Shared shapes belong in
+ * layout.css, components.css or primitives.css, and colours in tokens.css.
+ *
+ * Two views behind one route: the list (.tasks-view), where work is given and
+ * found, and one run (.run-view), read as evidence. Light and glow are spent
+ * where the product needs a person: a run waiting on a decision, a failure,
+ * the Stop control, work that will never start. Everything else is calm. */
+
+/* --- shared -------------------------------------------------------------- */
+
+/* A section's eyebrow, with a count beside it and, at the far end, a control. */
+.tasks-section-head,
+.run-section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  min-height: 32px;
+  margin: 0 0 var(--s-5);
+}
+.tasks-section-head h2,
+.run-section-head h2 {
+  margin: 0;
+}
+.tasks-count,
+.run-count {
+  min-width: 20px;
+  padding: 0 var(--s-3);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold);
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+}
+
+/* The mark at the head of a row: a live dot for running work, otherwise an
+ * icon whose shape says the status, on a small disc in its hue. */
+.tasks-mark,
+.run-row-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+}
+:is(.tasks-mark, .run-row-mark).tone-ok {
+  color: var(--ok-fg);
+  background: var(--ok-wash);
+  border-color: var(--ok-line);
+}
+:is(.tasks-mark, .run-row-mark).tone-danger {
+  color: var(--danger-fg);
+  background: var(--danger-wash);
+  border-color: var(--danger-line);
+}
+:is(.tasks-mark, .run-row-mark):is(.tone-info, .tone-live) {
+  color: var(--info-fg);
+  background: var(--info-wash);
+  border-color: var(--info-line);
+}
+:is(.tasks-mark, .run-row-mark).tone-warn {
+  color: var(--warn-fg);
+  background: var(--warn-wash);
+  border-color: var(--warn-line);
+}
+.run-row-mark.tone-blocked {
+  color: var(--blocked-fg);
+  background: var(--blocked-wash);
+  border-color: var(--blocked-line);
+}
+
+/* A row that opens something says so at its trailing edge, and the chevron
+ * leans towards where it goes under the pointer. */
+.tasks-row-go,
+.run-row-go {
+  color: var(--text-faint);
+  transition:
+    transform var(--dur-2) var(--ease-spring),
+    color var(--dur-2) var(--ease-out);
+}
+button.row:hover .tasks-row-go,
+button.row:hover .run-row-go {
+  transform: translateX(2px);
+  color: var(--text-dim);
+}
+
+/* A section with nothing in it that is fine to be empty — an empty queue, a
+ * run that wrote no records — says so in one compact line rather than a whole
+ * panel, so it does not outweigh the sections that have something to say. */
+.tasks-empty-compact .empty-state {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--s-3) var(--s-6);
+  padding: var(--s-7) var(--s-8);
+}
+.tasks-empty-compact .empty-state-mark {
+  width: 32px;
+  height: 32px;
+  margin: 0;
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.tasks-empty-compact .empty-state-title {
+  font-weight: var(--fw-medium);
+  color: var(--text-dim);
+}
+.tasks-empty-compact .empty-state-action {
+  margin: 0;
+}
+
+/* --- the list ------------------------------------------------------------ */
+
+.tasks-section {
+  margin-top: var(--s-10);
+}
+
+/* Running work in the header: a live count that narrows the list to it. It
+ * is a toggle, so pressed it takes the chosen look every pressed button has,
+ * ghost or not (base.css). */
+.tasks-running {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The composer is the screen's reason for being: a raised card with a faint
+ * accent light in its corner, which brightens to the accent ring and glow
+ * while the person is writing in it. */
+.composer {
+  padding: var(--s-8) var(--s-9) var(--s-9);
+  border-color: var(--border-strong);
+  background-image: radial-gradient(
+    120% 160% at 0% 0%,
+    var(--accent-wash),
+    transparent 46%
+  );
+  transition:
+    border-color var(--dur-3) var(--ease-out),
+    box-shadow var(--dur-3) var(--ease-out);
+}
+.composer:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: var(--highlight-inset), var(--elev-2), var(--accent-glow);
+}
+.composer-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-5);
+  margin-bottom: var(--s-7);
+}
+.composer-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-lg);
+  color: var(--on-accent);
+  background-image: var(--accent-gradient);
+  box-shadow: var(--highlight-inset), var(--elev-1);
+}
+.composer .composer-title {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text);
+}
+.composer-label {
+  display: block;
+  margin-bottom: var(--s-3);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  color: var(--text-dim);
+}
+
+/* The objective: a paragraph-sized well, set larger than the page's text so
+ * the thing being asked for is the thing that reads first. It grows with what
+ * is written where the engine can size a field to its content. */
+.composer-objective {
+  display: block;
+  min-height: 6.4em;
+  max-height: 40vh;
+  padding: var(--s-6) var(--s-7);
+  font-family: var(--font-sans);
+  font-size: var(--fs-title);
+  line-height: var(--lh-code);
+  border-radius: var(--radius-lg);
+  resize: vertical;
+  field-sizing: content;
+}
+.composer-hint {
+  margin: var(--s-3) 0 0;
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+
+.composer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4) var(--s-5);
+  margin-top: var(--s-7);
+}
+.composer-agent {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.composer-agent label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.composer-agent select {
+  width: auto;
+  min-width: 12rem;
+  max-width: 100%;
+}
+.composer-waits.active {
+  color: var(--text-accent);
+  background-color: var(--accent-wash);
+}
+.composer-waits-chevron {
+  transition: transform var(--dur-2) var(--ease-out);
+}
+.composer-waits[aria-expanded="true"] .composer-waits-chevron {
+  transform: rotate(180deg);
+}
+.composer-actions {
+  display: flex;
+  gap: var(--s-4);
+}
+.composer-actions > button {
+  min-width: 6.5rem;
+}
+/* The key cap rides on the gradient: drawn as an outline in the button's own
+ * ink, so it reads as part of the control it belongs to. */
+.composer-actions button.primary .kbd {
+  margin-left: var(--s-2);
+  color: inherit;
+  background: transparent;
+  border-color: currentColor;
+  box-shadow: none;
+}
+
+/* The tasks to wait for: a set of checkable cards under the bar. */
+.wait-picker {
+  margin: var(--s-7) 0 0;
+  padding: 0;
+  border: none;
+  min-width: 0;
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+.wait-picker legend {
+  margin-bottom: var(--s-4);
+  padding: 0;
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  color: var(--text-dim);
+}
+.wait-picker .check-name {
+  font-family: inherit;
+  font-size: var(--fs-small);
+}
+
+.composer-note,
+.composer-queued {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  margin: var(--s-7) 0 0;
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+}
+.composer-note > .icon {
+  margin-top: var(--s-1);
+  color: var(--warn-fg);
+}
+.composer-queued {
+  color: var(--ok-text);
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+/* A link-like button inside a sentence keeps the sentence's line height, but
+ * not at the cost of its target: the padding that makes it 32px tall is
+ * taken back by a margin, so the line does not grow. */
+.composer-note button.ghost,
+.tasks-scheduler-note button.ghost {
+  padding: var(--s-3) var(--s-2);
+  margin-block: calc(var(--s-3) * -1);
+  color: var(--text);
+}
+
+/* The scheduler's note above the queue, with its icon on the leading edge. */
+.tasks-scheduler-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-4);
+}
+.tasks-scheduler-note > .icon {
+  margin-top: var(--s-1);
+  color: var(--warn-fg);
+}
+
+/* The toolbar: a search field with its glass, the agent, and the status as
+ * a row of pills that each say how many tasks they hold. */
+.tasks-toolbar {
+  gap: var(--s-4);
+}
+.tasks-search {
+  position: relative;
+  flex: 1 1 14rem;
+  min-width: min(14rem, 100%);
+}
+.tasks-search > .icon {
+  position: absolute;
+  left: var(--s-5);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.tasks-search > input {
+  padding-left: calc(var(--s-5) + 16px + var(--s-4));
+}
+.tasks-toolbar > select {
+  width: auto;
+}
+/* The status filter is the shared segmented control, which draws the track,
+ * the keys and the chosen key, wraps when the statuses outnumber the room, and
+ * sets each key's dot and count on its word's centre line. */
+.tasks-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--text-faint);
+}
+.tasks-status-dot.tone-ok {
+  background: var(--ok-fg);
+}
+.tasks-status-dot.tone-danger {
+  background: var(--danger-fg);
+}
+.tasks-status-dot.tone-info {
+  background: var(--info-fg);
+}
+.tasks-status-dot.tone-warn {
+  background: var(--warn-fg);
+}
+.tasks-status-count {
+  font-size: var(--fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.tasks-count-note {
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A row of the list. Running work carries a bar in the in-flight hue on its
+ * leading edge beside its live dot; work that will never start carries one in
+ * the failure hue, since it waits on a person to notice. */
+.tasks-row .row-title {
+  font-weight: var(--fw-medium);
+}
+.tasks-row.status-info {
+  box-shadow: inset 2px 0 0 var(--info-fg);
+}
+.tasks-row.queue-unreachable {
+  box-shadow: inset 3px 0 0 var(--danger-fg);
+}
+.tasks-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.tasks-waits .tag {
+  font-family: var(--font-sans);
+}
+.tasks-culprit {
+  color: var(--danger-text);
+}
+.tasks-wait-editor {
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-recessed);
+  animation: screen-enter var(--dur-3) var(--ease-out) backwards;
+}
+
+/* --- narrow --------------------------------------------------------------- */
+
+@media (max-width: 719.98px) {
+  .composer {
+    padding: var(--s-7) var(--s-7) var(--s-8);
+  }
+  .composer-objective {
+    font-size: var(--fs-body);
+  }
+  .composer-agent {
+    flex: 1 1 100%;
+  }
+  .composer-agent select {
+    flex: 1;
+    min-width: 0;
+  }
+  .composer-actions {
+    flex: 1 1 100%;
+  }
+  .composer-actions > button {
+    flex: 1;
+  }
+  .composer-bar > .spacer {
+    display: none;
+  }
+  /* The status pills take what is left of their line, and Clear sits beside
+   * them while there is room for it. */
+  .tasks-status-filter {
+    flex: 1 1 auto;
+  }
+  /* A task's objective is what the row is; on a narrow column it takes a
+   * second line rather than ending in an ellipsis half way through. */
+  .tasks-row .row-title {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+  }
+  /* A queued row ends in more than a chip. Its text takes the whole width,
+   * and its status and Wait for… wrap beneath, in line with the title. */
+  .tasks-queued > .row-main {
+    flex-basis: calc(100% - 28px - var(--s-6));
+  }
+  .tasks-queued > .row-main + * {
+    margin-left: calc(28px + var(--s-6));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wait-picker,
+  .composer-queued,
+  .tasks-wait-editor {
+    animation: none;
+  }
+}

@@ -40,7 +40,7 @@ pub use approvals::ApprovalRepository;
 pub use audit_sink::SqliteAuditSink;
 pub use delegations::DelegationRepository;
 pub use error::DbError;
-pub use executions::{ExecutionRepository, ToolExecutionRecord, ToolUsage};
+pub use executions::{ExecutionRepository, ToolExecutionRecord, ToolUsage, UsageWindow};
 pub use integrations::{IntegrationAccount, IntegrationAccountsRepository};
 pub use memories::MemoryRepository;
 pub use runs::RunRepository;

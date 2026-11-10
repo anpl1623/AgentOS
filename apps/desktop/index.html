@@ -3,6 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Both schemes are supported, so the frame before the stylesheet and the
+         theme module arrive follows the system rather than flashing white on a
+         dark desktop. sdk/theme.ts then sets the scheme the person chose. -->
+    <meta name="color-scheme" content="dark light" />
     <title>AgentOS</title>
   </head>
   <body>

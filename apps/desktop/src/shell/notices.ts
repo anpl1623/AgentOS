@@ -17,7 +17,7 @@ import type { AlertInput } from "../sdk/alerts";
 
 /**
  * The activity kind of a failed run, as `AgentEvent::TaskFailed` serialises it
- * in `crates/agentos-core/src/event.rs`.
+ * in `crates/agentos-core/src/event/taxonomy.rs`.
  */
 export const RUN_FAILED_KIND = "agent.task.failed";
 

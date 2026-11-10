@@ -75,6 +75,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
         working-directory: apps/desktop
+      # What ships inside the application window. Development tooling is
+      # audited by hand when it is bumped; a high-severity advisory in code
+      # the operator runs fails the build.
+      - name: Audit shipped dependencies
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: apps/desktop
       - name: Type-check and build
         run: npm run build
         working-directory: apps/desktop

@@ -53,10 +53,19 @@ describe("outcomeTone", () => {
 
 describe("runTone and taskTone", () => {
   it("keep the accent tone for work still in flight", () => {
-    for (const state of ["planning", "executing", "waiting_for_approval", "recovering"]) {
+    for (const state of ["planning", "executing", "observing", "verifying", "recovering"]) {
       expect(runTone(state)).toBe("live");
     }
     expect(taskTone("running")).toBe("live");
+  });
+
+  it("draw a run waiting on a decision in the attention hue, not as moving work", () => {
+    // It was "live", so its chip was the blue of a run getting on by itself
+    // while every other mark of the same state — the approval card, the
+    // running card's dot, the run's state tile — was the attention hue. A
+    // pending approval is the person's to act on, and says so everywhere.
+    expect(runTone("waiting_for_approval")).toBe("waiting");
+    expect(runTone("waiting_for_approval")).not.toBe("live");
   });
 
   it("do not paint a task waiting on its graph as a policy refusal", () => {

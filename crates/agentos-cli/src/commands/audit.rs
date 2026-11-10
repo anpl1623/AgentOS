@@ -5,7 +5,7 @@ use agentos_runtime::RuntimeConfig;
 use anyhow::Result;
 use clap::Subcommand;
 
-use crate::render::{Style, pad, rule};
+use crate::render::{Style, pad, rule, truncate};
 
 /// Audit subcommands.
 #[derive(Debug, Subcommand)]
@@ -177,13 +177,6 @@ fn summarise(payload: &serde_json::Value) -> String {
         return format!("{}/{model}{tokens}", field("provider"));
     }
     String::new()
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_owned();
-    }
-    format!("{}…", text.chars().take(max).collect::<String>())
 }
 
 #[cfg(test)]

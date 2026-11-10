@@ -5,11 +5,14 @@
 //! the call, so a later reader does not have to reconstruct them from the policy
 //! as it stands today.
 
+use std::collections::BTreeMap;
+
 use agentos_core::Timestamp;
 use agentos_core::ids::{ApprovalId, TaskRunId, ToolExecutionId};
 use agentos_core::permission::Effect;
 use agentos_core::risk::RiskLevel;
 use agentos_core::tool::ToolOutcome;
+use chrono::{Days, Local, NaiveDate, NaiveTime};
 use sqlx::{Row, SqlitePool};
 
 use crate::convert::{
@@ -79,6 +82,105 @@ pub struct ToolUsage {
     pub total_duration_ms: u64,
     /// When it was last called.
     pub last_used_at: Timestamp,
+    /// Calls on each day of the window, oldest first.
+    ///
+    /// One entry per day, days with no calls included, so it is exactly as
+    /// long as [`UsageWindow::days`] and always sums to `calls`: both come
+    /// from the same grouped rows. A day is a local calendar day, as
+    /// [`UsageWindow`] explains.
+    pub daily: Vec<u64>,
+}
+
+/// The whole calendar days tool usage is counted over: `days` of them, the
+/// last one included.
+///
+/// A day is this machine's local calendar day, because that is the day an
+/// operator reads a chart in: a call made at half past eleven at night belongs
+/// to that evening, not to tomorrow because UTC has already turned over.
+/// Executions are stored in UTC, and the query converts each to a local date
+/// with SQLite's `localtime`, which reads the same zone database as
+/// [`chrono::Local`]; so the days [`UsageWindow::ending_today`] chooses and
+/// the days rows land in agree. A day on which the clocks change is still one
+/// day, 23 or 25 hours long.
+///
+/// The window is whole days rather than a span of hours back from now, so
+/// that the totals and the per-day counts cover the same calls: seven days is
+/// today and the six before it, from the first of those days' midnight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsageWindow {
+    first: NaiveDate,
+    last: NaiveDate,
+}
+
+impl UsageWindow {
+    /// The `days` days that end with `last`.
+    ///
+    /// A window always holds the day it ends on, so zero days is taken as one.
+    #[must_use]
+    pub fn ending(last: NaiveDate, days: u32) -> Self {
+        let back = Days::new(u64::from(days.max(1) - 1));
+        Self {
+            first: last.checked_sub_days(back).unwrap_or(NaiveDate::MIN),
+            last,
+        }
+    }
+
+    /// The `days` days that end with the local day `at` falls on.
+    #[must_use]
+    pub fn ending_on(at: &Timestamp, days: u32) -> Self {
+        Self::ending(at.with_timezone(&Local).date_naive(), days)
+    }
+
+    /// The `days` days that end today, by this machine's clock.
+    #[must_use]
+    pub fn ending_today(days: u32) -> Self {
+        Self::ending_on(&agentos_core::now(), days)
+    }
+
+    /// The oldest day in the window.
+    #[must_use]
+    pub const fn first(&self) -> NaiveDate {
+        self.first
+    }
+
+    /// The newest day in the window.
+    #[must_use]
+    pub const fn last(&self) -> NaiveDate {
+        self.last
+    }
+
+    /// How many days the window holds, both ends included.
+    #[must_use]
+    pub fn days(&self) -> usize {
+        self.index_of(self.last).map_or(1, |index| index + 1)
+    }
+
+    /// Where `day` falls in the window, from 0 for the first day, if it does.
+    fn index_of(&self, day: NaiveDate) -> Option<usize> {
+        if day < self.first || day > self.last {
+            return None;
+        }
+        usize::try_from((day - self.first).num_days()).ok()
+    }
+
+    /// UTC instants safely either side of the window, as stored text.
+    ///
+    /// No zone is a whole day from UTC, so a call on one of the window's local
+    /// days was made after midnight UTC the day before the first, and before
+    /// midnight UTC two days after the last. Comparing the stored text with
+    /// these needs only the entry in `idx_executions_tool`, so a row outside
+    /// them is passed over before its table row is read or its local date
+    /// worked out; the exact test on the local date runs only on the rows
+    /// inside.
+    fn utc_bounds(&self) -> (String, String) {
+        let midnight = |day: NaiveDate| write_time(&day.and_time(NaiveTime::MIN).and_utc());
+        let before = self.first.pred_opt().unwrap_or(self.first);
+        let after = self
+            .last
+            .checked_add_days(Days::new(2))
+            .unwrap_or(self.last);
+        (midnight(before), midnight(after))
+    }
 }
 
 /// Reads and writes tool executions.
@@ -163,14 +265,24 @@ impl ExecutionRepository {
 }
 
 impl ExecutionRepository {
-    /// What each tool has been doing since `since`, busiest first.
+    /// What each tool has been doing over `window`, busiest first, with the
+    /// calls on each of its days.
     ///
-    /// One grouped query rather than a row per call. The window is bound as a
-    /// string, and that is sound: every timestamp in this table is written by
-    /// the same fixed-width RFC3339 UTC formatter at microsecond precision, so
-    /// lexical order is chronological order. It also means
-    /// `idx_executions_tool` still serves the scan, which a function applied to
-    /// `started_at` would forfeit.
+    /// One query grouped by tool and day rather than a row per call, folded
+    /// here into one [`ToolUsage`] per tool: its totals are the sums of its
+    /// days, so the daily counts cannot disagree with them. Tools with no
+    /// calls in the window are not listed; tools with equal counts are in name
+    /// order.
+    ///
+    /// The local date is taken from the timestamp cut to the whole second.
+    /// Every timestamp in this table is written by the same fixed-width
+    /// RFC3339 UTC formatter at microsecond precision, so the first nineteen
+    /// characters are the UTC second, and cutting there keeps the date out of
+    /// reach of how a given SQLite release treats fractions of a second: older
+    /// ones rounded to the millisecond, which carried a call in the last
+    /// half-millisecond before midnight into the next day. The same fixed
+    /// width makes lexical order chronological, which is what lets the outer
+    /// bounds of [`UsageWindow`] be compared as text.
     ///
     /// The outcome literals are [`ToolOutcome::as_str`] spelled out, because
     /// SQL cannot call it. `executed` is [`ToolOutcome::executed`]; `failed`
@@ -184,9 +296,11 @@ impl ExecutionRepository {
     ///
     /// [`DbError::Sql`] on failure, or [`DbError::CorruptRow`] if a stored
     /// timestamp does not parse.
-    pub async fn usage_since(&self, since: Timestamp) -> Result<Vec<ToolUsage>, DbError> {
+    pub async fn usage_over(&self, window: UsageWindow) -> Result<Vec<ToolUsage>, DbError> {
+        let (after, before) = window.utc_bounds();
         let rows = sqlx::query(
             "SELECT tool,
+                    date(substr(started_at, 1, 19), 'localtime') AS day,
                     COUNT(*) AS calls,
                     SUM(outcome IN ('success', 'failed', 'timed_out')) AS executed,
                     SUM(outcome = 'denied') AS denied,
@@ -197,37 +311,69 @@ impl ExecutionRepository {
                     SUM(duration_ms) AS total_duration_ms,
                     MAX(started_at) AS last_used_at
                FROM tool_executions
-              WHERE started_at >= ?1
-              GROUP BY tool
-              ORDER BY calls DESC, tool",
+              WHERE started_at >= ?1 AND started_at < ?2
+                AND date(substr(started_at, 1, 19), 'localtime') BETWEEN ?3 AND ?4
+              GROUP BY tool, day",
         )
-        .bind(write_time(&since))
+        .bind(after)
+        .bind(before)
+        .bind(window.first().to_string())
+        .bind(window.last().to_string())
         .fetch_all(&self.pool)
         .await?;
 
-        rows.iter()
-            .map(|row| {
-                let count = |column: &str| -> Result<u64, DbError> {
-                    Ok(u64::try_from(row.try_get::<i64, _>(column)?).unwrap_or(0))
-                };
-                Ok(ToolUsage {
-                    tool: row.try_get("tool")?,
-                    calls: count("calls")?,
-                    executed: count("executed")?,
-                    denied: count("denied")?,
-                    approval_denied: count("approval_denied")?,
-                    failed: count("failed")?,
-                    under_taint: count("under_taint")?,
-                    approvals: count("approvals")?,
-                    total_duration_ms: count("total_duration_ms")?,
-                    last_used_at: read_time(
-                        TABLE,
-                        "started_at",
-                        row.try_get::<String, _>("last_used_at")?.as_str(),
-                    )?,
-                })
-            })
-            .collect()
+        let mut tools: BTreeMap<String, ToolUsage> = BTreeMap::new();
+        for row in &rows {
+            let count = |column: &str| -> Result<u64, DbError> {
+                Ok(u64::try_from(row.try_get::<i64, _>(column)?).unwrap_or(0))
+            };
+            let day: String = row.try_get("day")?;
+            // The query only returns days inside the window, so a miss here
+            // is a date SQLite wrote that chrono cannot read back.
+            let index = NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+                .ok()
+                .and_then(|date| window.index_of(date))
+                .ok_or_else(|| {
+                    DbError::corrupt(TABLE, "started_at", day.as_str(), "outside the window")
+                })?;
+            let last_used_at = read_time(
+                TABLE,
+                "started_at",
+                row.try_get::<String, _>("last_used_at")?.as_str(),
+            )?;
+            let tool: String = row.try_get("tool")?;
+            let usage = tools.entry(tool.clone()).or_insert_with(|| ToolUsage {
+                tool,
+                calls: 0,
+                executed: 0,
+                denied: 0,
+                approval_denied: 0,
+                failed: 0,
+                under_taint: 0,
+                approvals: 0,
+                total_duration_ms: 0,
+                last_used_at,
+                daily: vec![0; window.days()],
+            });
+            let calls = count("calls")?;
+            usage.calls += calls;
+            usage.executed += count("executed")?;
+            usage.denied += count("denied")?;
+            usage.approval_denied += count("approval_denied")?;
+            usage.failed += count("failed")?;
+            usage.under_taint += count("under_taint")?;
+            usage.approvals += count("approvals")?;
+            usage.total_duration_ms += count("total_duration_ms")?;
+            usage.last_used_at = usage.last_used_at.max(last_used_at);
+            if let Some(slot) = usage.daily.get_mut(index) {
+                *slot += calls;
+            }
+        }
+
+        let mut usage: Vec<ToolUsage> = tools.into_values().collect();
+        // Stable, so tools with equal counts stay in name order.
+        usage.sort_by_key(|tool| std::cmp::Reverse(tool.calls));
+        Ok(usage)
     }
 }
 
@@ -281,6 +427,7 @@ fn hydrate(row: &sqlx::sqlite::SqliteRow) -> Result<ToolExecutionRecord, DbError
 #[cfg(test)]
 mod tests {
     use agentos_core::task::{Task, TaskRun};
+    use chrono::TimeZone;
 
     use super::*;
     use crate::Database;
@@ -320,6 +467,41 @@ mod tests {
             started_at: agentos_core::now(),
             completed_at: Some(agentos_core::now()),
         }
+    }
+
+    /// Today and yesterday: the calls a test has just made are in it even if
+    /// midnight passed while it ran.
+    fn today_and_yesterday() -> UsageWindow {
+        UsageWindow::ending_today(2)
+    }
+
+    fn date(year: i32, month: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(year, month, day).unwrap()
+    }
+
+    /// The instant a wall clock on this machine reads `hms.micro` on `day`.
+    ///
+    /// The earlier reading where the clocks go back and the time repeats; an
+    /// hour later where they go forward and the time never happens, which
+    /// none of the times these tests use do in a zone they are likely run in.
+    fn local(day: NaiveDate, (h, m, s): (u32, u32, u32), micro: u32) -> Timestamp {
+        let wall = day.and_hms_micro_opt(h, m, s, micro).unwrap();
+        Local
+            .from_local_datetime(&wall)
+            .earliest()
+            .or_else(|| {
+                Local
+                    .from_local_datetime(&(wall + chrono::Duration::hours(1)))
+                    .earliest()
+            })
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    async fn call_at(db: &Database, run_id: TaskRunId, tool: &str, at: Timestamp) {
+        let mut call = record(run_id, tool, ToolOutcome::Success, Effect::Allow);
+        call.started_at = at;
+        db.executions().insert(&call).await.unwrap();
     }
 
     #[tokio::test]
@@ -434,7 +616,7 @@ mod tests {
 
         let usage = db
             .executions()
-            .usage_since(agentos_core::now() - chrono::Duration::hours(1))
+            .usage_over(today_and_yesterday())
             .await
             .unwrap();
         assert_eq!(usage.len(), 1);
@@ -460,6 +642,7 @@ mod tests {
             t.calls,
             t.executed + t.denied + t.approval_denied + expect(Bucket::CallsOnly)
         );
+        assert_eq!(t.daily.iter().sum::<u64>(), t.calls);
     }
 
     #[tokio::test]
@@ -490,7 +673,7 @@ mod tests {
 
         let usage = db
             .executions()
-            .usage_since(agentos_core::now() - chrono::Duration::hours(1))
+            .usage_over(today_and_yesterday())
             .await
             .unwrap();
         // Busiest first.
@@ -517,7 +700,7 @@ mod tests {
 
         let usage = db
             .executions()
-            .usage_since(agentos_core::now() - chrono::Duration::days(7))
+            .usage_over(UsageWindow::ending_today(7))
             .await
             .unwrap();
         assert_eq!(usage.len(), 1);
@@ -526,6 +709,117 @@ mod tests {
             agentos_core::format_timestamp(&usage[0].last_used_at),
             agentos_core::format_timestamp(&recent.started_at)
         );
+    }
+
+    #[tokio::test]
+    async fn the_window_runs_from_the_first_local_midnight_to_the_last() {
+        let (db, run_id) = seeded().await;
+        let window = UsageWindow::ending(date(2026, 7, 14), 7);
+        assert_eq!(window.first(), date(2026, 7, 8));
+        assert_eq!(window.days(), 7);
+
+        let last_moment = local(date(2026, 7, 14), (23, 59, 59), 999_999);
+        for at in [
+            // A microsecond before the window and the moment after it.
+            local(date(2026, 7, 7), (23, 59, 59), 999_999),
+            local(date(2026, 7, 15), (0, 0, 0), 0),
+            // Its first moment, two calls in the middle and its last moment.
+            local(date(2026, 7, 8), (0, 0, 0), 0),
+            local(date(2026, 7, 10), (12, 0, 0), 0),
+            local(date(2026, 7, 10), (12, 0, 1), 0),
+            last_moment,
+        ] {
+            call_at(&db, run_id, "t", at).await;
+        }
+
+        let usage = db.executions().usage_over(window).await.unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].daily, vec![1, 0, 2, 0, 0, 0, 1]);
+        assert_eq!(usage[0].calls, 4);
+        assert_eq!(usage[0].last_used_at, last_moment);
+        // A call late in the evening ends a window on its own evening's day,
+        // whatever date UTC has reached.
+        assert_eq!(UsageWindow::ending_on(&last_moment, 7), window);
+    }
+
+    #[tokio::test]
+    async fn quiet_days_are_zeros_and_each_tool_sums_to_its_calls() {
+        let (db, run_id) = seeded().await;
+        let window = UsageWindow::ending(date(2026, 7, 14), 5);
+        call_at(&db, run_id, "busy", local(date(2026, 7, 10), (9, 0, 0), 0)).await;
+        for minute in 0..3 {
+            call_at(
+                &db,
+                run_id,
+                "busy",
+                local(date(2026, 7, 13), (9, minute, 0), 0),
+            )
+            .await;
+        }
+        let mut refused = record(run_id, "quiet", ToolOutcome::Denied, Effect::Deny);
+        refused.started_at = local(date(2026, 7, 12), (18, 0, 0), 0);
+        db.executions().insert(&refused).await.unwrap();
+        call_at(
+            &db,
+            run_id,
+            "quiet",
+            local(date(2026, 7, 12), (18, 5, 0), 0),
+        )
+        .await;
+
+        let usage = db.executions().usage_over(window).await.unwrap();
+        let tools: Vec<&str> = usage.iter().map(|tool| tool.tool.as_str()).collect();
+        assert_eq!(tools, ["busy", "quiet"], "busiest first");
+        assert_eq!(usage[0].daily, vec![1, 0, 0, 3, 0]);
+        assert_eq!(usage[1].daily, vec![0, 0, 2, 0, 0]);
+        // The buckets are summed across days as the calls are.
+        assert_eq!((usage[1].executed, usage[1].denied), (1, 1));
+        assert_eq!(usage[1].total_duration_ms, 34);
+        for tool in &usage {
+            assert_eq!(tool.daily.len(), window.days());
+            assert_eq!(tool.daily.iter().sum::<u64>(), tool.calls, "{}", tool.tool);
+        }
+
+        // A day with no calls from anything is a window with nothing in it.
+        let empty = UsageWindow::ending(date(2026, 7, 11), 1);
+        assert!(db.executions().usage_over(empty).await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_window_always_holds_the_day_it_ends_on() {
+        let day = date(2026, 7, 14);
+        assert_eq!(UsageWindow::ending(day, 0), UsageWindow::ending(day, 1));
+        let one = UsageWindow::ending(day, 1);
+        assert_eq!((one.first(), one.last(), one.days()), (day, day, 1));
+        assert_eq!(UsageWindow::ending(day, 30).days(), 30);
+    }
+
+    #[tokio::test]
+    async fn a_day_the_clocks_change_on_is_still_one_day() {
+        // Late March and October into November hold the changes in Europe and
+        // North America. On a machine whose zone has none they are ordinary
+        // days, and the test still holds.
+        let (db, run_id) = seeded().await;
+        let changes = [
+            date(2026, 3, 8),
+            date(2026, 3, 29),
+            date(2026, 10, 25),
+            date(2026, 11, 1),
+        ];
+        for day in changes {
+            call_at(&db, run_id, "t", local(day, (0, 30, 0), 0)).await;
+            call_at(&db, run_id, "t", local(day, (23, 30, 0), 0)).await;
+        }
+
+        let window = UsageWindow::ending(date(2026, 11, 2), 250);
+        let usage = db.executions().usage_over(window).await.unwrap();
+        let t = &usage[0];
+        assert_eq!(t.calls, 8);
+        for day in changes {
+            let index = window.index_of(day).unwrap();
+            assert_eq!(t.daily[index], 2, "both of {day}'s calls on {day}");
+        }
+        assert_eq!(t.daily.iter().sum::<u64>(), t.calls);
     }
 
     #[tokio::test]

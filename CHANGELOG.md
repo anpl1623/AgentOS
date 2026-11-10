@@ -12,6 +12,16 @@ it is technically a breaking change.
 
 ### Security
 
+- **`filesystem.read` reads only regular files, and at most 32 MiB of one.** It used to load whatever
+  its path named, whole, before anything looked at it: a permitted read of a FIFO held the call until
+  something wrote to the pipe, a device such as `/dev/zero` never ended, and a very large file grew
+  the process until the call timed out. It now refuses anything that is not a regular file, checking
+  before the open because opening a FIFO blocks by itself, confirms the handle it opened is the file
+  it examined, and enforces `MAX_READ_FILE_BYTES` on the read itself. A larger file is refused, not
+  cut, since a ranged read reports the file's line count.
+- **A reaped run is audited under its own agent.** The transition written when a run abandoned by an
+  exited process is failed at startup carried a freshly generated agent ID that matched no agent.
+  It now carries the agent whose task it was.
 - **Taint follows provenance, not a flag.** A tool used to decide for itself whether its output
   tainted the run, through `returns_untrusted_data`. That field is now catalogue metadata with no
   effect on authorisation. A call taints the run when the bytes it returned came from outside the
@@ -214,6 +224,25 @@ it is technically a breaking change.
 
 ### Added
 
+- **A redesigned desktop application.** A design system with depth, motion and an accent gradient,
+  built from tokens and documented in [`docs/design-system.md`](docs/design-system.md); every
+  animation stops under reduced motion. A light theme beside the dark one, chosen as system, dark or
+  light in Settings or the sidebar, with each theme's contrast table recomputed by the tests.
+- **A responsive shell.** At 1200px and wider a full sidebar that folds into a rail on request; from
+  720px a rail with tooltips that opens the sidebar as a drawer; below 720px a top bar and an
+  off-canvas drawer with a trapped focus. The window works at its minimum size and at 200% zoom.
+- **Every screen rebuilt on it.** The dashboard opens on a status line and tiles that count up;
+  approvals is a desk with the queue beside the presented request, which never changes under the
+  operator while it waits; a run reads as a rail of evidence
+  with a node per tool family; schedules say when they next fire; agents are cards and each agent a
+  page of sections; activity is a live feed with day markers and families; settings has a section
+  nav and a new Appearance section.
+- Shared primitives for screens: `PageHeader`, `StatTile`, `EmptyState`, `Switch`, `CopyButton`,
+  `Kbd`, `LiveDot`, `Sparkline`, an icon set drawn for AgentOS, and a pointer spotlight.
+- Tool usage counts calls per local calendar day (`daily` on the usage report), and the dashboard
+  draws its trend from it.
+- `npm run screenshots -- --theme light` and `--still`, which captures with reduced motion so no
+  entrance is caught half-played.
 - `filesystem.search`, by name glob and by content, with depth, result and byte caps and a count of
   everything skipped and why. New agents get it with `filesystem.read` and `filesystem.list`.
 - `filesystem.read` takes `offset` (from 1) and `limit` for a range of lines.
@@ -300,6 +329,16 @@ it is technically a breaking change.
 
 ### Changed
 
+- A usage window is now whole local days: seven means today and the six days before it, from local
+  midnight, so the dashboard's tiles say *today* rather than *24h*.
+  `ExecutionRepository::usage_since` becomes `usage_over(UsageWindow)`.
+- Each desktop screen is its own module folder under `src/routes/`, loaded lazily; the window's first
+  chunk is half the size it was. The largest Rust modules (the runtime, operator commands,
+  delegation, the agent loop, the scheduler, the tool pipeline, the filesystem and egress tools, the
+  event taxonomy, the trust boundary, the GitHub tools and terminal rendering) are split into
+  submodules with every public path kept.
+- A run waiting for approval is drawn in the attention hue on its state chip, as every other mark of
+  that state already was.
 - The `schedule_fired` and `task_abandoned` event tags are now `schedule.fired` and
   `agent.task.abandoned`, matching every other event and their own `kind`. Records written under the
   old tags are still read.
@@ -344,6 +383,13 @@ it is technically a breaking change.
   request, empty for requests made before.
 - At startup, the reaper releases what the tools still hold for each run it fails, as the end of a
   run would have.
+
+### Fixed
+
+- The CLI measures text in terminal columns rather than bytes, so accented text is not cut short and
+  wide characters (Korean, Chinese, Japanese, emoji) no longer break the approval card's box.
+- The desktop's development dependencies carried advisories against Vite's dev server and Vitest's
+  mocker; both are on patched releases, and CI fails on a high-severity advisory in shipped code.
 
 ## [0.2.0]
 

@@ -50,7 +50,7 @@ export function riskTone(level: string): RiskLevel {
 }
 
 /** The tones a verdict can take. Each is a class in `status.css`. */
-export type VerdictTone = "ok" | "danger" | "blocked" | "neutral" | "live";
+export type VerdictTone = "ok" | "danger" | "blocked" | "neutral" | "live" | "waiting";
 
 /**
  * Whether `key` is an own entry of `table`.
@@ -89,14 +89,21 @@ const OUTCOME_TONES = {
   cancelled: "neutral",
 } as const satisfies Record<string, VerdictTone>;
 
-/** Run states. Every state that is still moving keeps the accent tone. */
+/**
+ * Run states. Every state that is still moving keeps the accent tone.
+ *
+ * A run waiting on a decision is in flight but not moving, and what it waits
+ * on is a person: it takes the attention hue a pending approval wears
+ * everywhere else — its card, its running card's dot, its run's state tile —
+ * rather than the blue of a run getting on by itself.
+ */
 const RUN_TONES = {
   idle: "neutral",
   planning: "live",
   executing: "live",
   observing: "live",
   verifying: "live",
-  waiting_for_approval: "live",
+  waiting_for_approval: "waiting",
   recovering: "live",
   completed: "ok",
   failed: "danger",

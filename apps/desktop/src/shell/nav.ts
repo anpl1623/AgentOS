@@ -6,6 +6,7 @@
  * in the sidebar.
  */
 
+import type { IconName } from "../components/icons";
 import type { Route, RouteName } from "../routes/route";
 
 /** A screen as the chrome names it. */
@@ -14,16 +15,43 @@ export interface NavItem {
   label: string;
   /** What the screen is for, in a few words; the palette searches it. */
   description: string;
+  /** Drawn beside the label, and alone when the sidebar is a rail. */
+  icon: IconName;
 }
 
 export const NAV: readonly NavItem[] = [
-  { route: "dashboard", label: "Dashboard", description: "What is running and what needs you" },
-  { route: "approvals", label: "Approvals", description: "Actions waiting on your decision" },
-  { route: "tasks", label: "Tasks", description: "Objectives, runs and their traces" },
-  { route: "schedules", label: "Schedules", description: "Standing instructions on a timer" },
-  { route: "agents", label: "Agents", description: "Agents, their tools and policies" },
-  { route: "activity", label: "Activity", description: "Everything the runtime has recorded" },
-  { route: "settings", label: "Settings", description: "Providers, tools and the audit log" },
+  {
+    route: "dashboard",
+    label: "Dashboard",
+    description: "What is running and what needs you",
+    icon: "dashboard",
+  },
+  {
+    route: "approvals",
+    label: "Approvals",
+    description: "Actions waiting on your decision",
+    icon: "approvals",
+  },
+  { route: "tasks", label: "Tasks", description: "Objectives, runs and their traces", icon: "tasks" },
+  {
+    route: "schedules",
+    label: "Schedules",
+    description: "Standing instructions on a timer",
+    icon: "schedules",
+  },
+  { route: "agents", label: "Agents", description: "Agents, their tools and policies", icon: "agents" },
+  {
+    route: "activity",
+    label: "Activity",
+    description: "Everything the runtime has recorded",
+    icon: "activity",
+  },
+  {
+    route: "settings",
+    label: "Settings",
+    description: "Providers, tools and the audit log",
+    icon: "settings",
+  },
 ];
 
 /** The sidebar label of a screen. */
