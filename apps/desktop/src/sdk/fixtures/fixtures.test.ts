@@ -1,16 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AuditRecordView } from "../bindings/AuditRecordView";
-import type { CadenceInput } from "../bindings/CadenceInput";
-import type { EventView } from "../bindings/EventView";
-import type { IntegrationView } from "../bindings/IntegrationView";
-import type { MemoryView } from "../bindings/MemoryView";
-import type { NetworkCredentialView } from "../bindings/NetworkCredentialView";
-import type { SchedulerView } from "../bindings/SchedulerView";
-import type { SettingsView } from "../bindings/SettingsView";
-import type { StartedTask } from "../bindings/StartedTask";
-import type { ToolUsageView } from "../bindings/ToolUsageView";
-import { fixtureInvoke, fixtureSubscribe } from "./fixtures";
+import type { AuditRecordView } from "../../bindings/AuditRecordView";
+import type { CadenceInput } from "../../bindings/CadenceInput";
+import type { EventView } from "../../bindings/EventView";
+import type { IntegrationView } from "../../bindings/IntegrationView";
+import type { MemoryView } from "../../bindings/MemoryView";
+import type { NetworkCredentialView } from "../../bindings/NetworkCredentialView";
+import type { SchedulerView } from "../../bindings/SchedulerView";
+import type { SettingsView } from "../../bindings/SettingsView";
+import type { StartedTask } from "../../bindings/StartedTask";
+import type { ToolUsageView } from "../../bindings/ToolUsageView";
+import { fixtureInvoke, fixtureSubscribe } from "./index";
 
 /**
  * A copy of the fixtures as they are on load. A removal changes the module's
@@ -19,7 +19,7 @@ import { fixtureInvoke, fixtureSubscribe } from "./fixtures";
  */
 async function freshFixtures(): Promise<typeof fixtureInvoke> {
   vi.resetModules();
-  return (await import("./fixtures")).fixtureInvoke;
+  return (await import("./index")).fixtureInvoke;
 }
 
 const sum = (counts: readonly number[]) => counts.reduce((total, count) => total + count, 0);
