@@ -33,6 +33,13 @@ export interface TimelineSpan extends TrackSpan {
   target: SpanTarget;
 }
 
+/**
+ * The hue of the line that marks the present on a live run: in-flight while
+ * the run is working, the attention hue while it waits on a person — the same
+ * split as the live dot in the run's eyebrow.
+ */
+export type NowTone = "info" | "warn";
+
 /** Everything the run timeline draws, computed from the trace alone. */
 export interface Timeline {
   start: number;
@@ -42,6 +49,8 @@ export interface Timeline {
    * moment rather than the run's end, and is drawn as such.
    */
   live: boolean;
+  /** How the present is drawn while the run is live. */
+  nowTone: NowTone;
   model: TimelineSpan[];
   tools: TimelineSpan[];
   waiting: TimelineSpan[];
@@ -154,6 +163,18 @@ export function unionLength(intervals: readonly { from: number; to: number }[]):
   return total;
 }
 
+/**
+ * Whether the run is waiting on a person right now: it says so itself, or a
+ * decision it asked for has not been given. The second matters in the moment
+ * between an approval being raised and the run's state catching up.
+ */
+export function nowTone(trace: TraceView): NowTone {
+  const waiting =
+    trace.run.state === "waiting_for_approval" ||
+    trace.approvals.some((approval) => approval.decided_at === null);
+  return waiting ? "warn" : "info";
+}
+
 /** The plain sentence under the tracks. */
 export function waitingSummary(waitingMs: number, runMs: number): string {
   if (waitingMs <= 0) return "The run did not wait for a decision.";
@@ -240,6 +261,7 @@ export function buildTimeline(trace: TraceView, now: number): Timeline | null {
   return {
     ...window,
     live: isLive(trace.run.state) && !trace.run.completed_at,
+    nowTone: nowTone(trace),
     model,
     tools,
     waiting,

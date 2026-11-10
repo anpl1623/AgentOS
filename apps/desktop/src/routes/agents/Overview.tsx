@@ -115,12 +115,12 @@ export function Overview({
             <dt>Created</dt>
             <dd>{ago(summary.created_at)}</dd>
             <dt>Workspace</dt>
-            <dd className="fact-copy">
+            <dd>
               <span className="mono">{workspace}</span>
               <CopyButton text={workspace} label="Copy the workspace path" />
             </dd>
             <dt>Identity</dt>
-            <dd className="fact-copy">
+            <dd>
               <span className="mono faint">{summary.id}</span>
               <CopyButton text={summary.id} label="Copy the agent id" />
             </dd>

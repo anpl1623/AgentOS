@@ -92,6 +92,34 @@
   min-width: 0;
 }
 
+/* A screen whose code is still being fetched (shell/ScreenFallback.tsx): the
+ * frame of a screen in skeleton. It is held invisible for a moment before it
+ * fades in, so a fetch quicker than that — nearly all of them, from a local
+ * bundle — never flashes it. The delay is not a duration, so reduced motion
+ * keeps it: the frame then appears after the same moment, without the fade. */
+.screen-pending {
+  --pending-delay: 200ms;
+  animation: backdrop-in var(--dur-3) var(--ease-out) var(--pending-delay) backwards;
+}
+.screen-pending-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+  margin-bottom: var(--s-9);
+}
+.screen-pending-eyebrow {
+  width: 9ch;
+  height: var(--fs-eyebrow);
+}
+.screen-pending-title {
+  width: min(22rem, 60%);
+  height: var(--fs-hero);
+}
+.screen-pending-sub {
+  width: min(34rem, 85%);
+  height: var(--fs-small);
+}
+
 /* The scrim behind a drawer. Present only where there is a drawer, and
  * transparent to the pointer until one is open. */
 .sidebar-scrim {
@@ -707,6 +735,18 @@
   gap: var(--s-4) var(--s-8);
   margin-bottom: var(--s-2);
 }
+/* Something drawn before the title and outside its words, such as an
+ * agent's avatar: it travels with the title, and shrinks with it when the row
+ * pins. */
+.page-title-lead {
+  display: flex;
+  align-items: center;
+  gap: var(--s-6);
+  min-width: 0;
+}
+.page-title-lead > .page-title {
+  min-width: 0;
+}
 .page-actions {
   display: flex;
   flex-wrap: wrap;
@@ -718,6 +758,11 @@
   margin: 0 0 var(--s-9);
   font-size: var(--fs-small);
   max-width: 72ch;
+}
+/* The subtitle's place inside the title row, used only by the narrow layout
+ * (below). Everywhere else the row holds the title and actions alone. */
+.page-sub-inline {
+  display: none;
 }
 
 /* PageHeader's title row pins once the column scrolls past it (the component
@@ -738,7 +783,7 @@
     border-color var(--dur-3) var(--ease-out),
     box-shadow var(--dur-3) var(--ease-out);
 }
-.page-head.sticky .page-title {
+.page-head.sticky :is(.page-title, .page-title-lead) {
   transform-origin: left center;
   transition: transform var(--dur-3) var(--ease-out);
 }
@@ -749,11 +794,77 @@
   border-color: var(--glass-border);
   box-shadow: var(--highlight-inset), var(--elev-2);
 }
-.page-head.stuck .page-title {
+.page-head.stuck .page-title,
+.page-head.stuck .page-title-lead {
   transform: scale(0.8);
 }
+/* Inside a lead the group shrinks as one, so the title is not shrunk twice. */
+.page-head.stuck .page-title-lead > .page-title {
+  transform: none;
+}
+
+/* The pinned bar floats a step below the top of the column, and the screen
+ * scrolling beneath would show through that step and in the notches beside
+ * its rounded top corners. The strip is closed with the canvas itself: the
+ * ground colour and the aurora, fixed to the window exactly as the body draws
+ * them, so it meets the canvas around it without a seam. The mask keeps the
+ * strip to the step and the two corner notches; nothing of it lies under the
+ * glass, which still shows the screen through its blur. It comes and goes
+ * with the glass. */
+.page-head.sticky::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: calc((var(--s-4) + 1px) * -1);
+  left: -1px;
+  right: -1px;
+  height: calc(var(--s-4) + var(--radius-xl));
+  background-color: var(--surface-canvas);
+  background-image: var(--aurora);
+  background-attachment: fixed;
+  /* A mask reads only alpha, so the ink is the text's opaque colour rather
+   * than a literal. */
+  --veil-step: linear-gradient(currentColor 0 0) top / 100% var(--s-4) no-repeat;
+  --veil-notch-start: radial-gradient(
+      circle at 100% 100%,
+      transparent calc(var(--radius-xl) - 0.5px),
+      currentColor var(--radius-xl)
+    )
+    left bottom / var(--radius-xl) var(--radius-xl) no-repeat;
+  --veil-notch-end: radial-gradient(
+      circle at 0 100%,
+      transparent calc(var(--radius-xl) - 0.5px),
+      currentColor var(--radius-xl)
+    )
+    right bottom / var(--radius-xl) var(--radius-xl) no-repeat;
+  -webkit-mask: var(--veil-step), var(--veil-notch-start), var(--veil-notch-end);
+  mask: var(--veil-step), var(--veil-notch-start), var(--veil-notch-end);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-3) var(--ease-out);
+}
+.page-head.stuck::before {
+  opacity: 1;
+}
+
+/* Opted into by a screen whose title runs long (the run page's objective):
+ * pinned, the title keeps to one line and ends in an ellipsis, so the bar
+ * stays slim. PageHeader measures what the clamp took away and adds it to the
+ * bar's margin as --page-head-hold, so the bar's place in the column is the
+ * same height pinned or not, and nothing beneath it moves. */
+.page-head.stuck[data-clamped] .page-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.page-head.sticky[data-clamped] {
+  margin-bottom: calc(var(--s-2) - var(--s-3) + var(--page-head-hold, 0px));
+}
+
 /* The narrow layout's top bar already names the screen; the row scrolls away
- * with the rest of the header there. */
+ * with the rest of the header there. Its actions wrap below the title, and
+ * would come between the title and the sentence that explains it, so the
+ * sentence moves into the row after the title and the actions follow it. */
 @media (max-width: 719.98px) {
   .page-head.sticky {
     position: static;
@@ -765,8 +876,34 @@
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
-  .page-head.stuck .page-title {
+  .page-head.sticky::before {
+    content: none;
+  }
+  .page-head.stuck .page-title,
+  .page-head.stuck .page-title-lead {
     transform: none;
+  }
+  .page-head.stuck[data-clamped] .page-title {
+    overflow: visible;
+    white-space: normal;
+  }
+  .page-head > .page-sub-inline {
+    display: block;
+    order: 1;
+    flex: 1 1 100%;
+    margin: calc(var(--s-2) - var(--s-4)) 0 var(--s-2);
+  }
+  .page-head > .page-actions {
+    order: 2;
+  }
+  .page-head:has(> .page-sub-inline) + .page-sub {
+    display: none;
+  }
+  .page-head:has(> .page-sub-inline) {
+    margin-bottom: var(--s-9);
+  }
+  .page-head.sticky:has(> .page-sub-inline) {
+    margin-bottom: calc(var(--s-9) - var(--s-3));
   }
 }
 
@@ -841,6 +978,12 @@
 }
 .grid.two {
   grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+}
+/* Fields carry their own space beneath them. When a pair of them stacks on a
+ * narrow window, a row gap on top of that would part the two by more than any
+ * other two fields on the form. */
+.grid.two:has(> .field) {
+  row-gap: 0;
 }
 .grid.stats {
   grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));

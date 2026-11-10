@@ -221,14 +221,14 @@ function CallDetails({ execution, detailsId }: { execution: ExecutionView; detai
         <dt>Started</dt>
         <dd title={execution.started_at}>{clock(execution.started_at)}</dd>
         <dt>Call id</dt>
-        <dd className="trace-copyable">
+        <dd>
           <span className="mono">{execution.call_id}</span>
           <CopyButton text={execution.call_id} label="Copy the call id" />
         </dd>
         {execution.approval_id !== null ? (
           <>
             <dt>Approval</dt>
-            <dd className="trace-copyable">
+            <dd>
               <span className="mono">{execution.approval_id}</span>
               <CopyButton text={execution.approval_id} label="Copy the approval id" />
             </dd>

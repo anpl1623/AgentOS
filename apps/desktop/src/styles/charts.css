@@ -187,6 +187,15 @@
 .chart-now circle {
   fill: var(--info-fg);
 }
+/* While the run waits on a person the present is theirs to move, so it is
+ * drawn in the attention hue, as the waiting track beside it and the live dot
+ * in the run's eyebrow are. */
+.chart-now.tone-warn line {
+  stroke: var(--warn-fg);
+}
+.chart-now.tone-warn circle {
+  fill: var(--warn-fg);
+}
 .chart-now .chart-now-ring {
   transform-box: fill-box;
   transform-origin: center;

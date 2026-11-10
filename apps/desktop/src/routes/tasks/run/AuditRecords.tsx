@@ -144,17 +144,17 @@ function AuditRecord({ id, detailsId }: { id: string; detailsId: string }) {
             <dt>Sequence</dt>
             <dd>#{data.sequence}</dd>
             <dt>Record id</dt>
-            <dd className="trace-copyable">
+            <dd>
               <span className="mono">{id}</span>
               <CopyButton text={id} label="Copy the record id" />
             </dd>
             <dt>Record before it</dt>
-            <dd className="trace-copyable">
+            <dd>
               <span className="mono">{data.prev_hash}</span>
               <CopyButton text={data.prev_hash} label="Copy the hash of the record before it" />
             </dd>
             <dt>This record</dt>
-            <dd className="trace-copyable">
+            <dd>
               <span className="mono">{data.hash}</span>
               <CopyButton text={data.hash} label="Copy this record's hash" />
             </dd>

@@ -624,6 +624,31 @@ describe("buildTimeline", () => {
     const ended = trace({ run: run({ state: "executing" }), steps });
     expect(buildTimeline(ended, ms(at(12)))?.live).toBe(false);
   });
+
+  it("draws the present in the attention hue while the run waits on a person", () => {
+    const steps = [step(1, "planning", 1)];
+    const working = trace({ run: run({ state: "executing", completed_at: null }), steps });
+    expect(buildTimeline(working, ms(at(4)))?.nowTone).toBe("info");
+
+    const asking = trace({ run: run({ state: "waiting_for_approval", completed_at: null }), steps });
+    expect(buildTimeline(asking, ms(at(4)))?.nowTone).toBe("warn");
+
+    // A decision still open counts before the run's state has caught up.
+    const raised = trace({
+      run: run({ state: "executing", completed_at: null }),
+      steps,
+      approvals: [approval("a", 2, null)],
+    });
+    expect(buildTimeline(raised, ms(at(4)))?.nowTone).toBe("warn");
+
+    // Decided, it no longer holds the run.
+    const answered = trace({
+      run: run({ state: "executing", completed_at: null }),
+      steps,
+      approvals: [approval("a", 2, 3)],
+    });
+    expect(buildTimeline(answered, ms(at(4)))?.nowTone).toBe("info");
+  });
 });
 
 describe("transcript", () => {

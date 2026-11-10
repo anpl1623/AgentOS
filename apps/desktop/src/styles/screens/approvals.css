@@ -104,9 +104,6 @@
     var(--elev-1),
     inset 3px 0 0 var(--accent);
 }
-.decision-status:focus-visible {
-  border-radius: var(--radius-lg);
-}
 /* The words say what went wrong; the leading edge only repeats it, in the
  * hue the screen uses for each: a failed answer in danger, a denial whose run
  * could not be stopped in attention. */
@@ -317,9 +314,6 @@
     var(--elev-2),
     var(--risk-glow);
 }
-.queue-item:focus-visible {
-  border-radius: var(--radius-lg);
-}
 .queue-item-top {
   display: flex;
   align-items: center;
@@ -468,10 +462,6 @@
     var(--elev-2),
     0 0 0 1px var(--accent),
     var(--accent-glow);
-}
-/* The ring is focus.css's; this only keeps the card's own corners under it. */
-.approvals-screen .approval:focus-visible {
-  border-radius: var(--radius-xl);
 }
 
 .approvals-screen .approval-head {
@@ -897,113 +887,5 @@
   .approval-stamp,
   .stamp-mark {
     animation: none;
-  }
-}
-
-/* --- argument block ------------------------------------------------------ */
-
-/* components/ArgumentBlock.tsx, which the approval card and the run screen's
- * call details both draw. Owned with this screen; its rules belong in
- * components.css and sit here until they move.
- *
- * One sunken well: a head with the view switch and the copy control, any
- * notes about what the text holds, and the arguments, one field to a line
- * with a hairline between them. */
-.arg-block {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  background: var(--surface-sunken);
-  box-shadow: var(--shadow-well);
-}
-.arg-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--s-3) var(--s-5);
-  padding: var(--s-3) var(--s-3) var(--s-3) var(--s-6);
-  border-bottom: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  background: var(--surface-recessed);
-}
-.arg-title {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-3);
-  color: var(--text-dim);
-}
-.arg-title label {
-  margin: 0;
-  font-size: var(--fs-eyebrow);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--tracking-eyebrow);
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
-.arg-copy {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-2);
-  font-size: var(--fs-small);
-}
-.arg-copy.copied {
-  color: var(--ok-text);
-}
-.arg-notes {
-  padding: var(--s-5) var(--s-6) 0;
-}
-.arg-notes > * {
-  margin: 0 0 var(--s-4);
-}
-.arg-block dl.args {
-  grid-template-columns: minmax(9ch, max-content) minmax(0, 1fr);
-  gap: 0;
-  margin: 0;
-  padding: var(--s-2) 0;
-  line-height: var(--lh-code);
-}
-.arg-block dl.args > dt,
-.arg-block dl.args > dd {
-  padding: var(--s-3) var(--s-6);
-  border-top: 1px solid var(--border-hairline);
-}
-.arg-block dl.args > dt:first-of-type,
-.arg-block dl.args > dt:first-of-type + dd {
-  border-top: 0;
-}
-.arg-block dl.args > dd {
-  padding-left: 0;
-  color: var(--text);
-}
-.arg-value.literal {
-  color: var(--info-text);
-}
-.arg-block pre.code {
-  border: 0;
-  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
-  background: transparent;
-  box-shadow: none;
-}
-/* The well is the box; the ring goes inside it. */
-.arg-block pre.code:focus-visible {
-  outline-offset: -2px;
-  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
-  box-shadow: none;
-}
-/* Under 720px each name sits over its value, as layout.css has every argument
- * list do. Said again here because the block's own template above outranks
- * that rule, and the paddings below are drawn for the stacked shape: kept in
- * two columns, a name and its value would sit at different heights. */
-@media (max-width: 719.98px) {
-  .content .arg-block dl.args {
-    grid-template-columns: minmax(0, 1fr);
-    row-gap: 0;
-  }
-  .content .arg-block dl.args dd {
-    margin-bottom: 0;
-    padding: 0 var(--s-6) var(--s-3);
-    border-top: 0;
-  }
-  .content .arg-block dl.args dt {
-    padding-bottom: var(--s-1);
   }
 }

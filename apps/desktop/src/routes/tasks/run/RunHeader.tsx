@@ -46,6 +46,7 @@ export function RunHeader({
   const tone = liveTone(shown);
   return (
     <PageHeader
+      clampPinned
       parent={{ label: "Tasks", onActivate: () => navigate({ name: "tasks" }) }}
       eyebrow={
         <span className="run-eyebrow">
@@ -68,11 +69,14 @@ export function RunHeader({
           {live ? (
             <StopButton requested={actions.cancelRequested} onStop={actions.cancel} />
           ) : retryable ? (
+            // Disabled outright only when there is no task to retry; while a
+            // retry is under way it stays focusable (see StopButton).
             <button
               type="button"
               className="primary"
-              disabled={actions.retrying || trace.task_id === null}
-              onClick={() => void actions.retry()}
+              disabled={trace.task_id === null}
+              aria-disabled={actions.retrying || undefined}
+              onClick={actions.retrying ? undefined : () => void actions.retry()}
             >
               <Icon name="retry" size={16} />
               {actions.retrying ? "Retrying…" : "Retry"}
@@ -90,14 +94,19 @@ export function RunHeader({
  * rather than only on hover, and the words saying exactly what it stops.
  * Pressed, it holds its place and says it is stopping; the state chip says
  * `cancelling` until the runtime reports the run ended.
+ *
+ * While the stop is asked for it is aria-disabled, not disabled: a focused
+ * button that becomes disabled drops focus to the top of the window, and the
+ * person who pressed Stop would lose their place on the page at the moment
+ * they most need it. The press is ignored here and in the action itself.
  */
 function StopButton({ requested, onStop }: { requested: boolean; onStop: () => Promise<void> }) {
   return (
     <button
       type="button"
       className="danger run-stop"
-      disabled={requested}
-      onClick={() => void onStop()}
+      aria-disabled={requested || undefined}
+      onClick={requested ? undefined : () => void onStop()}
     >
       <span className="run-stop-mark" aria-hidden="true">
         <Icon name="stop" size={14} />

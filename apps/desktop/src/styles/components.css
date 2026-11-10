@@ -128,29 +128,48 @@
   color: var(--text-dim);
 }
 
-/* A two-to-four way choice shown as one control: Fields or Raw, Timeline or
- * Steps, seven days or thirty. The chosen segment is the pressed button, so
- * the state is announced as well as drawn. */
+/* A two-to-six way choice shown as one control: Fields or Raw, Timeline or
+ * Steps, seven days or thirty, a filter by status. The chosen segment is the
+ * pressed button, so the state is announced as well as drawn. */
 /* The track is a well; the chosen segment is a raised key sitting in it, and
  * moving the choice moves the key's fill and shadow across with the hover
- * timing, which reads as the key sliding. */
+ * timing, which reads as the key sliding.
+ *
+ * The keys wrap onto a second line rather than run out of a narrow window,
+ * since a filter has as many keys as the data has kinds. Each key is a full
+ * pointer target, 32px tall (40px for a finger); the track hugs it with a
+ * single pixel of well above and below, so the control stands no taller than
+ * the fields and buttons beside it. A key may hold a dot, a count or an icon
+ * beside its word, all on the word's centre line. */
 .segmented {
   display: inline-flex;
+  flex-wrap: wrap;
+  max-width: 100%;
   gap: var(--s-1);
-  padding: var(--s-1);
+  padding: 1px var(--s-1);
   border: 1px solid var(--border-control);
   border-radius: var(--radius-lg);
   background: var(--surface-sunken);
   box-shadow: var(--shadow-well);
 }
 .segmented > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-3);
+  min-height: 32px;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: transparent;
   box-shadow: none;
   color: var(--text-dim);
-  padding: var(--s-1) var(--s-5);
+  padding: 0 var(--s-5);
   font-size: var(--fs-small);
+}
+@media (pointer: coarse) {
+  .segmented > button {
+    min-height: 40px;
+  }
 }
 .segmented > button + button {
   border-left: 1px solid transparent;
@@ -351,6 +370,33 @@ dl.facts dd {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* A value with the button that copies it: the value breaks anywhere rather
+ * than push the button off the card or under itself, and the two share the
+ * line's centre. The button keeps its whole target but gives back the height
+ * it would add to the row, reaching into the gap above and below instead, so
+ * a row with one is spaced like the rows without. A two-column list that
+ * holds one opens its row gap to a copy button's reach on both sides, so two
+ * in neighbouring rows never overlap where they reach into the gap between
+ * them. Under 720px, where layout.css stacks each label over its value, a
+ * value is already a label's height from the next value, and the stacked
+ * spacing stands. */
+dl.facts dd:has(> .copy-button) {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+dl.facts dd:has(> .copy-button) > :not(.copy-button) {
+  min-width: 0;
+}
+dl.facts dd > .copy-button {
+  flex: none;
+  margin-block: calc(var(--s-3) * -1);
+}
+@media (min-width: 720px) {
+  dl.facts:has(> dd > .copy-button) {
+    row-gap: var(--s-6);
+  }
+}
 
 /* A tool call's arguments, one per line. The Fields view may fold a long value
  * behind .arg-fold; the Raw view beside it is pre.code and is never folded. */
@@ -413,6 +459,112 @@ pre.code {
 pre.code.wrap {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* --- argument block ------------------------------------------------------ */
+
+/* components/ArgumentBlock.tsx, which the approval card and the run screen's
+ * call details both draw.
+ *
+ * One sunken well: a head with the view switch and the copy control, any
+ * notes about what the text holds, and the arguments, one field to a line
+ * with a hairline between them. */
+.arg-block {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-sunken);
+  box-shadow: var(--shadow-well);
+}
+.arg-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3) var(--s-5);
+  padding: var(--s-3) var(--s-3) var(--s-3) var(--s-6);
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: var(--surface-recessed);
+}
+.arg-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  color: var(--text-dim);
+}
+.arg-title label {
+  margin: 0;
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.arg-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-small);
+}
+.arg-copy.copied {
+  color: var(--ok-text);
+}
+.arg-notes {
+  padding: var(--s-5) var(--s-6) 0;
+}
+.arg-notes > * {
+  margin: 0 0 var(--s-4);
+}
+.arg-block dl.args {
+  grid-template-columns: minmax(9ch, max-content) minmax(0, 1fr);
+  gap: 0;
+  margin: 0;
+  padding: var(--s-2) 0;
+  line-height: var(--lh-code);
+}
+.arg-block dl.args > dt,
+.arg-block dl.args > dd {
+  padding: var(--s-3) var(--s-6);
+  border-top: 1px solid var(--border-hairline);
+}
+.arg-block dl.args > dt:first-of-type,
+.arg-block dl.args > dt:first-of-type + dd {
+  border-top: 0;
+}
+.arg-block dl.args > dd {
+  padding-left: 0;
+  color: var(--text);
+}
+.arg-value.literal {
+  color: var(--info-text);
+}
+.arg-block pre.code {
+  border: 0;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  background: transparent;
+  box-shadow: none;
+}
+/* The well is the box; the ring goes inside it, on the block's own corners. */
+.arg-block pre.code:focus-visible {
+  outline-offset: -2px;
+  box-shadow: none;
+}
+/* Under 720px each name sits over its value, as layout.css has every argument
+ * list do. Said again here because the block's own template above outranks
+ * that rule, and the paddings below are drawn for the stacked shape: kept in
+ * two columns, a name and its value would sit at different heights. */
+@media (max-width: 719.98px) {
+  .content .arg-block dl.args {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 0;
+  }
+  .content .arg-block dl.args dd {
+    margin-bottom: 0;
+    padding: 0 var(--s-6) var(--s-3);
+    border-top: 0;
+  }
+  .content .arg-block dl.args dt {
+    padding-bottom: var(--s-1);
+  }
 }
 
 /* --- trace --------------------------------------------------------------- */
@@ -491,15 +643,6 @@ pre.code.wrap {
 [role="listitem"]:not(:last-child) > .event {
   border-bottom-color: var(--border-hairline);
 }
-/* The feed's panel clips its corners without becoming a scroll container, so
- * a day's heading pins to the main column while its events scroll past. hidden
- * stays as the fallback for a webview without clip, as on .approval; flow-root
- * keeps the formatting context that hidden gave. */
-.panel.feed {
-  display: flow-root;
-  overflow: hidden;
-  overflow: clip;
-}
 .event-time {
   color: var(--text-faint);
   font-family: var(--font-mono);
@@ -532,21 +675,6 @@ pre.code.wrap {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-/* The day a run of events belongs to, pinned while its events scroll past. */
-.event-date {
-  position: sticky;
-  top: 0;
-  z-index: var(--z-sticky);
-  padding: var(--s-2) var(--s-8);
-  font-size: var(--fs-micro);
-  font-weight: var(--fw-semibold);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  background: var(--surface-panel);
-  border-bottom: 1px solid var(--border-subtle);
-  margin: 0;
 }
 
 /* --- loading ------------------------------------------------------------- */

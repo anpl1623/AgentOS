@@ -11,7 +11,7 @@
  * of bundled Chromium that would come with one.
  *
  * Usage: npm run screenshots -- [--out <dir>] [--routes dashboard,tasks/run/run-0001]
- *                                [--size 1500x950] [--theme dark|light]
+ *                                [--size 1500x950] [--theme dark|light] [--still]
  *
  * A route may go below a screen, as `tasks/run/run-0001` or `agents/sales`
  * does; it is written to a file named after it with each `/` as a `-`. The
@@ -23,6 +23,18 @@
  * profile has chosen nothing, so without this the images would come out in
  * whichever scheme the machine taking them happens to use. It is dark unless
  * asked otherwise, which keeps the images in docs/ dark.
+ *
+ * `--still` has Chrome report that the person prefers reduced motion. The
+ * interface then draws every entrance — a screen rising in, a list arriving
+ * in sequence, bars growing — at its final frame, so nothing is caught half
+ * played. Without it the virtual-time budget usually outlasts the entrances,
+ * but a screen whose data settles late can still be caught mid-rise.
+ *
+ * Each screen is its own chunk, fetched when the screen is first shown. The
+ * virtual-time budget does not run while a fetch is in flight, so a capture
+ * waits for the screen's code as it does for its data; the dev server is
+ * also asked to prepare every screen's modules before the first capture, so
+ * no capture begins by waiting on a cold transform.
  *
  * Output is written to apps/desktop/screenshots/ by default, which is ignored
  * by git. Set CHROME_PATH to use a browser this script does not find itself.
@@ -42,6 +54,9 @@ import { createServer } from "vite";
  * address the shell's hash router gives that screen.
  */
 const ROUTES = ["dashboard", "approvals", "tasks", "schedules", "agents", "activity", "settings"];
+
+/** Each screen's entry module, which the shell imports lazily (src/shell/Screen.tsx). */
+const SCREEN_MODULES = ROUTES.map((route) => `/src/routes/${route}/index.ts`);
 
 /** Logical viewport by default; the device scale factor doubles it in the PNG. */
 const WINDOW_SIZE = "1280x860";
@@ -88,6 +103,7 @@ function parseOptions() {
         routes: { type: "string" },
         size: { type: "string" },
         theme: { type: "string" },
+        still: { type: "boolean" },
       },
       strict: true,
       allowPositionals: false,
@@ -95,7 +111,7 @@ function parseOptions() {
   } catch (error) {
     fail(error.message);
   }
-  const { out, routes, size = WINDOW_SIZE, theme = "dark" } = parsed.values;
+  const { out, routes, size = WINDOW_SIZE, theme = "dark", still = false } = parsed.values;
   const dimensions = /^(\d+)x(\d+)$/.exec(size);
   if (dimensions === null) {
     fail(`--size takes a width and height such as 1500x950, not ${size}`);
@@ -128,6 +144,7 @@ function parseOptions() {
     routes: selected,
     windowSize: `${dimensions[1]},${dimensions[2]}`,
     colorScheme: COLOR_SCHEME[theme],
+    still,
   };
 }
 
@@ -218,7 +235,7 @@ function fileSize(path) {
  * taken as complete once its size holds steady across two polls, and Chrome is
  * then ended here rather than waited for.
  */
-function capture(chrome, url, file, profileDir, windowSize, budget, colorScheme) {
+function capture(chrome, url, file, profileDir, { windowSize, budget, colorScheme, still }) {
   const args = [
     "--headless=new",
     `--screenshot=${file}`,
@@ -227,6 +244,8 @@ function capture(chrome, url, file, profileDir, windowSize, budget, colorScheme)
     "--force-device-scale-factor=2",
     `--virtual-time-budget=${budget}`,
     `--blink-settings=preferredColorScheme=${colorScheme}`,
+    // Reported to the page as prefers-reduced-motion: reduce.
+    ...(still ? ["--force-prefers-reduced-motion"] : []),
     // A throwaway profile keeps the capture away from the user's own browser
     // state, and lets it run while their Chrome is open.
     `--user-data-dir=${profileDir}`,
@@ -292,7 +311,7 @@ function capture(chrome, url, file, profileDir, windowSize, budget, colorScheme)
 }
 
 async function main() {
-  const { outDir, routes, windowSize, colorScheme } = parseOptions();
+  const { outDir, routes, windowSize, colorScheme, still } = parseOptions();
   // Look for the browser before starting anything that would need tearing down.
   const chrome = findChrome();
   mkdirSync(outDir, { recursive: true });
@@ -330,6 +349,11 @@ async function main() {
     if (base === undefined) {
       throw new Error("the dev server did not report a local URL");
     }
+    // Transform every screen's module graph now, so a capture's first fetch
+    // of a screen is answered from the server's cache rather than compiled on
+    // demand. Virtual time waits for the fetch either way; this keeps the
+    // wall-clock run short and the timeout far away.
+    await Promise.all(SCREEN_MODULES.map((module) => server.warmupRequest(module)));
 
     for (const route of routes) {
       const name = route.replaceAll("/", "-");
@@ -338,15 +362,12 @@ async function main() {
       // A profile per capture: a browser that is slow to release its profile
       // lock must not turn the next launch into a hand-off to itself.
       const budget = BUDGET_FOR[route.split("/")[0]] ?? VIRTUAL_TIME_BUDGET;
-      await capture(
-        chrome,
-        `${base}#/${route}`,
-        file,
-        join(profileRoot, name),
+      await capture(chrome, `${base}#/${route}`, file, join(profileRoot, name), {
         windowSize,
         budget,
         colorScheme,
-      );
+        still,
+      });
       console.log(file);
     }
   } finally {

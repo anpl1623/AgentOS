@@ -15,6 +15,17 @@ export default defineConfig({
   build: {
     target: "es2022",
     sourcemap: true,
+    rollupOptions: {
+      output: {
+        // Each screen loads lazily through its folder's index.ts, so every
+        // screen's chunk would otherwise be called index-<hash>.js. Naming it
+        // after its screen keeps a network trace or a size report readable.
+        chunkFileNames: (chunk) => {
+          const screen = /routes\/([a-z]+)\/index\.ts$/.exec(chunk.facadeModuleId ?? "")?.[1];
+          return screen ? `assets/screen-${screen}-[hash].js` : "assets/[name]-[hash].js";
+        },
+      },
+    },
   },
   test: {
     // The unit tests cover pure logic, so they run in plain Node. A simulated

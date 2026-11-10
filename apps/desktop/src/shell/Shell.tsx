@@ -1,4 +1,4 @@
-import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { type RefObject, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import { AlertHost } from "../components/Alerts";
 import { CommandPalette } from "../components/CommandPalette";
@@ -15,7 +15,8 @@ import { isApple } from "./keys";
 import { applySidebarAction, sidebarPresentation, sidebarToggle } from "./layout";
 import { titleFor } from "./nav";
 import { useBack, useForward, useNavigate, usePlace } from "./router";
-import { Screen } from "./Screen";
+import { Screen, preloadScreens } from "./Screen";
+import { ScreenFallback } from "./ScreenFallback";
 import { RunFailureAlerts, StoreErrorAlerts } from "./ShellAlerts";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
@@ -62,6 +63,10 @@ export function Shell() {
 
   // One pointer listener for every lit card in the window.
   useEffect(() => installSpotlight(document), []);
+
+  // Each screen is its own chunk, fetched when first shown; once the window
+  // has drawn the one it opened on, the rest are fetched while it is idle.
+  useEffect(() => preloadScreens(), []);
 
   // A drawer opened in one layout is not carried into another: crossing a
   // breakpoint closes it, so widening the window never finds it still open.
@@ -152,11 +157,19 @@ export function Shell() {
       <main id="main" className="main" tabIndex={-1} ref={main} inert={drawer}>
         <div className="content">
           <ErrorBoundary scope="screen" resetKey={hash}>
-            {/* Keyed on the screen's name, not its address: a new screen rises
-                in, and a change of parameter within one does not remount it. */}
-            <div key={route.name} className="screen screen-enter">
-              <Screen route={route} navigate={navigate} />
-            </div>
+            {/* A screen whose code is still being fetched shows its frame in
+                skeleton. The boundary sits outside the keyed wrapper, so the
+                wrapper mounts only once the screen can draw, and rises in
+                then rather than half way through a wait; a fetch that fails
+                throws to the error boundary above it, as a screen would. */}
+            <Suspense fallback={<ScreenFallback />}>
+              {/* Keyed on the screen's name, not its address: a new screen
+                  rises in, and a change of parameter within one does not
+                  remount it. */}
+              <div key={route.name} className="screen screen-enter">
+                <Screen route={route} navigate={navigate} />
+              </div>
+            </Suspense>
           </ErrorBoundary>
         </div>
       </main>

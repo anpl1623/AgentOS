@@ -1,8 +1,9 @@
 /* Element defaults: the document, type, and the native controls.
  *
- * Nothing here names a component. A rule that needs a class belongs in
+ * Nothing here styles a component. A rule that needs a class belongs in
  * layout.css or components.css, so this file stays the answer to "what does a
- * bare element look like".
+ * bare element look like". The one class read here is a condition, not a
+ * target: a bare button that holds an icon lays its contents out for it.
  */
 
 * {
@@ -45,16 +46,24 @@ body {
  * as the body's own layer beneath everything in the root, so it never takes a
  * pointer event or a scroll and costs one paint. The glass chrome above it
  * lets it through; a panel, being opaque, does not, which keeps every text
- * measurement in tokens.css true. */
+ * measurement in tokens.css true.
+ *
+ * The glows are one value, so anything that must paint the canvas exactly as
+ * it shows behind it — the strip above a pinned page header — draws the same
+ * picture with a fixed attachment and meets the aurora without a seam. The
+ * colours are tokens, so the value follows the theme. */
+:root {
+  --aurora:
+    radial-gradient(52rem 30rem at 34% -6%, var(--aurora-1), transparent 70%),
+    radial-gradient(44rem 28rem at 82% -10%, var(--aurora-2), transparent 70%);
+}
 body::before {
   content: "";
   position: fixed;
   inset: 0;
   z-index: -1;
   pointer-events: none;
-  background:
-    radial-gradient(52rem 30rem at 34% -6%, var(--aurora-1), transparent 70%),
-    radial-gradient(44rem 28rem at 82% -10%, var(--aurora-2), transparent 70%);
+  background-image: var(--aurora);
 }
 
 ::selection {
@@ -138,14 +147,41 @@ button:hover:not(:disabled) {
   border-color: var(--border-control-hover);
 }
 /* Rows, palette entries and navigation items are buttons for their keyboard
- * handling, not for their look; they press in their own way or not at all. */
-button:active:not(:disabled):where(:not(.row, .palette-entry, .nav-item)) {
+ * handling, not for their look; they press in their own way or not at all. A
+ * button that is unavailable does not press either. */
+button:active:not(:disabled):where(:not(.row, .palette-entry, .nav-item, [aria-disabled="true"])) {
   transform: scale(0.97);
   box-shadow: none;
 }
 button:disabled {
   opacity: 0.45;
   cursor: default;
+}
+/* Unavailable while its own request runs, but still focusable. A focused
+ * button that becomes disabled drops focus to the top of the window, so a
+ * control that waits on its own work — Stop, Retry — says so with
+ * aria-disabled instead, and its handler ignores a press until the work is
+ * done. Drawn as a disabled button is, and deaf to the pointer, so it neither
+ * lights on hover nor sinks when pressed. */
+button[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* A button with an icon beside its words — or a live dot, which stands where
+ * an icon would — sets it on the label's centre line rather than on the
+ * text's baseline, and keeps its words centred when it is stretched. It
+ * reaches only the standard looks (a bare button, primary, danger, ghost): a
+ * button with a class of its own (a row, a crumb, a nav item, an icon button)
+ * lays itself out, and would otherwise inherit an alignment it never asked
+ * for. :where() holds the rule at no specificity, so a modifier beside a look
+ * class still decides its own display and spacing. */
+:where(button:is(:not([class]), .primary, .danger, .ghost):has(> .icon, > .live-dot)) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-3);
 }
 
 /* A toggle that is on. Any button carrying aria-pressed reads its state from
@@ -217,6 +253,15 @@ button.ghost:hover:not(:disabled) {
   background-color: var(--surface-raised);
   border-color: transparent;
   color: var(--text);
+}
+/* A ghost toggle that is on. button.ghost is exactly as specific as the
+ * pressed rule above and loads after it, so without this a pressed ghost
+ * would be drawn exactly like a resting one while it announced itself as on. */
+button.ghost[aria-pressed="true"],
+button.ghost[aria-pressed="true"]:hover:not(:disabled) {
+  background-color: var(--accent-wash);
+  border-color: var(--accent);
+  color: var(--text-accent);
 }
 
 /* Hit targets on a touch screen are a finger's width, whatever the density. */

@@ -94,12 +94,8 @@ export function AgentDetail({ name, navigate }: { name: string; navigate: Naviga
       <PageHeader
         eyebrow="Agent"
         parent={parent}
-        title={
-          <span className="agent-title">
-            <AgentAvatar name={summary.name} enabled={enabled} size="sm" />
-            {summary.name}
-          </span>
-        }
+        leading={<AgentAvatar name={summary.name} enabled={enabled} size="sm" />}
+        title={summary.name}
         subtitle={
           <>
             {summary.provider}/{summary.model} · {summary.max_steps} steps per run

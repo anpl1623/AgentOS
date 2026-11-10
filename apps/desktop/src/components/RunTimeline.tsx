@@ -1,19 +1,7 @@
 import type { SpanTarget, Timeline, TimelineSpan } from "../routes/tasks/run/timelineModel";
 import { clock } from "../sdk/format";
-import {
-  AXIS_HEIGHT,
-  Axis,
-  Figure,
-  HatchDefs,
-  Legend,
-  type LegendItem,
-  TRACK_GAP,
-  TRACK_HEIGHT,
-  Track,
-  elapsed,
-  type TrackMarker,
-  useHatches,
-} from "./charts";
+import { Axis, Figure, HatchDefs, Legend, type LegendItem, Track, useHatches } from "./chartParts";
+import { AXIS_HEIGHT, TRACK_GAP, TRACK_HEIGHT, type TrackMarker, elapsed } from "./charts";
 
 const LEGEND: readonly LegendItem[] = [
   { label: "model turn", tone: "info" },
@@ -104,8 +92,9 @@ export function RunTimeline({
           {timeline.live ? (
             // The present moment, at the right edge: a hairline down the
             // tracks and a pulsing dot on the axis, for as long as the run is
-            // live. Decoration; the summary and the state chip say it in words.
-            <g className="chart-now" aria-hidden="true">
+            // live, in the attention hue while it waits on a person.
+            // Decoration; the summary and the state chip say it in words.
+            <g className={`chart-now tone-${timeline.nowTone}`} aria-hidden="true">
               <line x1="100%" x2="100%" y1="0" y2={axisY} />
               <circle className="chart-now-ring" cx="100%" cy={axisY} r="3.5" />
               <circle cx="100%" cy={axisY} r="3.5" />

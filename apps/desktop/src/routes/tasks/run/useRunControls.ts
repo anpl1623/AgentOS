@@ -46,7 +46,11 @@ export function useRunActions(
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Each action ignores a press while its own request runs. The buttons are
+  // aria-disabled rather than disabled then, so they keep focus, and a key
+  // press still reaches them.
   const cancel = async () => {
+    if (cancelRequested) return;
     setCancelRequested(true);
     setError(null);
     try {
@@ -61,7 +65,7 @@ export function useRunActions(
   };
 
   const retry = async () => {
-    if (taskId === null) return;
+    if (taskId === null || retrying) return;
     setRetrying(true);
     setError(null);
     try {

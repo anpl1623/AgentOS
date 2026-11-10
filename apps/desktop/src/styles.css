@@ -17,6 +17,7 @@
 @import "./styles/screens/dashboard.css";
 @import "./styles/screens/approvals.css";
 @import "./styles/screens/tasks.css";
+@import "./styles/screens/tasks-run.css";
 @import "./styles/screens/schedules.css";
 @import "./styles/screens/agents.css";
 @import "./styles/screens/activity.css";

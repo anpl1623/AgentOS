@@ -6,16 +6,6 @@
 
 /* --- shared -------------------------------------------------------------- */
 
-/* A button that leads with an icon sets the icon beside its words, not on the
- * text's baseline. Held at the scope's specificity so a button's own class
- * still decides its look. The crumb and icon buttons lay themselves out. */
-.agents-screen :where(button:not(.crumb, .icon-button):has(> .icon)) {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--s-3);
-}
-
 /* A search field with its magnifier inside, at the start. */
 .agents-screen .agents-search {
   position: relative;
@@ -101,10 +91,6 @@
   margin-bottom: var(--s-10);
 }
 
-.agents-screen .agents-toolbar .segmented,
-.agents-screen .memory-kinds {
-  flex-wrap: wrap;
-}
 .agents-screen .agents-count {
   font-size: var(--fs-small);
   color: var(--text-faint);
@@ -332,12 +318,6 @@
 .agents-screen .step-note {
   margin: 0;
 }
-/* Fields carry their own space beneath them; when the pair stacks on a
- * narrow step, a row gap on top of it would part Model from Vision by more
- * than any other two fields. */
-.agents-screen .create-step .grid.two {
-  row-gap: 0;
-}
 .agents-screen .provider-choice > button {
   font-family: var(--font-mono);
   font-size: var(--fs-code);
@@ -432,13 +412,6 @@
 
 /* --- detail: frame ------------------------------------------------------- */
 
-.agents-screen .agent-title {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-6);
-  min-width: 0;
-}
-
 /* The sections, with their navigation beside them only where there is room
  * for both: the wide layout. Below it the navigation is not drawn at all, so
  * it takes no Tab stops either. */
@@ -486,7 +459,9 @@
 .agents-screen .section-link {
   position: relative;
   display: flex;
+  align-items: center;
   justify-content: flex-start;
+  gap: var(--s-3);
   width: 100%;
   padding: var(--s-3) var(--s-6);
   border: 1px solid transparent;
@@ -620,37 +595,13 @@
 .agents-screen .overview-instructions {
   line-height: var(--lh-body);
 }
-.agents-screen .fact-copy {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-}
-.agents-screen .fact-copy > .mono {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-/* The copy button keeps its full target but gives back the height it would
- * add to its row, so a row with one is spaced like the rows without; it
- * reaches into the row gap instead, which the rule below keeps wide enough. */
-.agents-screen .fact-copy > .copy-button {
-  flex: none;
-  margin-block: calc(var(--s-3) * -1);
-}
 /* Labels as wide as the longest, so the values get the rest; under 720px the
- * shared rule stacks each label over its value instead. The rows are a copy
- * button's height apart, so two copy buttons in neighbouring rows never
- * overlap where they reach into the gap between them. */
+ * shared rule stacks each label over its value instead. The copy buttons
+ * beside the workspace and the id are spaced by the shared fact list. */
 @media (min-width: 720px) {
   .agents-screen .overview-facts dl.facts {
     grid-template-columns: max-content minmax(0, 1fr);
-    row-gap: var(--s-6);
   }
-}
-/* A value with a copy button beside it is taller than its label; both sit on
- * the row's centre so the label stays level with the value. */
-.agents-screen .overview-facts dt,
-.agents-screen .overview-facts dd {
-  align-self: center;
 }
 
 /* --- detail: tools and grants -------------------------------------------- */
@@ -907,10 +858,10 @@
   overflow-x: auto;
 }
 /* The editor clips what overflows it, so the ring is drawn inside the text
- * area rather than around it, as a row's is. */
+ * area rather than around it, as a row's is; the area's own square corners
+ * hold under it. */
 .agents-screen .code-editor-body > textarea:focus-visible {
   outline-offset: -2px;
-  border-radius: 0;
   box-shadow: inset 0 0 0 6px var(--focus-glow);
 }
 

@@ -15,8 +15,15 @@
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
-  border-radius: var(--radius-md);
   box-shadow: 0 0 0 6px var(--focus-glow);
+}
+/* An outline follows its element's corners, so the ring takes each control's
+ * own radius: a focused card keeps its 12px corners rather than snapping to
+ * a control's 6px. Only an element that declares no radius of its own, such
+ * as a link or a span made focusable, is given the control's soft corner, and
+ * :where() holds that at no specificity so any radius a rule sets wins. */
+:where(:focus-visible) {
+  border-radius: var(--radius-md);
 }
 :focus:not(:focus-visible) {
   outline: none;
